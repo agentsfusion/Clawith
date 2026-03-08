@@ -876,6 +876,13 @@ export default function AgentDetail() {
         }
     }, [chatMessages]);
 
+    // Auto-focus input when switching sessions
+    useEffect(() => {
+        if (activeSession && activeTab === 'chat') {
+            setTimeout(() => chatInputRef.current?.focus(), 150);
+        }
+    }, [activeSession?.id, activeTab]);
+
     const sendChatMsg = () => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
         if (!chatInput.trim() && !attachedFile) return;
