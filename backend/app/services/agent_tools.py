@@ -2989,6 +2989,10 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 "\n\n--- Agent-to-Agent Message ---\n"
                 "You are receiving a message from another digital employee. "
                 "Reply concisely and helpfully. Focus on the request and provide a clear answer.\n"
+                "\nIMPORTANT: If the requesting agent asks you to create a file, report, or document, "
+                "you MUST use `send_file_to_agent` to deliver the result to them after writing it. "
+                "Do NOT just save the file in your workspace and tell them the path — "
+                "they cannot access your workspace. Always deliver files explicitly.\n"
             )
 
             # Load recent history for context
