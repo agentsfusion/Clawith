@@ -107,7 +107,7 @@ class AgentManager:
             state = json.loads(state_path.read_text())
             state["agent_id"] = str(agent.id)
             state["name"] = agent.name
-            state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+            state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
         logger.info(f"Initialized agent files at {agent_dir}")
 
@@ -154,7 +154,7 @@ class AgentManager:
         config = self._generate_openclaw_config(agent, model)
         config_dir = agent_dir / ".openclaw"
         config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / "openclaw.json").write_text(json.dumps(config, indent=2))
+        (config_dir / "openclaw.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
 
         # Create workspace symlink
         workspace_dir = config_dir / "workspace"

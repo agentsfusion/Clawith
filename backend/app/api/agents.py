@@ -274,7 +274,7 @@ async def create_agent(
             for sf in skill.files:
                 file_path = skill_folder / sf.path
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(sf.content)
+                file_path.write_text(sf.content, encoding="utf-8")
 
     # Start container
     await agent_manager.start_container(db, agent)
