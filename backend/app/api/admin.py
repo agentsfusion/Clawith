@@ -385,8 +385,7 @@ async def get_enhanced_metrics(
     channel distribution, tool categories, and churn warnings.
     """
     from app.models.chat_session import ChatSession
-    from app.models.tool import Tool
-    from app.models.agent_tool import AgentTool
+    from app.models.tool import Tool, AgentTool
     from sqlalchemy import text
     from datetime import timedelta
 
