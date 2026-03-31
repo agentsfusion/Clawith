@@ -4160,8 +4160,7 @@ function AgentDetailInner() {
 
                         return (
                             <div>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)', paddingTop: '4px', paddingBottom: '12px', borderBottom: '1px solid var(--border-subtle)' }}>
-                                    <h3 style={{ margin: 0 }}>{t('agent.settings.title')}</h3>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: '8px', position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)', paddingTop: '4px', paddingBottom: '8px' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                         {settingsSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>{t('agent.settings.saved', 'Saved')}</span>}
                                         {settingsError && <span style={{ fontSize: '12px', color: settingsError.includes('adjusted') ? 'var(--warning)' : 'var(--error)', whiteSpace: 'pre-line' }}>{settingsError}</span>}
@@ -4374,7 +4373,9 @@ function AgentDetailInner() {
                                 })()}
 
                                 {/* Credentials Management — for AgentBay cookie injection */}
-                                <AgentCredentials agentId={id!} />
+                                <div style={{ marginBottom: '12px' }}>
+                                    <AgentCredentials agentId={id!} />
+                                </div>
 
                                 {/* Welcome Message */}
                                 {(() => {
