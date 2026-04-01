@@ -139,6 +139,8 @@ async def add_llm_model(
         max_tokens_per_day=data.max_tokens_per_day,
         enabled=data.enabled,
         supports_vision=data.supports_vision,
+        max_output_tokens=data.max_output_tokens,
+        request_timeout=data.request_timeout,
         tenant_id=uuid.UUID(tid) if tid else None,
     )
     db.add(model)
@@ -219,6 +221,10 @@ async def update_llm_model(
             model.enabled = data.enabled
         if hasattr(data, 'supports_vision') and data.supports_vision is not None:
             model.supports_vision = data.supports_vision
+        if hasattr(data, 'max_output_tokens') and data.max_output_tokens is not None:
+            model.max_output_tokens = data.max_output_tokens
+        if hasattr(data, 'request_timeout') and data.request_timeout is not None:
+            model.request_timeout = data.request_timeout
 
         await db.commit()
         await db.refresh(model)
