@@ -667,7 +667,7 @@ async def wecom_callback(
             db, user_info, tenant_id=tenant_id or provider.tenant_id
         )
     except Exception as e:
-        logger.error(f"WeCom login/register error: {e}", exc_info=True)
+        logger.exception(f"WeCom login/register error: {e}")
         return HTMLResponse(f"Auth failed: {str(e)}")
 
 

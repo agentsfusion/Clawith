@@ -883,9 +883,21 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
                     if _ud.get("code") == 0:
                         _user_info = _ud.get("data", {}).get("user", {})
                         sender_user_id_feishu = _user_info.get("user_id", "")
+                        # Feishu contact API returns 'avatar' as a dict
+                        # (keys: avatar_240, avatar_640, avatar_origin), NOT a plain URL.
+                        _raw_avatar = _user_info.get("avatar")
+                        if isinstance(_raw_avatar, dict):
+                            _avatar_url = (
+                                _raw_avatar.get("avatar_240")
+                                or _raw_avatar.get("avatar_640")
+                                or _raw_avatar.get("avatar_origin")
+                                or ""
+                            )
+                        else:
+                            _avatar_url = _raw_avatar or ""
                         extra_info = {
                             "name": _user_info.get("name"),
-                            "avatar_url": _user_info.get("avatar"),
+                            "avatar_url": _avatar_url,
                             "email": _user_info.get("email"),
                             "mobile": _user_info.get("mobile"),
                             "unionid": _user_info.get("user_id"),
