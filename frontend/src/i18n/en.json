@@ -390,7 +390,8 @@
       "askAboutFile": "Ask about {{name}}...",
       "thinking": "Thinking...",
       "collapseSessions": "Collapse sessions",
-      "showSessions": "Show chat sessions"
+      "showSessions": "Show chat sessions",
+      "toolCallChain": "Tool Call Chain"
     },
     "activityLog": {
       "title": "Activity Log",

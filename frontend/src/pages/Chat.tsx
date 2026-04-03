@@ -56,6 +56,7 @@ interface Message {
 }
 
 function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
+    const { t } = useTranslation();
     const [expanded, setExpanded] = useState(false);
     const count = toolCalls.length;
     return (
@@ -78,7 +79,7 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
             >
                 {Icons.tool}
                 <span style={{ flex: 1, textAlign: 'left', fontWeight: 500 }}>
-                    Tool Call Chain
+                    {t('agent.chat.toolCallChain')}
                 </span>
                 <span style={{
                     background: 'rgba(99,102,241,0.18)', color: '#818cf8',

@@ -3930,7 +3930,7 @@ function AgentDetailInner() {
                                                                     userSelect: 'none', listStyle: 'none',
                                                                 }}>
                                                                     <span style={{ fontSize: '13px' }}>🔧</span>
-                                                                    <span style={{ flex: 1, fontWeight: 500 }}>Tool Call Chain</span>
+                                                                    <span style={{ flex: 1, fontWeight: 500 }}>{t('agent.chat.toolCallChain')}</span>
                                                                     <span style={{
                                                                         background: 'rgba(99,102,241,0.18)', color: '#818cf8',
                                                                         borderRadius: '10px', padding: '1px 7px',
