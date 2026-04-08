@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { enterpriseApi, skillApi } from '../services/api';
+import { enterpriseApi, gwsApi, skillApi } from '../services/api';
 import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
@@ -286,7 +286,133 @@ function OrgTab({ tenant }: { tenant: any }) {
     const { t } = useTranslation();
     const qc = useQueryClient();
 
+    const GoogleWorkspaceConfigCard = () => {
+        const [gwsForm, setGwsForm] = useState({ client_id: '', client_secret: '', project_id: '' });
+        const [gwsSaving, setGwsSaving] = useState(false);
+        const [gwsSaved, setGwsSaved] = useState(false);
+        const [gwsError, setGwsError] = useState('');
+        const [importingSkills, setImportingSkills] = useState(false);
+        const [skillsImported, setSkillsImported] = useState<number | null>(null);
 
+        const { data: gwsCred } = useQuery({
+            queryKey: ['gws-credentials'],
+            queryFn: () => gwsApi.getCredentials(),
+        });
+
+        const handleSave = async () => {
+            setGwsSaving(true);
+            setGwsError('');
+            try {
+                await gwsApi.saveCredentials(gwsForm);
+                setGwsSaved(true);
+                setTimeout(() => setGwsSaved(false), 2000);
+                qc.invalidateQueries({ queryKey: ['gws-credentials'] });
+            } catch (e: any) {
+                setGwsError(e?.message || 'Failed to save');
+            }
+            setGwsSaving(false);
+        };
+
+        const handleImportSkills = async () => {
+            setImportingSkills(true);
+            try {
+                const result = await gwsApi.importSkills();
+                setSkillsImported(result.imported);
+                setTimeout(() => setSkillsImported(null), 4000);
+            } catch (e: any) {
+                setGwsError(e?.message || 'Failed to import skills');
+            }
+            setImportingSkills(false);
+        };
+
+        return (
+            <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+                <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
+                    <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>
+                        📧 Google Workspace
+                    </h3>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                        Configure Google Workspace OAuth credentials for Gmail, Calendar, and Drive integration.
+                    </div>
+                </div>
+
+                <div style={{ padding: '20px' }}>
+                    {gwsCred?.configured && (
+                        <div style={{ marginBottom: '16px', display: 'flex', gap: '12px', alignItems: 'center' }}>
+                            <span className="badge badge-success" style={{ fontSize: '10px' }}>Configured</span>
+                            {gwsCred.masked_client_id && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                                    Client ID: {gwsCred.masked_client_id}
+                                </span>
+                            )}
+                            {gwsCred.project_id && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                    Project: {gwsCred.project_id}
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                        <div className="form-group">
+                            <label className="form-label">Client ID</label>
+                            <input
+                                className="form-input"
+                                value={gwsForm.client_id}
+                                onChange={e => setGwsForm(f => ({ ...f, client_id: e.target.value }))}
+                                placeholder={gwsCred?.masked_client_id || 'Enter Google OAuth Client ID'}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">Client Secret</label>
+                            <input
+                                className="form-input"
+                                type="password"
+                                value={gwsForm.client_secret}
+                                onChange={e => setGwsForm(f => ({ ...f, client_secret: e.target.value }))}
+                                placeholder={gwsCred?.has_client_secret ? '••••••••' : 'Enter Google OAuth Client Secret'}
+                            />
+                        </div>
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                            <label className="form-label">Project ID</label>
+                            <input
+                                className="form-input"
+                                value={gwsForm.project_id}
+                                onChange={e => setGwsForm(f => ({ ...f, project_id: e.target.value }))}
+                                placeholder={gwsCred?.project_id || 'Enter Google Cloud Project ID'}
+                            />
+                        </div>
+                    </div>
+
+                    {gwsError && (
+                        <div style={{ fontSize: '12px', color: 'var(--error)', marginBottom: '12px' }}>{gwsError}</div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={gwsSaving}>
+                            {gwsSaving ? t('common.loading') : t('common.save', 'Save')}
+                        </button>
+                        {gwsSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>}
+
+                        <div style={{ flex: 1 }} />
+
+                        <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={handleImportSkills}
+                            disabled={importingSkills || !gwsCred?.configured}
+                        >
+                            {importingSkills ? t('common.loading') : 'Import GWS Skills'}
+                        </button>
+                        {skillsImported !== null && (
+                            <span style={{ fontSize: '12px', color: 'var(--success)' }}>
+                                Imported {skillsImported} skill{skillsImported !== 1 ? 's' : ''}
+                            </span>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    };
 
 
     const SsoStatus = () => {
@@ -863,7 +989,7 @@ function OrgTab({ tenant }: { tenant: any }) {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            {/* SSO status is now derived from per-channel toggles — no global switch */}
+            <GoogleWorkspaceConfigCard />
 
             {/* 1. Identity Providers Section */}
             <div className="card" style={{ padding: '0', overflow: 'hidden' }}>

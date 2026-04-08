@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
+    # Google Workspace CLI
+    GWS_OAUTH_CALLBACK_PATH: str = "/api/gws/auth/callback"
+
     # Jina AI (Reader + Search APIs)
     JINA_API_KEY: str = ""
 
