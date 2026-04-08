@@ -58,12 +58,14 @@ async def save_tenant_gws_config(
     client_id: str,
     client_secret: str,
     project_id: str,
+    scope_preset: str = "standard",
+    custom_scopes: list[str] | None = None,
     db: AsyncSession | None = None,
 ) -> None:
     """Encrypt and store Google Workspace configuration in TenantSetting."""
     async def _save(session: AsyncSession) -> None:
         encrypted_secret = encrypt_data(client_secret, settings.SECRET_KEY) if client_secret else ""
-        
+
         result = await session.execute(
             select(TenantSetting).where(
                 TenantSetting.tenant_id == tenant_id,
@@ -71,13 +73,26 @@ async def save_tenant_gws_config(
             )
         )
         setting = result.scalar_one_or_none()
-        
-        value = {
-            "client_id": client_id,
-            "client_secret": encrypted_secret,
-            "project_id": project_id,
-        }
-        
+
+        if setting and setting.value:
+            value = setting.value.copy()
+            if client_id:
+                value["client_id"] = client_id
+            if encrypted_secret:
+                value["client_secret"] = encrypted_secret
+            if project_id:
+                value["project_id"] = project_id
+            value["scope_preset"] = scope_preset
+            value["custom_scopes"] = custom_scopes or []
+        else:
+            value = {
+                "client_id": client_id,
+                "client_secret": encrypted_secret,
+                "project_id": project_id,
+                "scope_preset": scope_preset,
+                "custom_scopes": custom_scopes or [],
+            }
+
         if setting:
             setting.value = value
         else:
@@ -87,7 +102,7 @@ async def save_tenant_gws_config(
                 value=value,
             )
             session.add(setting)
-        
+
         await session.commit()
     
     if db is not None:
