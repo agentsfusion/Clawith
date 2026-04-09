@@ -86,6 +86,16 @@ class Settings(BaseSettings):
     AGENT_DATA_DIR: str = _default_agent_data_dir()
     AGENT_TEMPLATE_DIR: str = _default_agent_template_dir()
 
+    # Cloud Storage Backend
+    STORAGE_BACKEND: str = "local"  # "local" | "s3"
+    STORAGE_BUCKET: str = ""
+    STORAGE_ENDPOINT_URL: str = ""  # Custom endpoint for S3-compatible providers (e.g., Huawei OBS)
+    STORAGE_REGION: str = "us-east-1"
+    STORAGE_ACCESS_KEY: str = ""
+    STORAGE_SECRET_KEY: str = ""
+    STORAGE_CACHE_DIR: str = "/tmp/clawith_cache"  # Empty string disables caching
+    STORAGE_CACHE_TTL_SECONDS: int = 60
+
     # Docker (for Agent containers)
     DOCKER_NETWORK: str = "clawith_network"
     OPENCLAW_IMAGE: str = "openclaw:local"
