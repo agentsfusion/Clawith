@@ -267,21 +267,21 @@ async def ensure_gws_shared_for_agent(agent_id: str, tenant_id: str | None = Non
 
 async def ensure_gws_tool_for_agents_with_skills() -> int:
     """
+<<<<<<< HEAD
     Startup task: scan all agents and enable the 'gws' tool for any agent
     that has gws-* skill files in its workspace but lacks the tool assignment.
+=======
+    Startup task: scan all agents and enable 'gws' tool for any agent
+    that has gws-* skill files in its workspace but lacks tool assignment.
+>>>>>>> b3ae959 (feat(storage): refactor channel integrations and services to use storage)
 
     Returns:
         Number of agents that were updated.
     """
-    from pathlib import Path
     from app.models.agent import Agent
-    from app.config import get_settings
+    from app.services.storage.factory import get_storage
 
-    settings = get_settings()
-    agents_root = Path(settings.AGENT_DATA_DIR)
-
-    if not agents_root.exists():
-        return 0
+    storage = get_storage()
 
     async with async_session() as db:
         agents_r = await db.execute(select(Agent))
@@ -289,13 +289,18 @@ async def ensure_gws_tool_for_agents_with_skills() -> int:
 
     count = 0
     for agent in agents:
-        skills_dir = agents_root / str(agent.id) / "skills"
-        if not skills_dir.exists():
-            continue
-        has_gws = any(
-            d.is_dir() and is_gws_skill(d.name)
-            for d in skills_dir.iterdir()
-        )
+        skills_prefix = f"{agent.id}/skills/"
+        
+        # Check if skills directory exists and has GWS skills
+        try:
+            skills_list = await storage.list(skills_prefix)
+            has_gws = any(
+                info.is_dir and is_gws_skill(info.name)
+                for info in skills_list
+            )
+        except Exception:
+            has_gws = False
+            
         if has_gws:
             enabled = await ensure_gws_tool_enabled_for_agent(agent.id)
             if enabled:
