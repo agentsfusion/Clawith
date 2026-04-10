@@ -246,6 +246,11 @@ async def delete_agent_relationship(
 async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
     """Regenerate relationships.md with both human and agent relationships."""
     from app.models.identity import IdentityProvider
+    from app.services.storage.factory import get_storage
+
+    storage = get_storage()
+    relationships_key = f"{agent_id}/relationships.md"
+
     # Load human relationships with provider name
     h_result = await db.execute(
         select(AgentRelationship, IdentityProvider.name.label("provider_name"))
@@ -264,11 +269,8 @@ async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
     )
     agent_rels = a_result.scalars().all()
 
-    ws = Path(settings.AGENT_DATA_DIR) / str(agent_id)
-    ws.mkdir(parents=True, exist_ok=True)
-
     if not human_rows and not agent_rels:
-        (ws / "relationships.md").write_text("# 关系网络\n\n_暂无配置的关系。_\n", encoding="utf-8")
+        await storage.write(relationships_key, "# 关系网络\n\n_暂无配置的关系。_\n")
         return
 
     lines = ["# 关系网络\n"]
@@ -308,4 +310,4 @@ async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
                 lines.append(f"- {r.description}")
             lines.append("")
 
-    (ws / "relationships.md").write_text("\n".join(lines), encoding="utf-8")
+    await storage.write(relationships_key, "\n".join(lines))

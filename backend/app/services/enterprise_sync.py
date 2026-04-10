@@ -67,8 +67,10 @@ class EnterpriseSyncService:
 
         Filters by visible_roles — if empty, all roles can see it.
         """
-        agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "enterprise_info"
-        agent_dir.mkdir(parents=True, exist_ok=True)
+        from app.services.storage.factory import get_storage
+        storage = get_storage()
+
+        enterprise_info_prefix = f"{agent_id}/enterprise_info/"
 
         result = await db.execute(select(EnterpriseInfo))
         all_info = result.scalars().all()
@@ -78,8 +80,8 @@ class EnterpriseSyncService:
             if info.visible_roles and agent_role and agent_role not in info.visible_roles:
                 continue
 
-            file_path = agent_dir / f"{info.info_type}.json"
-            file_path.write_text(json.dumps({
+            file_key = f"{enterprise_info_prefix}{info.info_type}.json"
+            await storage.write(file_key, json.dumps({
                 "type": info.info_type,
                 "version": info.version,
                 "content": info.content,
