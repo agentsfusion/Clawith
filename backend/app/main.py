@@ -72,6 +72,17 @@ async def lifespan(app: FastAPI):
     intercept_standard_logging()
     logger.info("[startup] Logging configured")
 
+    # Storage backend health check
+    try:
+        from app.services.storage.factory import get_storage as _get_storage
+        _storage = _get_storage()
+        if not await _storage.health_check():
+            logger.warning("[startup] Storage backend health check FAILED — file operations may fail")
+        else:
+            logger.info(f"[startup] Storage backend healthy ({_storage.backend_name})")
+    except Exception as e:
+        logger.warning(f"[startup] Storage backend init failed: {e}")
+
     import asyncio
     import sys
     import os

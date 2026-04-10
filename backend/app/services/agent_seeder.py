@@ -151,46 +151,37 @@ async def seed_default_agents():
         db.add(AgentPermission(agent_id=meeseeks.id, scope_type="company", access_level="manage"))
 
         # ── Initialize workspace files ──
+        from app.services.storage.factory import get_storage
+        storage = get_storage()
+
         template_dir = Path(settings.AGENT_TEMPLATE_DIR)
 
         for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
-            agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent.id)
-
-            if template_dir.exists():
-                # Copy the full agent template so Morty/Meeseeks get EVERY file
-                # defined in the template: MEMORY_INDEX.md, curiosity_journal.md,
-                # state.json, todo.json, daily_reports/, enterprise_info/, etc.
-                shutil.copytree(str(template_dir), str(agent_dir))
-            else:
-                # Fallback for local dev (no Docker template mount)
-                agent_dir.mkdir(parents=True, exist_ok=True)
-                (agent_dir / "skills").mkdir(exist_ok=True)
-                (agent_dir / "workspace").mkdir(exist_ok=True)
-                (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
-                (agent_dir / "memory").mkdir(exist_ok=True)
+            # Template copying is skipped - storage abstraction handles file creation
+            # Storage.write() creates parent directories implicitly
 
             # Overlay custom soul (rich Morty/Meeseeks persona over the generic template)
-            (agent_dir / "soul.md").write_text(soul_content.strip() + "\n", encoding="utf-8")
+            await storage.write(f"{agent.id}/soul.md", soul_content.strip() + "\n")
 
             # Ensure memory.md exists (template does not include it; holds runtime context)
-            mem_path = agent_dir / "memory" / "memory.md"
-            if not mem_path.exists():
-                mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
+            mem_key = f"{agent.id}/memory/memory.md"
+            if not await storage.exists(mem_key):
+                await storage.write(mem_key, "# Memory\n\n_Record important information and knowledge here._\n")
 
             # Ensure reflections.md exists (not in agent_template; lives in app/templates)
-            refl_path = agent_dir / "memory" / "reflections.md"
-            if not refl_path.exists():
+            refl_key = f"{agent.id}/memory/reflections.md"
+            if not await storage.exists(refl_key):
                 refl_src = Path(__file__).parent.parent / "templates" / "reflections.md"
-                refl_path.write_text(refl_src.read_text(encoding="utf-8") if refl_src.exists() else "# Reflections Journal\n", encoding="utf-8")
+                await storage.write(refl_key, refl_src.read_text(encoding="utf-8") if refl_src.exists() else "# Reflections Journal\n")
 
             # Stamp agent identity into state.json if present
-            state_path = agent_dir / "state.json"
-            if state_path.exists():
+            state_key = f"{agent.id}/state.json"
+            if await storage.exists(state_key):
                 import json as _json
-                state = _json.loads(state_path.read_text())
+                state = _json.loads(await storage.read(state_key))
                 state["agent_id"] = str(agent.id)
                 state["name"] = agent.name
-                state_path.write_text(_json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+                await storage.write(state_key, _json.dumps(state, ensure_ascii=False, indent=2))
 
         # ── Assign skills ──
         all_skills_result = await db.execute(
@@ -199,8 +190,8 @@ async def seed_default_agents():
         all_skills = {s.folder_name: s for s in all_skills_result.scalars().all()}
 
         for agent, skill_folders in [(morty, MORTY_SKILLS), (meeseeks, MEESEEKS_SKILLS)]:
-            agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent.id)
-            skills_dir = agent_dir / "skills"
+            # Skills are stored under agent workspace
+            agent_prefix = f"{agent.id}/skills/"
 
             # Always include default skills
             folders_to_copy = set(skill_folders)
@@ -212,12 +203,9 @@ async def seed_default_agents():
                 skill = all_skills.get(fname)
                 if not skill:
                     continue
-                skill_folder = skills_dir / skill.folder_name
-                skill_folder.mkdir(parents=True, exist_ok=True)
                 for sf in skill.files:
-                    file_path = skill_folder / sf.path
-                    file_path.parent.mkdir(parents=True, exist_ok=True)
-                    file_path.write_text(sf.content, encoding="utf-8")
+                    file_key = f"{agent_prefix}{skill.folder_name}/{sf.path}"
+                    await storage.write(file_key, sf.content)
 
         # ── Assign all default tools ──
         default_tools_result = await db.execute(
@@ -244,20 +232,15 @@ async def seed_default_agents():
         ))
 
         # ── Write relationships.md for each ──
-        morty_dir = Path(settings.AGENT_DATA_DIR) / str(morty.id)
-        meeseeks_dir = Path(settings.AGENT_DATA_DIR) / str(meeseeks.id)
-
-        (morty_dir / "relationships.md").write_text(
+        await storage.write(f"{morty.id}/relationships.md",
             "# Relationships\n\n"
             "## Digital Employee Colleagues\n\n"
-            "- **Meeseeks** (collaborator): Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.\n",
-            encoding="utf-8",
+            "- **Meeseeks** (collaborator): Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.\n"
         )
-        (meeseeks_dir / "relationships.md").write_text(
+        await storage.write(f"{meeseeks.id}/relationships.md",
             "# Relationships\n\n"
             "## Digital Employee Colleagues\n\n"
-            "- **Morty** (collaborator): Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.\n",
-            encoding="utf-8",
+            "- **Morty** (collaborator): Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.\n"
         )
 
         await db.commit()
