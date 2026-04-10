@@ -25,8 +25,17 @@ def _running_in_container() -> bool:
     return any(token in content for token in ("docker", "containerd", "kubepods", "podman"))
 
 
+def _running_on_replit() -> bool:
+    """Detect Replit environment via REPL_ID env var."""
+    import os
+    return bool(os.environ.get("REPL_ID"))
+
+
 def _default_agent_data_dir() -> str:
     """Use Docker path in containers, user-writable path on local hosts."""
+    if _running_on_replit():
+        import os
+        return os.path.join(os.environ.get("REPL_HOME", "/home/runner/workspace"), ".data", "agents")
     if _running_in_container():
         return "/data/agents"
     return str(Path.home() / ".clawith" / "data" / "agents")
@@ -39,11 +48,10 @@ def _default_agent_template_dir() -> str:
     lives at /app/agent_template.  In a source deployment it sits next to the
     backend/ package root, i.e. <repo>/backend/agent_template.
     """
-    if _running_in_container():
-        return "/app/agent_template"
-    # Source layout: backend/app/config.py -> ../.. = backend/ -> agent_template
-    source_path = Path(__file__).resolve().parent.parent / "agent_template"
-    return str(source_path)
+    if _running_on_replit() or not _running_in_container():
+        source_path = Path(__file__).resolve().parent.parent / "agent_template"
+        return str(source_path)
+    return "/app/agent_template"
 
 
 def _read_version() -> str:

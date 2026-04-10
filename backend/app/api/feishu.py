@@ -519,7 +519,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                                 try:
                                     import pathlib as _pl, json as _cj, time as _ct
                                     _safe_id = str(agent_id).replace("..", "").replace("/", "")
-                                    _cache = _pl.Path(f"/data/workspaces/{_safe_id}/feishu_contacts_cache.json")
+                                    _cache = _pl.Path(f"/tmp/clawith_feishu_cache/{_safe_id}/feishu_contacts_cache.json")
                                     _cache.parent.mkdir(parents=True, exist_ok=True)
                                     _existing = {}
                                     if _cache.exists():

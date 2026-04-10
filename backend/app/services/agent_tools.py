@@ -1921,21 +1921,22 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) -> Path:
     """Initialize agent workspace with standard structure."""
     ws = WORKSPACE_ROOT / str(agent_id)
-    ws.mkdir(parents=True, exist_ok=True)
 
-    # Create standard directories (for Docker volume mounts)
-    (ws / "skills").mkdir(exist_ok=True)
-    (ws / "workspace").mkdir(exist_ok=True)
-    (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
-    (ws / "memory").mkdir(exist_ok=True)
+    _is_local_storage = _settings.STORAGE_BACKEND == "local"
+    if _is_local_storage:
+        ws.mkdir(parents=True, exist_ok=True)
 
-    # Ensure tenant-scoped enterprise_info directory exists (for Docker volume mounts)
-    if tenant_id:
-        enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
-    else:
-        enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
-    enterprise_dir.mkdir(parents=True, exist_ok=True)
-    (enterprise_dir / "knowledge_base").mkdir(exist_ok=True)
+        (ws / "skills").mkdir(exist_ok=True)
+        (ws / "workspace").mkdir(exist_ok=True)
+        (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
+        (ws / "memory").mkdir(exist_ok=True)
+
+        if tenant_id:
+            enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
+        else:
+            enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
+        enterprise_dir.mkdir(parents=True, exist_ok=True)
+        (enterprise_dir / "knowledge_base").mkdir(exist_ok=True)
 
     # Use storage for file operations
     storage = get_storage()
@@ -7818,7 +7819,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     token = await feishu_service.get_tenant_access_token(app_id, app_secret)
 
     # ── Load local contacts cache ─────────────────────────────────────────────
-    _cache_file = _pl.Path(f"/data/workspaces/{agent_id}/feishu_contacts_cache.json")
+    _cache_file = _pl.Path(f"/tmp/clawith_feishu_cache/{agent_id}/feishu_contacts_cache.json")
     _cached_users: list[dict] = []
     try:
         if _cache_file.exists():
@@ -7922,7 +7923,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 async def _feishu_contacts_refresh(agent_id: uuid.UUID) -> None:
     """Force-clear the local contacts cache so next search re-fetches from API."""
     import pathlib as _pl
-    _cache_file = _pl.Path("/data/workspaces") / str(agent_id) / "feishu_contacts_cache.json"
+    _cache_file = _pl.Path("/tmp/clawith_feishu_cache") / str(agent_id) / "feishu_contacts_cache.json"
     try:
         if _cache_file.exists():
             _cache_file.unlink()
