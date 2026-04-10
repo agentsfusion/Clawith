@@ -41,6 +41,13 @@ def _default_agent_data_dir() -> str:
     return str(Path.home() / ".clawith" / "data" / "agents")
 
 
+def _default_feishu_cache_dir() -> str:
+    """Writable directory for Feishu contacts cache files."""
+    if _running_on_replit():
+        return "/tmp/clawith_feishu_cache"
+    return "/data/workspaces"
+
+
 def _default_agent_template_dir() -> str:
     """Locate the agent template directory for both Docker and source deployments.
 
@@ -93,6 +100,7 @@ class Settings(BaseSettings):
     # File Storage
     AGENT_DATA_DIR: str = _default_agent_data_dir()
     AGENT_TEMPLATE_DIR: str = _default_agent_template_dir()
+    FEISHU_CACHE_DIR: str = _default_feishu_cache_dir()
 
     # Cloud Storage Backend
     STORAGE_BACKEND: str = "local"  # "local" | "s3" | "replit"
