@@ -120,6 +120,7 @@ async def _deferred_startup():
         import app.models.agent_credential  # noqa
         import app.models.gws_oauth_token  # noqa
         import app.models.lark_oauth_token  # noqa
+
         import app.models.identity       # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -330,6 +331,7 @@ from app.api.atlassian import router as atlassian_router
 from app.api.gws import router as gws_router
 from app.api.lark import router as lark_router
 
+
 from app.api.webhooks import router as webhooks_router
 from app.api.notification import router as notification_router
 from app.api.gateway import router as gateway_router
@@ -367,6 +369,7 @@ app.include_router(teams_router, prefix=settings.API_PREFIX)
 app.include_router(atlassian_router, prefix=settings.API_PREFIX)
 app.include_router(gws_router, prefix=settings.API_PREFIX)
 app.include_router(lark_router, prefix=settings.API_PREFIX)
+
 
 app.include_router(triggers_router)
 app.include_router(chat_sessions_router)
