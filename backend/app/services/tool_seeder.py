@@ -2450,46 +2450,18 @@ BUILTIN_TOOLS = [
         "config_schema": {},
     },
     {
-        "name": "update_kr_content",
-        "display_name": "Update KR Content",
-        "description": (
-            "Update the content fields of one of YOUR OWN Key Results. "
-            "Call get_my_okr first to obtain the kr_id, then change title, target_value, unit, "
-            "focus_ref, or status as needed. This does not record a progress update."
-        ),
-        "category": "okr",
-        "icon": "✏️",
-        "is_default": True,
+        "name": "gws",
+        "display_name": "Google Workspace CLI",
+        "description": "Interact with Google Workspace services (Gmail, Drive, Calendar, Sheets, Docs, Chat) via the gws CLI. Requires per-user Google OAuth authorization.",
+        "category": "google_workspace",
+        "icon": "📧",
+        "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "kr_id": {
-                    "type": "string",
-                    "description": "UUID of the Key Result to update (from get_my_okr).",
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Optional new KR title.",
-                },
-                "target_value": {
-                    "type": "number",
-                    "description": "Optional new target value.",
-                },
-                "unit": {
-                    "type": "string",
-                    "description": "Optional new unit label.",
-                },
-                "focus_ref": {
-                    "type": "string",
-                    "description": "Optional new focus reference.",
-                },
-                "status": {
-                    "type": "string",
-                    "enum": ["on_track", "at_risk", "behind", "completed"],
-                    "description": "Optional explicit status value.",
-                },
+                "command": {"type": "string", "description": "The gws command to execute, e.g. 'drive files list --params \\'{\"pageSize\": 10}\\''"}
             },
-            "required": ["kr_id"],
+            "required": ["command"],
         },
         "config": {},
         "config_schema": {},

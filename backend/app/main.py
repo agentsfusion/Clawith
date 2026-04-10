@@ -145,37 +145,33 @@ async def lifespan(app: FastAPI):
     from app.services.wechat_channel import wechat_poll_manager
     from app.services.discord_gateway import discord_gateway_manager
 
-    if _role_enabled("all", "bootstrap"):
-        # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
-        try:
-            from app.database import Base, engine
-            # Import all models so Base.metadata is fully populated
-            import app.models.user           # noqa
-            import app.models.agent          # noqa
-            import app.models.task           # noqa
-            import app.models.llm            # noqa
-            import app.models.tool           # noqa
-            import app.models.audit          # noqa
-            import app.models.skill          # noqa
-            import app.models.channel_config  # noqa
-            import app.models.schedule       # noqa
-            import app.models.plaza          # noqa
-            import app.models.activity_log   # noqa
-            import app.models.org            # noqa
-            import app.models.system_settings  # noqa
-            import app.models.invitation_code  # noqa
-            import app.models.tenant         # noqa
-            import app.models.tenant_setting  # noqa
-            import app.models.participant    # noqa
-            import app.models.chat_session   # noqa
-            import app.models.trigger        # noqa
-            import app.models.trigger_execution  # noqa
-            import app.models.focus          # noqa
-            import app.models.notification   # noqa
-            import app.models.gateway_message # noqa
-            import app.models.agent_credential  # noqa
-            import app.models.okr            # noqa
-            import app.models.onboarding     # noqa
+    # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
+    try:
+        from app.database import Base, engine
+        # Import all models so Base.metadata is fully populated
+        import app.models.user           # noqa
+        import app.models.agent          # noqa
+        import app.models.task           # noqa
+        import app.models.llm            # noqa
+        import app.models.tool           # noqa
+        import app.models.audit          # noqa
+        import app.models.skill          # noqa
+        import app.models.channel_config  # noqa
+        import app.models.schedule       # noqa
+        import app.models.plaza          # noqa
+        import app.models.activity_log   # noqa
+        import app.models.org            # noqa
+        import app.models.system_settings  # noqa
+        import app.models.invitation_code  # noqa
+        import app.models.tenant         # noqa
+        import app.models.tenant_setting  # noqa
+        import app.models.participant    # noqa
+        import app.models.chat_session   # noqa
+        import app.models.trigger        # noqa
+        import app.models.notification   # noqa
+        import app.models.gateway_message # noqa
+        import app.models.agent_credential  # noqa
+        import app.models.gws_oauth_token  # noqa
 
             import app.models.identity       # noqa
             async with engine.begin() as conn:
@@ -256,27 +252,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"[startup] Default agents seed failed: {e}")
 
-        try:
-            from app.services.agent_seeder import seed_okr_agent
-            await seed_okr_agent()
-        except Exception as e:
-            logger.warning(f"[startup] OKR Agent seed failed: {e}")
+    try:
+        from app.services.gws_skill_seeder import ensure_gws_tool_for_agents_with_skills
+        await ensure_gws_tool_for_agents_with_skills()
+    except Exception as e:
+        logger.warning(f"[startup] GWS tool auto-enable failed: {e}")
 
-        try:
-            from app.services.agent_seeder import patch_existing_okr_agent
-            await patch_existing_okr_agent()
-        except Exception as e:
-            logger.warning(f"[startup] OKR Agent patch failed: {e}")
-    else:
-        logger.info(f"[startup] bootstrap skipped for PROCESS_ROLE={settings.PROCESS_ROLE}")
-
-    if _role_enabled("all", "api"):
-        try:
-            from app.api.websocket import manager as ws_manager
-            await realtime_router.start(ws_manager.deliver_pubsub_message)
-            logger.info("[startup] realtime router subscriber started")
-        except Exception as e:
-            logger.error(f"[startup] realtime router start failed: {e}")
+    try:
+        from app.services.agent_seeder import seed_default_agents
+        await seed_default_agents()
+    except Exception as e:
+        logger.warning(f"[startup] Default agents seed failed: {e}")
 
     try:
         logger.info("[startup] starting background tasks...")
@@ -381,6 +367,7 @@ from app.api.triggers import router as triggers_router
 from app.api.focus import router as focus_router
 
 from app.api.atlassian import router as atlassian_router
+from app.api.gws import router as gws_router
 
 from app.api.webhooks import router as webhooks_router
 from app.api.notification import router as notification_router
@@ -421,6 +408,7 @@ app.include_router(wechat_router, prefix=settings.API_PREFIX)
 app.include_router(teams_router, prefix=settings.API_PREFIX)
 
 app.include_router(atlassian_router, prefix=settings.API_PREFIX)
+app.include_router(gws_router, prefix=settings.API_PREFIX)
 
 app.include_router(triggers_router)
 app.include_router(focus_router, prefix=settings.API_PREFIX)
