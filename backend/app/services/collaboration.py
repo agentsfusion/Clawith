@@ -112,16 +112,14 @@ class CollaborationService:
         from_agent = from_result.scalar_one_or_none()
 
         # Write message to target agent's workspace
-        from pathlib import Path
-        from app.config import get_settings
-        settings = get_settings()
+        from app.services.storage.factory import get_storage
+        storage = get_storage()
 
-        inbox_dir = Path(settings.AGENT_DATA_DIR) / str(to_agent_id) / "workspace" / "inbox"
-        inbox_dir.mkdir(parents=True, exist_ok=True)
+        inbox_key_prefix = f"{to_agent_id}/workspace/inbox/"
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        msg_file = inbox_dir / f"{timestamp}_{str(from_agent_id)[:8]}.md"
-        msg_file.write_text(
+        msg_file_key = f"{inbox_key_prefix}{timestamp}_{str(from_agent_id)[:8]}.md"
+        await storage.write(msg_file_key,
             f"# 来自 {from_agent.name if from_agent else 'Unknown'} 的消息\n"
             f"- 类型: {msg_type}\n"
             f"- 时间: {datetime.now(timezone.utc).isoformat()}\n\n"

@@ -48,7 +48,19 @@ backend:
     # Add custom environment variables here
     # custom: {}
 
-  # Persistent storage for agent data
+  # Cloud storage configuration. Set backend to s3/gcs/oss to enable cloud storage.
+  # When using cloud storage, local persistence for agent data becomes optional.
+  storage:
+    backend: local
+    bucket: ""
+    endpointUrl: ""
+    region: "us-east-1"
+    accessKey: ""
+    secretKey: ""
+    cacheDir: "/tmp/clawith_cache"
+    cacheTtlSeconds: 60
+
+  # Persistent storage for agent data (optional when using cloud storage)
   persistence:
     enabled: true
     # If using existing PVC, set existingClaim
