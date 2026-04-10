@@ -51,8 +51,19 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       # Password reset token lifetime in minutes (default: 30)
       PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
+      # Cloud storage configuration. Set STORAGE_BACKEND to s3/gcs/oss to enable.
+      # Defaults to local filesystem when STORAGE_BACKEND is "local" or empty.
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+      STORAGE_ENDPOINT_URL: ${STORAGE_ENDPOINT_URL:-}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-}
+      STORAGE_CACHE_DIR: ${STORAGE_CACHE_DIR:-/tmp/clawith_cache}
+      STORAGE_CACHE_TTL_SECONDS: ${STORAGE_CACHE_TTL_SECONDS:-60}
     volumes:
       - ./backend:/app
+      # agent_data volume is optional when using cloud storage (STORAGE_BACKEND != local)
       - ./backend/agent_data:/data/agents
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro
