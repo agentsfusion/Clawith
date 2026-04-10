@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     AGENT_TEMPLATE_DIR: str = _default_agent_template_dir()
 
     # Cloud Storage Backend
-    STORAGE_BACKEND: str = "local"  # "local" | "s3"
+    STORAGE_BACKEND: str = "local"  # "local" | "s3" | "replit"
     STORAGE_BUCKET: str = ""
     STORAGE_ENDPOINT_URL: str = ""  # Custom endpoint for S3-compatible providers (e.g., Huawei OBS)
     STORAGE_REGION: str = "us-east-1"

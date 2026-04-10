@@ -35,10 +35,15 @@ def _create_storage() -> StorageBackend:
             force_path_style=force_path_style,
         )
         logger.info(f"Storage backend: s3 (bucket={settings.STORAGE_BUCKET}, endpoint={endpoint or 'AWS default'})")
+    elif backend_type == "replit":
+        from app.services.storage.replit import ReplitStorageBackend
+
+        backend = ReplitStorageBackend()
+        logger.info("Storage backend: replit")
     else:
         raise ValueError(
             f"Unknown STORAGE_BACKEND={backend_type!r}. "
-            f"Supported: 'local', 's3'"
+            f"Supported: 'local', 's3', 'replit'"
         )
 
     if settings.STORAGE_CACHE_DIR:
