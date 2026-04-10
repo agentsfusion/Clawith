@@ -515,6 +515,17 @@ async def create_agent(
                     f"on agent {agent.id} raised: {e}"
                 )
 
+    # Auto-enable GWS tool if agent has Google Workspace skills
+    if skills_dir and skills_dir.exists():
+        from app.services.gws_skill_seeder import is_gws_skill
+        has_gws = any(
+            d.is_dir() and is_gws_skill(d.name)
+            for d in skills_dir.iterdir()
+        )
+        if has_gws:
+            from app.services.gws_skill_seeder import ensure_gws_tool_enabled_for_agent
+            await ensure_gws_tool_enabled_for_agent(agent.id)
+
     # Start container first (non-blocking if Docker available)
     await agent_manager.start_container(db, agent)
     await db.flush()

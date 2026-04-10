@@ -3398,6 +3398,23 @@ DEPLOY_BUILTIN_TOOLS = [
                 }
             ]
         }
+    },
+    {
+        "name": "gws",
+        "display_name": "Google Workspace CLI",
+        "description": "Interact with Google Workspace services (Gmail, Drive, Calendar, Sheets, Docs, Chat) via the gws CLI. Requires per-user Google OAuth authorization.",
+        "category": "google_workspace",
+        "icon": "📧",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The gws command to execute, e.g. 'drive files list --params \\'{\"pageSize\": 10}\\''"}
+            },
+            "required": ["command"],
+        },
+        "config": {},
+        "config_schema": {},
     }
 ]
 

@@ -146,10 +146,8 @@ async def lifespan(app: FastAPI):
     from app.services.discord_gateway import discord_gateway_manager
 
     if _role_enabled("all", "bootstrap"):
-        # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
         try:
             from app.database import Base, engine
-            # Import all models so Base.metadata is fully populated
             import app.models.user           # noqa
             import app.models.agent          # noqa
             import app.models.task           # noqa
@@ -176,6 +174,7 @@ async def lifespan(app: FastAPI):
             import app.models.agent_credential  # noqa
             import app.models.okr            # noqa
             import app.models.onboarding     # noqa
+            import app.models.gws_oauth_token  # noqa
 
             import app.models.identity       # noqa
             async with engine.begin() as conn:
@@ -267,6 +266,12 @@ async def lifespan(app: FastAPI):
             await patch_existing_okr_agent()
         except Exception as e:
             logger.warning(f"[startup] OKR Agent patch failed: {e}")
+
+        try:
+            from app.services.gws_skill_seeder import ensure_gws_tool_for_agents_with_skills
+            await ensure_gws_tool_for_agents_with_skills()
+        except Exception as e:
+            logger.warning(f"[startup] GWS tool auto-enable failed: {e}")
     else:
         logger.info(f"[startup] bootstrap skipped for PROCESS_ROLE={settings.PROCESS_ROLE}")
 
@@ -381,6 +386,7 @@ from app.api.triggers import router as triggers_router
 from app.api.focus import router as focus_router
 
 from app.api.atlassian import router as atlassian_router
+from app.api.gws import router as gws_router
 
 from app.api.webhooks import router as webhooks_router
 from app.api.notification import router as notification_router
@@ -421,6 +427,7 @@ app.include_router(wechat_router, prefix=settings.API_PREFIX)
 app.include_router(teams_router, prefix=settings.API_PREFIX)
 
 app.include_router(atlassian_router, prefix=settings.API_PREFIX)
+app.include_router(gws_router, prefix=settings.API_PREFIX)
 
 app.include_router(triggers_router)
 app.include_router(focus_router, prefix=settings.API_PREFIX)

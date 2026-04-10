@@ -3324,6 +3324,8 @@ async def execute_tool(
             result = await _vercel_manage_domain(agent_id, arguments)
         elif tool_name == "neon_create_database":
             result = await _neon_create_database(agent_id, arguments)
+        elif tool_name == "gws":
+            result = await _execute_gws(agent_id, user_id, arguments)
         else:
 
             # Try MCP tool execution
@@ -14788,3 +14790,26 @@ async def _neon_create_database(agent_id: uuid.UUID, arguments: dict) -> str:
             )
         else:
             return f"❌ Failed to create Neon project: {res.text}"
+
+
+async def _execute_gws(agent_id: uuid.UUID, user_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.gws_tool_executor import execute_gws_command
+
+    command = arguments.get("command", "")
+    if not command:
+        return "Error: command is required"
+
+    result = await execute_gws_command(agent_id, user_id, command)
+
+    if "error" in result and "output" not in result:
+        return f"❌ {result['error']}"
+
+    output_parts = []
+    if result.get("output"):
+        output_parts.append(result["output"])
+    if result.get("error"):
+        output_parts.append(f"⚠️ {result['error']}")
+    if result.get("exit_code") and result["exit_code"] != 0:
+        output_parts.append(f"Exit code: {result['exit_code']}")
+
+    return "\n\n".join(output_parts) if output_parts else "✅ Command executed successfully"
