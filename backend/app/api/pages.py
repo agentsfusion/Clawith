@@ -19,11 +19,15 @@ public_router = APIRouter(tags=["pages"])
 # Authenticated router — under /api prefix
 router = APIRouter(prefix="/pages", tags=["pages"])
 
-# ── Public render (NO auth) ────────────────────────────
+# ── Public render (NO auth) ────────────────────
 
 @public_router.get("/p/{short_id}")
 async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
     """Serve a published HTML page. No authentication required."""
+    from app.services.storage.factory import get_storage
+
+    storage = get_storage()
+
     result = await db.execute(
         select(PublishedPage).where(PublishedPage.short_id == short_id)
     )
@@ -31,12 +35,12 @@ async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
     if not page:
         raise HTTPException(status_code=404, detail="Page not found")
 
-    storage = get_storage_backend()
-    storage_key = normalize_storage_key(f"{page.agent_id}/{page.source_path}")
-    if not await storage.exists(storage_key) or not await storage.is_file(storage_key):
+    # Read HTML file from agent workspace
+    file_key = f"{page.agent_id}/{page.source_path}"
+    if not await storage.exists(file_key):
         raise HTTPException(status_code=404, detail="Source file no longer exists")
 
-    html_content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
+    html_content = await storage.read(file_key)
 
     # Increment view count
     await db.execute(

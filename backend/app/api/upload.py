@@ -2,6 +2,7 @@
 
 import base64
 import os
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
 from loguru import logger
 from app.core.security import get_current_user
 from app.models.user import User
-from app.services.storage import ensure_local_path, get_storage_backend, guess_content_type, normalize_storage_key
+from app.services.storage.factory import get_storage
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -119,22 +120,35 @@ async def upload_file(
 
     content = await file.read()
 
-    # Determine save directory
+    # Determine save location
+    save_path: Path | None = None  # Local path for text extraction
+    saved_filename = file.filename
     workspace_path = ""
+
     if agent_id:
-        storage = get_storage_backend()
-        filename = file.filename.replace("/", "_").replace("\\", "_")
+        # Save to agent's workspace/uploads/ via storage backend
+        storage = get_storage()
+        filename = file.filename
+        key = f"{agent_id}/workspace/uploads/{filename}"
+
+        # Avoid overwriting: add suffix if file exists
+        if await storage.exists(key):
+            stem = Path(filename).stem
+            suffix = Path(filename).suffix
+            counter = 1
+            while await storage.exists(f"{agent_id}/workspace/uploads/{stem}_{counter}{suffix}"):
+                counter += 1
+            filename = f"{stem}_{counter}{suffix}"
+            key = f"{agent_id}/workspace/uploads/{filename}"
+
+        await storage.write_bytes(key, content)
         workspace_path = f"workspace/uploads/{filename}"
-        key = normalize_storage_key(f"{agent_id}/{workspace_path}")
-        counter = 1
-        while await storage.exists(key):
-            stem, ext = os.path.splitext(filename)
-            filename = f"{stem}_{counter}{ext}"
-            workspace_path = f"workspace/uploads/{filename}"
-            key = normalize_storage_key(f"{agent_id}/{workspace_path}")
-            counter += 1
-        await storage.write_bytes(key, content, content_type=guess_content_type(filename))
-        save_path = await ensure_local_path(key)
+        saved_filename = filename
+
+        # Write to temp file for text extraction
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False, dir="/tmp") as tmp:
+            tmp.write(content)
+            save_path = Path(tmp.name)
     else:
         # Fallback: save to /tmp (legacy behavior)
         fallback_dir = Path("/tmp/clawith_uploads")
@@ -142,22 +156,30 @@ async def upload_file(
         file_id = str(uuid.uuid4())[:8]
         save_path = fallback_dir / f"{file_id}_{file.filename}"
         save_path.write_bytes(content)
+        saved_filename = save_path.name
 
     # Extract text (only for known formats)
     is_image = ext in IMAGE_EXTENSIONS
     image_data_url = ""
-    if is_image:
-        # For images: generate base64 data URL for vision models
-        if len(content) > 10 * 1024 * 1024:  # 10MB limit
-            raise HTTPException(status_code=400, detail="Image too large (max 10MB)")
-        mime = MIME_MAP.get(ext, "image/png")
-        b64 = base64.b64encode(content).decode("ascii")
-        image_data_url = f"data:{mime};base64,{b64}"
-        extracted = f"[图片文件: {file.filename}，需要视觉模型分析]"
-    elif ext in EXTRACTABLE:
-        extracted = extract_text(save_path, ext)
-    else:
-        extracted = f"[文件已保存，格式 {ext} 暂不支持文本提取，Agent 可通过 read_document 工具读取]"
+    extracted = ""
+
+    try:
+        if is_image:
+            # For images: generate base64 data URL for vision models
+            if len(content) > 10 * 1024 * 1024:  # 10MB limit
+                raise HTTPException(status_code=400, detail="Image too large (max 10MB)")
+            mime = MIME_MAP.get(ext, "image/png")
+            b64 = base64.b64encode(content).decode("ascii")
+            image_data_url = f"data:{mime};base64,{b64}"
+            extracted = f"[图片文件: {file.filename}，需要视觉模型分析]"
+        elif ext in EXTRACTABLE and save_path:
+            extracted = extract_text(save_path, ext)
+        else:
+            extracted = f"[文件已保存，格式 {ext} 暂不支持文本提取，Agent 可通过 read_document 工具读取]"
+    finally:
+        # Cleanup temp file created for agent uploads
+        if agent_id and save_path and save_path.exists():
+            save_path.unlink(missing_ok=True)
 
     # Truncate if too long
     if len(extracted) > 6000:
@@ -165,7 +187,7 @@ async def upload_file(
 
     return {
         "filename": file.filename,
-        "saved_filename": save_path.name,
+        "saved_filename": saved_filename,
         "size": len(content),
         "extracted_text": extracted,
         "workspace_path": workspace_path,

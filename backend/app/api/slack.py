@@ -314,6 +314,10 @@ async def slack_event_webhook(
     import httpx as _httpx
     from datetime import datetime, timezone
     from app.api.feishu import _FILE_ACK_MESSAGES
+    from app.services.storage.factory import get_storage
+
+    storage = get_storage()
+    _uploads_prefix = f"{agent_id}/workspace/uploads/"
     _file_user_messages = []
     _bot_token = config.app_secret or ""
     for _sf in slack_files:
@@ -329,14 +333,9 @@ async def slack_event_webhook(
                 _ct = _r.headers.get("content-type", "")
                 if "text/html" in _ct or _r.content[:15].lower().startswith(b"<!doctype html"):
                     raise ValueError(f"Got HTML response (SSO redirect) — Slack App needs 'files:read' scope. Content-Type: {_ct}")
-                _, _workspace_path, _ = await store_agent_upload(
-                    agent_id,
-                    _fname,
-                    _r.content,
-                    content_type=_ct or None,
-                )
-            _file_user_messages.append(_workspace_path)
-            logger.info(f"[Slack] Saved file {_fname} ({len(_r.content)} bytes)")
+                _save_key = f"{_uploads_prefix}{_fname}"
+                await storage.write_bytes(_save_key, _r.content)
+                _file_user_messages.append(f"workspace/uploads/{_fname}")
         except Exception as _e:
             logger.error(f"[Slack] Failed to download file {_fname}: {_e}")
 

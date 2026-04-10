@@ -12,8 +12,7 @@ The agent reads/writes these files directly. No per-concept tools needed.
 """
 
 import asyncio
-from dataclasses import dataclass
-import fnmatch
+import io
 import json
 import multiprocessing as mp
 import os
@@ -42,29 +41,7 @@ from app.models.user import User as UserModel
 from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
-from app.services.document_conversion import (
-    convert_html_to_pdf as convert_html_file_to_pdf,
-    convert_html_to_pptx as convert_html_file_to_pptx,
-)
-from app.services.focus_service import (
-    complete_focus_item,
-    ensure_focus_item,
-    is_focus_file_path,
-    list_focus_items,
-    upsert_focus_item,
-)
-from app.services.workspace_collaboration import (
-    delete_workspace_file,
-    move_workspace_path,
-    normalize_workspace_path,
-    read_text_if_exists,
-    write_workspace_file,
-)
-from app.services.storage import get_storage_backend, normalize_storage_key
-from app.services.storage_runtime.base import WriteCondition, content_hash_bytes
-from app.services.workspace_locking import workspace_locks
-from app.core.permissions import evaluate_agent_relationship_status, evaluate_human_relationship_status
-from app.services.access_relationships import ensure_access_granted_platform_relationships
+from app.services.storage.factory import get_storage
 from app.config import get_settings
 from app.services.llm.finish import (
     FINISH_PROTOCOL_REMINDER,
@@ -82,6 +59,17 @@ TOOL_MATERIALIZE_MAX_TOTAL_BYTES = 100 * 1024 * 1024
 TEMP_WORKSPACE_DEFAULT_PATHS = ["workspace", "memory", "skills", "focus.md", "soul.md", "HEARTBEAT.md"]
 MAX_EXEC_STDOUT_CAPTURE_BYTES = 1_000_000
 MAX_EXEC_STDERR_CAPTURE_BYTES = 500_000
+
+
+def _storage():
+    """Get the storage backend singleton."""
+    return get_storage()
+
+
+def _validate_rel_path(rel_path: str) -> bool:
+    """Return False if the relative path contains '..' (traversal)."""
+    return ".." not in rel_path.strip("/").split("/")
+
 
 # ─── Tool Config Cache ──────────────────────────────────────────
 # Cache tool configurations to avoid frequent DB queries
@@ -2336,30 +2324,60 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 
 # ─── Workspace initialization ──────────────────────────────────
 
+async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) -> Path:
+    """Initialize agent workspace with standard structure."""
+    ws = WORKSPACE_ROOT / str(agent_id)
 
-async def initialize_agent_workspace(agent_id: uuid.UUID) -> None:
-    """Seed default workspace files into shared storage once at agent creation time."""
-    storage = get_storage_backend()
-    mem_key = normalize_storage_key(f"{agent_id}/memory/memory.md")
-    if not await storage.is_file(mem_key):
-        await storage.write_text(
-            mem_key,
-            "# Memory\n\n_Record important information and knowledge here._\n",
-            encoding="utf-8",
-        )
+    _is_local_storage = _settings.STORAGE_BACKEND == "local"
+    if _is_local_storage:
+        ws.mkdir(parents=True, exist_ok=True)
 
-    soul_key = normalize_storage_key(f"{agent_id}/soul.md")
-    if not await storage.is_file(soul_key):
-        soul_content = "# Personality\n\n_Describe your role and responsibilities._\n"
+        (ws / "skills").mkdir(exist_ok=True)
+        (ws / "workspace").mkdir(exist_ok=True)
+        (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
+        (ws / "memory").mkdir(exist_ok=True)
+
+        if tenant_id:
+            enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
+        else:
+            enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
+        enterprise_dir.mkdir(parents=True, exist_ok=True)
+        (enterprise_dir / "knowledge_base").mkdir(exist_ok=True)
+
+    # Use storage for file operations
+    storage = get_storage()
+
+    # Create default company profile if missing
+    enterprise_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
+    profile_key = f"{enterprise_prefix}company_profile.md"
+    if not await storage.exists(profile_key):
+        profile_content = "# Company Profile\n\n_Edit company information here. All digital employees can access this._\n\n## Basic Info\n- Company Name:\n- Industry:\n- Founded:\n\n## Business Overview\n\n## Organization Structure\n\n## Company Culture\n"
+        await storage.write(profile_key, profile_content)
+
+    # Migrate: move root-level memory.md into memory/ directory
+    old_memory_key = f"{agent_id}/memory.md"
+    new_memory_key = f"{agent_id}/memory/memory.md"
+    if await storage.exists(old_memory_key) and not await storage.exists(new_memory_key):
+        await storage.move(old_memory_key, new_memory_key)
+
+    # Create default memory file if missing
+    if not await storage.exists(new_memory_key):
+        await storage.write(new_memory_key, "# Memory\n\n_Record important information and knowledge here._\n")
+
+    # Create default soul.md if missing
+    soul_key = f"{agent_id}/soul.md"
+    if not await storage.exists(soul_key):
+        # Try to load from DB
         try:
             async with async_session() as db:
                 result = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 agent = result.scalar_one_or_none()
                 if agent and agent.role_description:
-                    soul_content = f"# Personality\n\n{agent.role_description}\n"
+                    await storage.write(soul_key, f"# Personality\n\n{agent.role_description}\n")
+                else:
+                    await storage.write(soul_key, "# Personality\n\n_Describe your role and responsibilities._\n")
         except Exception:
-            pass
-        await storage.write_text(soul_key, soul_content, encoding="utf-8")
+            await storage.write(soul_key, "# Personality\n\n_Describe your role and responsibilities._\n")
 
 
 @dataclass
@@ -2495,9 +2513,9 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
                 "completed_at": t.completed_at.isoformat() if t.completed_at else "",
             })
 
-        tasks_path.write_text(
+        await _storage().write(
+            f"{agent_id}/tasks.json",
             json.dumps(task_list, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
     except Exception as e:
         logger.error(f"[AgentTools] Failed to sync tasks: {e}")
@@ -2808,14 +2826,14 @@ async def _execute_tool_direct(
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
     ws = _agent_workspace_root(agent_id)
     try:
-        if tool_name in {"delete_file", "write_file", "move_file", "edit_file"}:
-            return await _execute_workspace_mutation(
-                tool_name,
-                arguments,
-                agent_id=agent_id,
-                base_dir=ws,
-                session_id=None,
-            )
+        if tool_name == "delete_file":
+            return await _delete_file(ws, arguments.get("path", ""))
+        elif tool_name == "write_file":
+            path = arguments.get("path")
+            content = arguments.get("content", "")
+            if not path:
+                return "Missing path"
+            return await _write_file(ws, path, content, tenant_id=_agent_tenant_id)
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
             return await _run_with_temp_workspace(
@@ -2934,42 +2952,7 @@ async def execute_tool(
 
     try:
         if tool_name == "list_files":
-            result = await _storage_list_dir(agent_id, arguments.get("path", ""), tenant_id=_agent_tenant_id)
-        elif tool_name == "list_focus_items":
-            items = await list_focus_items(agent_id, include_completed=bool(arguments.get("include_completed", True)))
-            if not items:
-                result = "No Focus items."
-            else:
-                lines = ["Focus items:"]
-                for item in items:
-                    label = "completed" if item["status"] == "completed" else "in_progress"
-                    kind = f", {item['kind']}" if item.get("kind") == "system" else ""
-                    if item.get("title"):
-                        lines.append(f"- {item['title']} ({item['key']}) [{label}{kind}]: {item['description']}")
-                    else:
-                        lines.append(f"- {item['key']} [{label}{kind}]: {item['description']}")
-                result = "\n".join(lines)
-        elif tool_name == "upsert_focus_item":
-            description = (arguments.get("description") or "").strip()
-            if not description:
-                return "❌ Missing required argument 'description' for upsert_focus_item"
-            item = await upsert_focus_item(
-                agent_id,
-                key=arguments.get("key"),
-                title=arguments.get("title"),
-                description=description,
-                status="in_progress",
-                kind=arguments.get("kind") or "normal",
-                source=arguments.get("source") or "user",
-                metadata={"tool": "upsert_focus_item"},
-            )
-            result = f"✅ Focus item saved: {item['key']} (title: {item['title']}) — {item['description']}" if item.get("title") else f"✅ Focus item saved: {item['key']} — {item['description']}"
-        elif tool_name == "complete_focus_item":
-            key = (arguments.get("key") or "").strip()
-            if not key:
-                return "❌ Missing required argument 'key' for complete_focus_item"
-            item = await complete_focus_item(agent_id, key=key)
-            result = f"✅ Focus item completed: {key}" if item else f"❌ Focus item not found: {key}"
+            result = await _list_files(ws, arguments.get("path", ""), tenant_id=_agent_tenant_id)
         elif tool_name == "read_file":
             path = arguments.get("path")
             if not path:
@@ -2978,7 +2961,7 @@ async def execute_tool(
                 return "❌ Focus is no longer stored in focus.md. Use list_focus_items, upsert_focus_item, and complete_focus_item."
             offset = int(arguments.get("offset", 0))
             limit = int(arguments.get("limit", 2000))
-            result = await _storage_read_file(agent_id, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
+            result = await _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
         elif tool_name == "read_document":
             path = arguments.get("path")
             if not path:
@@ -3984,13 +3967,19 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
     if not rel_path:
         return "Error: file_path is required"
 
-    # Resolve file path within agent workspace
+    if ".." in rel_path.split("/"):
+        return f"Error: Invalid path: path traversal not allowed"
+
+    storage = get_storage()
+    storage_key = f"{agent_id}/{rel_path}"
+    if not await storage.exists(storage_key):
+        return f"Error: File not found: {rel_path}"
+
+    # For channel uploads, use local filesystem path (required by Feishu/Slack APIs)
     file_path = (ws / rel_path).resolve()
     ws_resolved = ws.resolve()
     if not str(file_path).startswith(str(ws_resolved)):
-        file_path = (WORKSPACE_ROOT / str(agent_id) / rel_path).resolve()
-        if not file_path.exists():
-            return f"Error: File not found: {rel_path}"
+        return f"Error: Access denied: path is outside workspace"
     if not file_path.exists():
         return f"Error: File not found: {rel_path}"
 
@@ -4015,16 +4004,12 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
 
     # Priority 3: Web chat fallback — return download URL
     aid = channel_web_agent_id.get() or str(agent_id)
-    base_abs = (WORKSPACE_ROOT / str(agent_id)).resolve()
-    try:
-        file_rel = str(file_path.resolve().relative_to(base_abs))
-    except ValueError:
-        file_rel = rel_path
+    file_rel = rel_path
     from app.config import get_settings as _gs
     _s = _gs()
     base_url = getattr(_s, 'BASE_URL', '').rstrip('/') or ''
     download_url = f"{base_url}/api/agents/{aid}/files/download?path={file_rel}"
-    msg = f"File ready: [{file_path.name}]({download_url})"
+    msg = f"File ready: [{rel_path.split('/')[-1]}]({download_url})"
     if accompany_msg:
         msg = accompany_msg + "\n\n" + msg
     return msg
@@ -4119,11 +4104,14 @@ async def _send_file_via_feishu(agent_id, config, file_path: Path, member_name: 
         from app.config import get_settings as _gs
         _s = _gs()
         base_url = getattr(_s, 'BASE_URL', '').rstrip('/') or ''
-        base_abs = (WORKSPACE_ROOT / str(agent_id)).resolve()
+
+        # Compute relative path from file_path
+        agent_ws_root = WORKSPACE_ROOT / str(agent_id)
         try:
-            _rel = str(file_path.resolve().relative_to(base_abs))
+            _rel = str(file_path.resolve().relative_to(agent_ws_root.resolve()))
         except ValueError:
             _rel = file_path.name
+
         parts = []
         if message:
             parts.append(message)
@@ -4480,287 +4468,58 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
         return f"❌ Auto-recovery failed: {str(e)[:200]}"
 
 
-def _normalize_tool_rel_path(rel_path: str) -> str:
-    normalized = unicodedata.normalize("NFC", (rel_path or "").strip()).replace("\\", "/")
-    normalized = re.sub(r"/+", "/", normalized).lstrip("./")
-    return normalized
+async def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
+    storage = _storage()
 
+    if rel_path and rel_path.startswith("enterprise_info"):
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        if sub and not _validate_rel_path(sub):
+            return "Access denied for this path"
+        ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
+        list_prefix = f"{ent_prefix}{sub}/" if sub else ent_prefix
+    else:
+        if rel_path and not _validate_rel_path(rel_path):
+            return "Access denied for this path"
+        agent_id_str = ws.name
+        rel_stripped = rel_path.strip("/")
+        list_prefix = f"{agent_id_str}/{rel_stripped}/" if rel_stripped else f"{agent_id_str}/"
 
-def _collapse_filename_for_match(name: str) -> str:
-    return re.sub(r"\s+", "", unicodedata.normalize("NFC", name or "")).casefold()
-
-
-def _allowed_root_for_tool_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> tuple[Path, str]:
-    normalized = _normalize_tool_rel_path(rel_path)
-    if normalized.startswith("enterprise_info"):
-        enterprise_root = (
-            (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-            if tenant_id
-            else (WORKSPACE_ROOT / "enterprise_info").resolve()
-        )
-        sub = normalized[len("enterprise_info"):].lstrip("/")
-        return enterprise_root, sub
-    return ws.resolve(), normalized
-
-
-def _resolve_tool_source_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> Path:
-    root, normalized = _allowed_root_for_tool_path(ws, rel_path, tenant_id=tenant_id)
-    candidate = (root / normalized).resolve() if normalized else root
-    if not str(candidate).startswith(str(root)):
-        raise ValueError("Access denied for this path")
-    if candidate.exists():
-        return candidate
-
-    parent = candidate.parent
-    if parent.exists():
-        wanted = _collapse_filename_for_match(candidate.name)
-        for sibling in parent.iterdir():
-            if _collapse_filename_for_match(sibling.name) == wanted:
-                return sibling
-    return candidate
-
-
-def _resolve_tool_target_path(ws: Path, rel_path: str, tenant_id: str | None = None) -> Path:
-    root, normalized = _allowed_root_for_tool_path(ws, rel_path, tenant_id=tenant_id)
-    candidate = (root / normalized).resolve() if normalized else root
-    if not str(candidate).startswith(str(root)):
-        raise ValueError("❌ Access denied.")
-    return candidate
-
-
-def _tool_storage_key(agent_id: uuid.UUID, rel_path: str, tenant_id: str | None = None) -> tuple[str, str, bool]:
-    normalized = normalize_workspace_path(_normalize_tool_rel_path(rel_path))
-    if _is_enterprise_info_path(normalized):
-        if not tenant_id:
-            return normalize_storage_key("enterprise_info/" + normalized.removeprefix("enterprise_info").lstrip("/")), normalized, True
-        sub = normalized[len("enterprise_info"):].lstrip("/")
-        key = f"enterprise_info_{tenant_id}/{sub}" if sub else f"enterprise_info_{tenant_id}"
-        return normalize_storage_key(key), normalized, True
-    key = f"{agent_id}/{normalized}" if normalized else str(agent_id)
-    return normalize_storage_key(key), normalized, False
-
-
-def _display_size(size_bytes: int) -> str:
-    return f"{size_bytes}B" if size_bytes < 1024 else f"{size_bytes / 1024:.1f}KB"
-
-
-async def _storage_list_dir(agent_id: uuid.UUID, rel_path: str, tenant_id: str | None = None) -> str:
-    storage = get_storage_backend()
-    storage_key, normalized, is_enterprise = _tool_storage_key(agent_id, rel_path, tenant_id)
-
-    exists = await storage.exists(storage_key)
-    is_dir = await storage.is_dir(storage_key)
-    if exists and not is_dir:
-        return f"Path is not a directory: {rel_path}"
-    if not exists and not is_dir and normalized:
+    try:
+        entries = await storage.list(list_prefix)
+    except Exception:
         return f"Directory not found: {rel_path or '/'}"
 
-    items: list[str] = []
+    items = []
+    if not rel_path:
+        ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
+        try:
+            ent_entries = await storage.list(ent_prefix)
+            if ent_entries:
+                items.append("  📁 enterprise_info/ (shared company info)")
+        except Exception:
+            pass
+
     dir_count = 0
     file_count = 0
-    if not normalized and tenant_id:
-        items.append("  📁 enterprise_info/ (shared company info)")
-        dir_count += 1
-
-    entries = await storage.list_dir(storage_key) if exists or is_dir else []
-    for entry in entries:
+    for entry in sorted(entries, key=lambda e: e.name):
         if entry.name.startswith("."):
             continue
         if entry.is_dir:
             dir_count += 1
             try:
-                child_count = len([c for c in await storage.list_dir(entry.key) if not c.name.startswith(".")])
+                children = await storage.list(f"{list_prefix}{entry.name}/")
+                child_count = len([c for c in children if not c.name.startswith(".")])
             except Exception:
                 child_count = 0
             items.append(f"  📁 {entry.name}/ ({child_count} items)")
         else:
             file_count += 1
-            items.append(f"  📄 {entry.name} ({_display_size(entry.size)})")
-
-    if not items:
-        return f"📂 {rel_path or 'root'}: Empty directory (0 files, 0 folders)"
-    header = f"📂 {rel_path or 'root'}: {dir_count} folder(s), {file_count} file(s)\n"
-    return header + "\n".join(items)
-
-
-async def _storage_read_file(
-    agent_id: uuid.UUID,
-    rel_path: str,
-    tenant_id: str | None = None,
-    offset: int = 0,
-    limit: int = 2000,
-) -> str:
-    storage = get_storage_backend()
-    storage_key, normalized, _ = _tool_storage_key(agent_id, rel_path, tenant_id)
-    if not normalized:
-        return "File not found: root"
-    if not await storage.is_file(storage_key):
-        return f"File not found: {rel_path}"
-    try:
-        content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
-        lines = content.splitlines()
-        total_lines = len(lines)
-        start = max(0, offset)
-        end = min(total_lines, start + limit)
-        if start >= total_lines and total_lines > 0:
-            return f"Offset {offset} exceeds file length ({total_lines} lines total)"
-        selected_lines = lines[start:end]
-        output = "\n".join(f"{i + 1:6}\t{line}" for i, line in enumerate(selected_lines, start=start))
-        if total_lines > end:
-            output += f"\n\n... [{total_lines - end} more lines not shown, lines {end + 1}-{total_lines}]"
-        header = f"📄 {rel_path} (lines {start + 1 if total_lines else 0}-{end} of {total_lines})\n"
-        return header + output
-    except Exception as e:
-        return f"Read failed: {e}"
-
-
-async def _storage_walk_files(storage, root_key: str) -> list:
-    out = []
-    for entry in await storage.list_dir(root_key):
-        if entry.name.startswith("."):
-            continue
-        out.append(entry)
-        if entry.is_dir:
-            out.extend(await _storage_walk_files(storage, entry.key))
-    return out
-
-
-def _relative_storage_display(entry_key: str, base_key: str, display_base: str) -> str:
-    rel = entry_key.removeprefix(base_key.rstrip("/") + "/")
-    return f"{display_base.rstrip('/')}/{rel}".strip("/") if display_base else rel
-
-
-async def _storage_search_files(
-    agent_id: uuid.UUID,
-    pattern: str,
-    path: str = ".",
-    file_pattern: str = "*",
-    ignore_case: bool = False,
-    tenant_id: str | None = None,
-) -> str:
-    storage = get_storage_backend()
-    rel_path = "" if path in ("", ".") else path
-    base_key, normalized, _ = _tool_storage_key(agent_id, rel_path, tenant_id)
-    if not await storage.is_dir(base_key) and normalized:
-        return f"Directory not found: {path}"
-    flags = re.IGNORECASE if ignore_case else 0
-    try:
-        regex = re.compile(pattern, flags)
-    except re.error as e:
-        return f"Invalid regex pattern: {e}"
-
-    results: list[str] = []
-    total_matches = 0
-    files_searched = 0
-    entries = await _storage_walk_files(storage, base_key) if await storage.is_dir(base_key) else []
-    for entry in entries:
-        if entry.is_dir:
-            continue
-        rel_display = _relative_storage_display(entry.key, base_key, normalized)
-        if not fnmatch.fnmatch(Path(rel_display).name, file_pattern) and not fnmatch.fnmatch(rel_display, file_pattern):
-            continue
-        if Path(rel_display).suffix.lower() in {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}:
-            continue
-        files_searched += 1
-        try:
-            content = await storage.read_text(entry.key, encoding="utf-8", errors="ignore")
-        except Exception:
-            continue
-        for i, line in enumerate(content.splitlines(), 1):
-            if regex.search(line):
-                results.append(f"{rel_display}:{i}: {line.strip()[:100]}")
-                total_matches += 1
-                if len(results) >= 50:
-                    break
-        if len(results) >= 50:
-            break
-    if not results:
-        return f"No matches found for pattern '{pattern}' in {files_searched} file(s)"
-    truncated = total_matches > len(results)
-    truncation_note = f" (showing first {len(results)} of {total_matches}+ — refine pattern or path for more)" if truncated else ""
-    return f"🔍 Found {total_matches}+ match(es) in {files_searched} file(s) for pattern '{pattern}'{truncation_note}:\n" + "\n".join(results)
-
-
-async def _storage_find_files(
-    agent_id: uuid.UUID,
-    pattern: str,
-    path: str = ".",
-    tenant_id: str | None = None,
-) -> str:
-    storage = get_storage_backend()
-    rel_path = "" if path in ("", ".") else path
-    base_key, normalized, _ = _tool_storage_key(agent_id, rel_path, tenant_id)
-    if not await storage.is_dir(base_key) and normalized:
-        return f"Directory not found: {path}"
-    entries = await _storage_walk_files(storage, base_key) if await storage.is_dir(base_key) else []
-    matches = []
-    for entry in entries:
-        rel_display = _relative_storage_display(entry.key, base_key, normalized)
-        if fnmatch.fnmatch(rel_display, pattern) or fnmatch.fnmatch(Path(rel_display).name, pattern):
-            matches.append((entry, rel_display))
-    if not matches:
-        return f"No files matching pattern: {pattern}"
-    results = []
-    dir_count = 0
-    file_count = 0
-    for entry, rel_display in matches[:100]:
-        if entry.is_dir:
-            dir_count += 1
-            results.append(f"📁 {rel_display}/")
-        else:
-            file_count += 1
-            results.append(f"📄 {rel_display} ({_display_size(entry.size)})")
-    return f"📂 Found {len(matches)} item(s) ({dir_count} dirs, {file_count} files) matching '{pattern}':\n" + "\n".join(results)
-
-
-def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
-    if rel_path and rel_path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        # Remap: enterprise_info/... → enterprise_info_{tenant_id}/...
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
-        target = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(target).startswith(str(enterprise_root)):
-            return "Access denied for this path"
-    else:
-        target = (ws / rel_path) if rel_path else ws
-        target = target.resolve()
-        if not str(target).startswith(str(ws.resolve())):
-            return "Access denied for this path"
-
-    if not target.exists():
-        return f"Directory not found: {rel_path or '/'}"
-
-    items = []
-    # If listing root, also show enterprise_info entry
-    if not rel_path:
-        if tenant_id:
-            enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
-        else:
-            enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
-        if enterprise_dir.exists():
-            items.append("  📁 enterprise_info/ (shared company info)")
-
-    dir_count = 0
-    file_count = 0
-    for p in sorted(target.iterdir()):
-        if p.name.startswith("."):
-            continue
-        if p.is_dir():
-            dir_count += 1
-            child_count = len([c for c in p.iterdir() if not c.name.startswith(".")])
-            items.append(f"  📁 {p.name}/ ({child_count} items)")
-        elif p.is_file():
-            file_count += 1
-            size_bytes = p.stat().st_size
+            size_bytes = entry.size
             if size_bytes < 1024:
                 size_str = f"{size_bytes}B"
             else:
                 size_str = f"{size_bytes/1024:.1f}KB"
-            items.append(f"  📄 {p.name} ({size_str})")
+            items.append(f"  📄 {entry.name} ({size_str})")
 
     if not items:
         return f"📂 {rel_path or 'root'}: Empty directory (0 files, 0 folders)"
@@ -4769,7 +4528,7 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     return header + "\n".join(items)
 
 
-def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: int = 0, limit: int = 2000) -> str:
+async def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: int = 0, limit: int = 2000) -> str:
     """Read file contents with optional line range support.
 
     Args:
@@ -4782,16 +4541,23 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
     Returns:
         File content with line numbers, or error message
     """
-    try:
-        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
-    except ValueError as exc:
-        return str(exc)
+    if rel_path and rel_path.startswith("enterprise_info"):
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        if sub and not _validate_rel_path(sub):
+            return "Access denied for this path"
+        ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
+        key = f"{ent_prefix}{sub}" if sub else ent_prefix.rstrip("/")
+    else:
+        if not _validate_rel_path(rel_path):
+            return "Access denied for this path"
+        key = f"{ws.name}/{rel_path.strip('/')}"
 
-    if not file_path.exists():
+    storage = _storage()
+    if not await storage.exists(key):
         return f"File not found: {rel_path}"
 
     try:
-        content = file_path.read_text(encoding="utf-8", errors="replace")
+        content = await storage.read(key)
         lines = content.splitlines()
         total_lines = len(lines)
 
@@ -4823,35 +4589,20 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
         return f"Read failed: {e}"
 
 
-_READ_DOCUMENT_MAX_FILE_BYTES = 50 * 1024 * 1024
-_READ_DOCUMENT_TIMEOUT_SECONDS = 25
-_READ_DOCUMENT_FALLBACK_TIMEOUT_SECONDS = 10
-_READ_DOCUMENT_MAX_CELL_CHARS = 500
-_READ_DOCUMENT_MAX_COLUMNS = 80
-_READ_DOCUMENT_MAX_XLSX_CELLS = 20000
+async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
+    """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
+    if not _validate_rel_path(rel_path):
+        return "Access denied for this path"
 
+    if rel_path and rel_path.startswith("enterprise_info"):
+        ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        key = f"{ent_prefix}{sub}" if sub else ent_prefix.rstrip("/")
+    else:
+        key = f"{ws.name}/{rel_path.strip('/')}"
 
-def _safe_document_cell_text(value: Any) -> str:
-    """Convert spreadsheet/table values without letting pathological cells dominate CPU."""
-    if value is None:
-        return ""
-    if isinstance(value, int) and value.bit_length() > 4096:
-        return "[large integer omitted]"
-    text = str(value)
-    if len(text) > _READ_DOCUMENT_MAX_CELL_CHARS:
-        return text[:_READ_DOCUMENT_MAX_CELL_CHARS] + "...[cell truncated]"
-    return text
-
-
-def _read_document_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
-    """Synchronous document extraction. Must run outside the uvicorn event loop."""
-    max_chars = min(max(int(max_chars), 1), 20000)
-    try:
-        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
-    except ValueError as exc:
-        return str(exc)
-
-    if not file_path.exists():
+    storage = _storage()
+    if not await storage.exists(key):
         return f"File not found: {rel_path}"
     if file_path.is_dir():
         return f"Path is a directory, not a document: {rel_path}"
@@ -4865,24 +4616,25 @@ def _read_document_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_i
             "Please split or convert it to a smaller text/Markdown excerpt first."
         )
 
-    ext = file_path.suffix.lower()
+    ext = Path(rel_path).suffix.lower()
     try:
         if ext == ".pdf":
             import pdfplumber
+            data = await storage.read_bytes(key)
             text_parts = []
-            with pdfplumber.open(str(file_path)) as pdf:
-                for i, page in enumerate(pdf.pages[:50]):  # Limit to 50 pages
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
+                for i, page in enumerate(pdf.pages[:50]):
                     page_text = page.extract_text() or ""
                     if page_text:
                         text_parts.append(f"--- Page {i+1} ---\n{page_text}")
                     if sum(len(part) for part in text_parts) >= max_chars:
                         break
             content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
-
         elif ext == ".docx":
             from docx import Document
             from docx.oxml.ns import qn
-            doc = Document(str(file_path))
+            data = await storage.read_bytes(key)
+            doc = Document(io.BytesIO(data))
             lines: list[str] = []
 
             def _extract_para_text(para) -> str:
@@ -4892,35 +4644,28 @@ def _read_document_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_i
                 """Flatten a table into readable text."""
                 rows = []
                 for row in table.rows:
-                    cells = [_safe_document_cell_text(cell.text).strip() for cell in row.cells[:_READ_DOCUMENT_MAX_COLUMNS]]
-                    if not cells:
-                        continue
-                    # Remove duplicate adjacent cells (merged cells repeat)
+                    cells = [cell.text.strip() for cell in row.cells]
                     deduped = [cells[0]] + [c for i, c in enumerate(cells[1:]) if c != cells[i]]
                     row_str = " | ".join(c for c in deduped if c)
                     if row_str:
                         rows.append(row_str)
                 return "\n".join(rows)
 
-            # 1. Main paragraphs
             for para in doc.paragraphs:
                 t = _extract_para_text(para)
                 if t:
                     lines.append(t)
 
-            # 2. Tables in main body
             for table in doc.tables:
                 t = _extract_table(table)
                 if t:
                     lines.append(t)
 
-            # 3. Text boxes / drawing shapes (wmf/shapes in body XML)
             for shape in doc.element.body.iter(qn("w:txbxContent")):
                 for child in shape.iter(qn("w:t")):
                     if child.text and child.text.strip():
                         lines.append(child.text.strip())
 
-            # 4. Headers and footers
             for section in doc.sections:
                 for hf in [section.header, section.footer]:
                     if hf and hf.is_linked_to_previous is False:
@@ -4930,13 +4675,12 @@ def _read_document_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_i
                                 lines.append(t)
 
             content = "\n".join(lines) if lines else "(Document is empty or uses unsupported formatting)"
-
         elif ext == ".xlsx":
             from openpyxl import load_workbook
-            wb = load_workbook(str(file_path), read_only=True, data_only=True)
+            data = await storage.read_bytes(key)
+            wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
             sheets = []
-            cell_count = 0
-            for ws_name in wb.sheetnames[:10]:  # Limit to 10 sheets
+            for ws_name in wb.sheetnames[:10]:
                 sheet = wb[ws_name]
                 rows = []
                 for row in sheet.iter_rows(max_row=200, max_col=_READ_DOCUMENT_MAX_COLUMNS, values_only=True):
@@ -4957,7 +4701,8 @@ def _read_document_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_i
 
         elif ext == ".pptx":
             from pptx import Presentation
-            prs = Presentation(str(file_path))
+            data = await storage.read_bytes(key)
+            prs = Presentation(io.BytesIO(data))
             slides = []
             for i, slide in enumerate(prs.slides[:50]):
                 texts = []
@@ -4969,7 +4714,7 @@ def _read_document_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_i
             content = "\n\n".join(slides) if slides else "(PPT is empty)"
 
         elif ext in (".txt", ".md", ".json", ".csv", ".log"):
-            content = file_path.read_text(encoding="utf-8", errors="replace")
+            content = await storage.read(key)
 
         else:
             return f"Unsupported file format: {ext}. Supported: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV"
@@ -4984,541 +4729,83 @@ def _read_document_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_i
         return f"Document read failed: {str(e)[:200]}"
 
 
-def _read_document_worker(
-    out_queue: mp.Queue,
-    ws_str: str,
-    rel_path: str,
-    max_chars: int,
-    tenant_id: str | None,
-) -> None:
-    try:
-        out_queue.put(("ok", _read_document_sync(Path(ws_str), rel_path, max_chars=max_chars, tenant_id=tenant_id)))
-    except BaseException as exc:
-        out_queue.put(("error", f"Document read failed: {str(exc)[:200]}"))
-
-
-def _read_pdf_fast_sync(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
-    """Fast PDF text extraction fallback for files that make pdfplumber/pdfminer hang."""
-    max_chars = min(max(int(max_chars), 1), 20000)
-    try:
-        file_path = _resolve_tool_source_path(ws, rel_path, tenant_id=tenant_id)
-    except ValueError as exc:
-        return str(exc)
-
-    if not file_path.exists():
-        return f"File not found: {rel_path}"
-    if file_path.is_dir():
-        return f"Path is a directory, not a document: {rel_path}"
-
-    try:
-        import fitz
-
-        text_parts = []
-        with fitz.open(str(file_path)) as doc:
-            for i, page in enumerate(doc[:50]):
-                page_text = page.get_text("text") or ""
-                if page_text:
-                    text_parts.append(f"--- Page {i+1} ---\n{page_text}")
-                if sum(len(part) for part in text_parts) >= max_chars:
-                    break
-        content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
-        if len(content) > max_chars:
-            content = content[:max_chars] + f"\n\n...[truncated, {len(content)} chars total]"
-        return content
-    except ImportError as exc:
-        return f"PDF fallback extractor unavailable: {exc}. Install: pip install PyMuPDF"
-    except Exception as exc:
-        return f"PDF fallback extraction failed: {str(exc)[:200]}"
-
-
-def _read_pdf_fast_worker(
-    out_queue: mp.Queue,
-    ws_str: str,
-    rel_path: str,
-    max_chars: int,
-    tenant_id: str | None,
-) -> None:
-    try:
-        out_queue.put(("ok", _read_pdf_fast_sync(Path(ws_str), rel_path, max_chars=max_chars, tenant_id=tenant_id)))
-    except BaseException as exc:
-        out_queue.put(("error", f"PDF fallback extraction failed: {str(exc)[:200]}"))
-
-
-def _read_pdf_fast_with_timeout(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
-    ctx = mp.get_context("spawn")
-    out_queue: mp.Queue = ctx.Queue(maxsize=1)
-    proc = ctx.Process(
-        target=_read_pdf_fast_worker,
-        args=(out_queue, str(ws), rel_path, max_chars, tenant_id),
-        daemon=True,
-    )
-    proc.start()
-    proc.join(_READ_DOCUMENT_FALLBACK_TIMEOUT_SECONDS)
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(2)
-        if proc.is_alive():
-            proc.kill()
-            proc.join(1)
-        return (
-            f"Document read timed out after {_READ_DOCUMENT_TIMEOUT_SECONDS}s, "
-            f"and PDF fallback also timed out after {_READ_DOCUMENT_FALLBACK_TIMEOUT_SECONDS}s. "
-            "The file may be too large or too complex to extract safely."
-        )
-    try:
-        status, payload = out_queue.get_nowait()
-    except queue.Empty:
-        if proc.exitcode:
-            return f"PDF fallback extraction failed: extractor exited with code {proc.exitcode}"
-        return "PDF fallback extraction failed: extractor returned no content"
-    if status == "ok":
-        return payload
-    return str(payload)
-
-
-def _read_document_with_timeout(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
-    """Run document parsing in a killable child process so one bad file cannot freeze the site."""
-    ctx = mp.get_context("spawn")
-    out_queue: mp.Queue = ctx.Queue(maxsize=1)
-    proc = ctx.Process(
-        target=_read_document_worker,
-        args=(out_queue, str(ws), rel_path, max_chars, tenant_id),
-        daemon=True,
-    )
-    proc.start()
-    proc.join(_READ_DOCUMENT_TIMEOUT_SECONDS)
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(2)
-        if proc.is_alive():
-            proc.kill()
-            proc.join(1)
-        if Path(rel_path).suffix.lower() == ".pdf":
-            return _read_pdf_fast_with_timeout(ws, rel_path, max_chars=max_chars, tenant_id=tenant_id)
-        return (
-            f"Document read timed out after {_READ_DOCUMENT_TIMEOUT_SECONDS}s. "
-            "The file may be too large or too complex to extract safely. "
-            "Please split it, convert it to text/Markdown, or read a smaller excerpt."
-        )
-    try:
-        status, payload = out_queue.get_nowait()
-    except queue.Empty:
-        if proc.exitcode:
-            return f"Document read failed: extractor exited with code {proc.exitcode}"
-        return "Document read failed: extractor returned no content"
-    if status == "ok":
-        return payload
-    return str(payload)
-
-
-async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
-    """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
-    return await asyncio.to_thread(_read_document_with_timeout, ws, rel_path, max_chars, tenant_id)
-
-
-async def _read_document_from_storage(
-    agent_id: uuid.UUID,
-    rel_path: str,
-    max_chars: int = 8000,
-    tenant_id: str | None = None,
-) -> str:
-    temp_workspace = await _prepare_temp_workspace(agent_id, tenant_id=tenant_id, paths=[rel_path])
-    try:
-        return await _read_document(temp_workspace.root, rel_path, max_chars=max_chars, tenant_id=None)
-    finally:
-        temp_workspace.cleanup()
-
-
-# ─── Format Conversion Tools ────────────────────────────────────
-
-async def _convert_csv_to_xlsx(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
-    source_path = arguments.get("source_path")
-    target_path = arguments.get("target_path")
-    if not source_path or not target_path:
-        return "❌ Missing 'source_path' or 'target_path'."
-    try:
-        src_file = _resolve_tool_source_path(ws, source_path)
-        tgt_file = _resolve_tool_target_path(ws, target_path)
-    except ValueError as exc:
-        return str(exc)
-    if not src_file.exists(): return f"❌ Source file not found: {source_path}"
-    
-    try:
-        import csv
-        from openpyxl import Workbook
-
-        text = src_file.read_text(encoding="utf-8-sig")
-        lines = [line.strip() for line in text.splitlines() if line.strip()][:10]
-        candidates = [",", "，", ";", "\t", "|"]
-        delimiter = ","
-        if lines:
-            scores = {candidate: sum(line.count(candidate) for line in lines) for candidate in candidates}
-            if any(scores.values()):
-                delimiter = max(scores, key=scores.get)
-        
-        wb = Workbook()
-        ws_sheet = wb.active
-        with src_file.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.reader(f, delimiter=delimiter)
-            for row in reader:
-                values = list(row)
-                while values and not str(values[-1] or "").strip():
-                    values.pop()
-                if values:
-                    ws_sheet.append(values)
-        
-        tgt_file.parent.mkdir(parents=True, exist_ok=True)
-        wb.save(str(tgt_file))
-        return f"✅ Successfully converted CSV to Excel: {target_path}"
-    except Exception as e:
-        logger.exception(f"Convert CSV to XLSX failed: {e}")
-        return f"❌ Conversion failed: {e}"
-
-async def _convert_html_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
-    source_path = arguments.get("source_path")
-    target_path = arguments.get("target_path")
-    if not source_path or not target_path:
-        return "❌ Missing 'source_path' or 'target_path'."
-    try:
-        src_file = _resolve_tool_source_path(ws, source_path)
-        tgt_file = _resolve_tool_target_path(ws, target_path)
-    except ValueError as exc:
-        return str(exc)
-    if not src_file.exists():
-        return f"❌ Source file not found: {source_path}"
-
-    return await convert_html_file_to_pdf(src_file, tgt_file, str(target_path), arguments)
-
-
-async def _convert_html_to_pptx(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
-    source_path = arguments.get("source_path")
-    target_path = arguments.get("target_path")
-    if not source_path or not target_path:
-        return "❌ Missing paths."
-    try:
-        src_file = _resolve_tool_source_path(ws, source_path)
-        tgt_file = _resolve_tool_target_path(ws, target_path)
-    except ValueError as exc:
-        return str(exc)
-    if not src_file.exists():
-        return "❌ Source file not found."
-
-    return await convert_html_file_to_pptx(src_file, tgt_file, str(target_path), ws, arguments)
-
-async def _convert_markdown_to_docx(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
-    source_path = arguments.get("source_path")
-    target_path = arguments.get("target_path")
-    if not source_path or not target_path: return "❌ Missing paths."
-    try:
-        src_file = _resolve_tool_source_path(ws, source_path)
-        tgt_file = _resolve_tool_target_path(ws, target_path)
-    except ValueError as exc:
-        return str(exc)
-    if not src_file.exists(): return "❌ Source file not found."
-
-    try:
-        from docx import Document
-        md_text = src_file.read_text(encoding="utf-8")
-        doc = Document()
-
-        def flush_paragraph(lines: list[str]) -> None:
-            text = " ".join(line.strip() for line in lines if line.strip()).strip()
-            if text:
-                doc.add_paragraph(text)
-
-        paragraph_lines: list[str] = []
-        lines = md_text.splitlines()
-        i = 0
-        while i < len(lines):
-            line = lines[i].rstrip()
-            stripped = line.strip()
-
-            if not stripped:
-                flush_paragraph(paragraph_lines)
-                paragraph_lines = []
-                i += 1
-                continue
-
-            heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
-            if heading_match:
-                flush_paragraph(paragraph_lines)
-                paragraph_lines = []
-                level = min(len(heading_match.group(1)), 6)
-                doc.add_heading(heading_match.group(2).strip(), level=level)
-                i += 1
-                continue
-
-            bullet_match = re.match(r"^[-*+]\s+(.*)$", stripped)
-            ordered_match = re.match(r"^\d+\.\s+(.*)$", stripped)
-            if bullet_match or ordered_match:
-                flush_paragraph(paragraph_lines)
-                paragraph_lines = []
-                text = (bullet_match or ordered_match).group(1).strip()
-                if text:
-                    doc.add_paragraph(text, style="List Bullet" if bullet_match else "List Number")
-                i += 1
-                continue
-
-            if "|" in stripped:
-                table_lines: list[str] = []
-                flush_paragraph(paragraph_lines)
-                paragraph_lines = []
-                while i < len(lines) and "|" in lines[i]:
-                    candidate = lines[i].strip()
-                    if candidate:
-                        table_lines.append(candidate)
-                    i += 1
-                data_rows = []
-                for raw in table_lines:
-                    cells = [cell.strip() for cell in raw.strip("|").split("|")]
-                    if cells and all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells):
-                        continue
-                    if any(cell for cell in cells):
-                        data_rows.append(cells)
-                if data_rows:
-                    table = doc.add_table(rows=len(data_rows), cols=max(len(row) for row in data_rows))
-                    table.style = "Table Grid"
-                    for row_idx, row in enumerate(data_rows):
-                        for col_idx, cell in enumerate(row):
-                            table.cell(row_idx, col_idx).text = cell
-                continue
-
-            paragraph_lines.append(stripped)
-            i += 1
-
-        flush_paragraph(paragraph_lines)
-
-        tgt_file.parent.mkdir(parents=True, exist_ok=True)
-        doc.save(str(tgt_file))
-        return f"✅ Successfully converted Markdown to Word: {target_path}"
-    except Exception as e:
-        logger.exception(f"Convert MD to Docx failed: {e}")
-        return f"❌ Conversion failed: {e}"
-
-async def _convert_markdown_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
-    source_path = arguments.get("source_path")
-    target_path = arguments.get("target_path")
-    if not source_path or not target_path: return "❌ Missing paths."
-    try:
-        src_file = _resolve_tool_source_path(ws, source_path)
-        tgt_file = _resolve_tool_target_path(ws, target_path)
-    except ValueError as exc:
-        return str(exc)
-    if not src_file.exists(): return "❌ Source file not found."
-
-    try:
-        from weasyprint import HTML
-
-        md_text = src_file.read_text(encoding="utf-8")
-
-        def escape_html(text: str) -> str:
-            return (
-                text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace('"', "&quot;")
-            )
-
-        def render_inline(text: str) -> str:
-            text = escape_html(text)
-            text = re.sub(r"\*\*\*(.*?)\*\*\*", r"<strong><em>\1</em></strong>", text)
-            text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text)
-            text = re.sub(r"__(.*?)__", r"<strong>\1</strong>", text)
-            text = re.sub(r"\*(.*?)\*", r"<em>\1</em>", text)
-            text = re.sub(r"_(.*?)_", r"<em>\1</em>", text)
-            text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
-            text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
-            return text
-
-        def is_table_separator(line: str) -> bool:
-            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-            return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
-
-        html_parts: list[str] = []
-        lines = md_text.splitlines()
-        in_list = False
-        i = 0
-        while i < len(lines):
-            raw_line = lines[i]
-            line = raw_line.rstrip()
-            stripped = line.strip()
-            if not stripped:
-                if in_list:
-                    html_parts.append("</ul>")
-                    in_list = False
-                i += 1
-                continue
-
-            heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
-            if heading_match:
-                if in_list:
-                    html_parts.append("</ul>")
-                    in_list = False
-                level = len(heading_match.group(1))
-                html_parts.append(f"<h{level}>{render_inline(heading_match.group(2).strip())}</h{level}>")
-                i += 1
-                continue
-
-            bullet_match = re.match(r"^[-*+]\s+(.*)$", stripped)
-            if bullet_match:
-                if not in_list:
-                    html_parts.append("<ul>")
-                    in_list = True
-                html_parts.append(f"<li>{render_inline(bullet_match.group(1).strip())}</li>")
-                i += 1
-                continue
-
-            if "|" in stripped and i + 1 < len(lines) and is_table_separator(lines[i + 1].strip()):
-                if in_list:
-                    html_parts.append("</ul>")
-                    in_list = False
-                header_cells = [render_inline(cell.strip()) for cell in stripped.strip("|").split("|")]
-                table_rows: list[list[str]] = []
-                i += 2
-                while i < len(lines) and "|" in lines[i].strip():
-                    row = [render_inline(cell.strip()) for cell in lines[i].strip().strip("|").split("|")]
-                    table_rows.append(row)
-                    i += 1
-                html_parts.append("<table><thead><tr>" + "".join(f"<th>{cell}</th>" for cell in header_cells) + "</tr></thead><tbody>")
-                html_parts.extend(
-                    "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
-                    for row in table_rows
-                )
-                html_parts.append("</tbody></table>")
-                continue
-
-            if in_list:
-                html_parts.append("</ul>")
-                in_list = False
-            html_parts.append(f"<p>{render_inline(stripped)}</p>")
-            i += 1
-
-        if in_list:
-            html_parts.append("</ul>")
-
-        html_text = "\n".join(html_parts)
-
-        full_html = (
-            "<html><head><meta charset='utf-8'><style>"
-            "body{font-family:'WenQuanYi Micro Hei','Noto Sans CJK SC',sans-serif;line-height:1.65;padding:2em;color:#111827;}"
-            "h1,h2,h3{line-height:1.25;margin:1.2em 0 .55em;}"
-            "p{margin:.55em 0;}"
-            "table{width:100%;border-collapse:collapse;margin:1em 0;font-size:12px;}"
-            "th,td{border:1px solid #d8dee9;padding:7px 9px;text-align:left;vertical-align:top;}"
-            "th{background:#f3f4f6;font-weight:700;}"
-            "code{background:#f3f4f6;padding:1px 4px;border-radius:4px;}"
-            "a{color:#2563eb;text-decoration:none;}"
-            "</style></head><body>"
-            f"{html_text}"
-            "</body></html>"
-        )
-
-        tgt_file.parent.mkdir(parents=True, exist_ok=True)
-        HTML(string=full_html, base_url=str(ws.resolve())).write_pdf(str(tgt_file))
-        return f"✅ Successfully converted Markdown to PDF: {target_path}"
-    except Exception as e:
-        logger.exception(f"Convert MD to PDF failed: {e}")
-        return f"❌ Conversion failed: {e}"
-
-
-def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = None) -> str:
-    # Protect legacy DB-backed tasks.json from direct writes
+async def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = None) -> str:
     if rel_path.strip("/") == "tasks.json":
         return "tasks.json is a legacy read-only snapshot. Use the task APIs/UI to manage tasks."
 
     if _is_enterprise_info_path(rel_path):
         return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
 
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
     if rel_path and rel_path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
         sub = rel_path[len("enterprise_info"):].lstrip("/")
         if not sub:
             return "Write failed: please provide a file path under enterprise_info/, e.g. enterprise_info/knowledge_base/report.md"
-        file_path = (enterprise_root / sub).resolve()
-        if not str(file_path).startswith(str(enterprise_root)):
+        if not _validate_rel_path(sub):
             return "Access denied for this path"
+        ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
+        key = f"{ent_prefix}{sub}"
     else:
-        file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
+        if not _validate_rel_path(rel_path):
             return "Access denied for this path"
+        key = f"{ws.name}/{rel_path.strip('/')}"
 
     try:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content, encoding="utf-8")
+        await _storage().write(key, content)
         return f"✅ Written to {rel_path} ({len(content)} chars)"
     except Exception as e:
         return f"Write failed: {e}"
 
 
-def _delete_file(ws: Path, rel_path: str) -> str:
+async def _delete_file(ws: Path, rel_path: str) -> str:
     protected = {"tasks.json", "soul.md"}
     if rel_path.strip("/") in protected:
         return f"{rel_path} cannot be deleted (protected)"
     if _is_enterprise_info_path(rel_path):
         return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
 
-    file_path = (ws / rel_path).resolve()
-    if not str(file_path).startswith(str(ws.resolve())):
+    if not _validate_rel_path(rel_path):
         return "Access denied for this path"
-    if not file_path.exists():
-        return f"File not found: {rel_path}"
 
-    try:
-        if file_path.is_dir():
-            import shutil
-            shutil.rmtree(file_path)
+    storage = _storage()
+    key = f"{ws.name}/{rel_path.strip('/')}"
+
+    file_exists = await storage.exists(key)
+    if not file_exists:
+        children = await storage.list(f"{key}/")
+        if not children:
+            return f"File not found: {rel_path}"
+        try:
+            await storage.delete_prefix(f"{key}/")
             return f"✅ Deleted directory {rel_path}"
-        else:
-            file_path.unlink()
-            return f"✅ Deleted {rel_path}"
-    except Exception as e:
-        return f"Delete failed: {e}"
-
-
-def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replace_all: bool = False, tenant_id: str | None = None) -> str:
-    """Perform surgical string replacement in a file.
-
-    Args:
-        ws: Workspace root path
-        rel_path: Relative file path
-        old_string: Exact text to find and replace
-        new_string: Replacement text
-        replace_all: Replace all occurrences if True
-        tenant_id: Optional tenant ID for enterprise_info
-
-    Returns:
-        Success message or error
-    """
-    if _is_enterprise_info_path(rel_path):
-        return "enterprise_info is shared company context and is read-only for agents. Ask an admin to update it."
-
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
-    if rel_path and rel_path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
-        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(file_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
+        except Exception as e:
+            return f"Delete failed: {e}"
     else:
-        file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+        try:
+            await storage.delete(key)
+            return f"✅ Deleted {rel_path}"
+        except Exception as e:
+            return f"Delete failed: {e}"
 
-    if not file_path.exists():
+
+async def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replace_all: bool = False, tenant_id: str | None = None) -> str:
+    """Perform surgical string replacement in a file."""
+    if rel_path and rel_path.startswith("enterprise_info"):
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        if sub and not _validate_rel_path(sub):
+            return "Access denied for this path"
+        ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
+        key = f"{ent_prefix}{sub}" if sub else ent_prefix.rstrip("/")
+    else:
+        if not _validate_rel_path(rel_path):
+            return "Access denied for this path"
+        key = f"{ws.name}/{rel_path.strip('/')}"
+
+    storage = _storage()
+    if not await storage.exists(key):
         return f"File not found: {rel_path}"
 
-    if not file_path.is_file():
-        return f"Not a file: {rel_path}"
-
     try:
-        content = file_path.read_text(encoding="utf-8")
+        content = await storage.read(key)
 
         if old_string not in content:
             return f"❌ 'old_string' not found in {rel_path}. Please check the exact text including whitespace and newlines."
@@ -5527,164 +4814,146 @@ def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replac
             new_content = content.replace(old_string, new_string)
             count = content.count(old_string)
         else:
-            # Ensure uniqueness for single replacement
             count = content.count(old_string)
             if count > 1:
                 return f"❌ 'old_string' appears {count} times in {rel_path}. Use replace_all=true or provide more context to make the match unique."
             new_content = content.replace(old_string, new_string, 1)
             count = 1
 
-        file_path.write_text(new_content, encoding="utf-8")
+        await storage.write(key, new_content)
         return f"✅ Replaced {count} occurrence(s) in {rel_path}"
 
     except Exception as e:
         return f"Edit failed: {e}"
 
 
-def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "*", ignore_case: bool = False, tenant_id: str | None = None) -> str:
-    """Search for content patterns across files using regex.
+async def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "*", ignore_case: bool = False, tenant_id: str | None = None) -> str:
+    """Search for content patterns across files using regex."""
+    storage = _storage()
+    _BINARY_EXTS = {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}
 
-    Args:
-        ws: Workspace root path
-        pattern: Regex pattern to search for
-        path: Directory to search in (relative to workspace root)
-        file_pattern: File pattern to match (glob)
-        ignore_case: Case-insensitive search
-        tenant_id: Optional tenant ID for enterprise_info
-
-    Returns:
-        Matching lines with file paths and line numbers
-    """
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
     if path and path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
         sub = path[len("enterprise_info"):].lstrip("/")
-        search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(search_path).startswith(str(enterprise_root)):
+        if sub and not _validate_rel_path(sub):
             return "Access denied for this path"
-        ws_for_relative = enterprise_root
+        ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
+        search_prefix = f"{ent_prefix}{sub}/" if sub else ent_prefix
     else:
-        search_path = (ws / path).resolve() if path and path != "." else ws
-        if not str(search_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
-        ws_for_relative = ws
-
-    if not search_path.exists():
-        return f"Directory not found: {path}"
+        if path and path != ".":
+            if not _validate_rel_path(path):
+                return "Access denied for this path"
+            search_prefix = f"{ws.name}/{path.strip('/')}/"
+        else:
+            search_prefix = f"{ws.name}/"
 
     flags = re.IGNORECASE if ignore_case else 0
-
     try:
         regex = re.compile(pattern, flags)
     except re.error as e:
         return f"Invalid regex pattern: {e}"
 
+    all_keys: list[str] = []
+    stack = [search_prefix]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = await storage.list(current)
+        except Exception:
+            continue
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir:
+                stack.append(f"{current}{entry.name}/")
+            else:
+                suffix = Path(entry.name).suffix.lower()
+                if suffix not in _BINARY_EXTS:
+                    all_keys.append(f"{current}{entry.name}")
+
     results = []
     total_matches = 0
     files_searched = 0
 
-    # Use rglob for recursive search
-    for file_path in search_path.rglob(file_pattern):
-        if not file_path.is_file():
-            continue
-        # Skip hidden files and common binary/extensions
-        if file_path.name.startswith("."):
-            continue
-        suffix = file_path.suffix.lower()
-        if suffix in {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}:
-            continue
-
+    for file_key in all_keys:
         files_searched += 1
         try:
-            content = file_path.read_text(encoding="utf-8", errors="ignore")
+            content = await storage.read(file_key)
+            rel_display = file_key[len(search_prefix):] if file_key.startswith(search_prefix) else file_key
             for i, line in enumerate(content.splitlines(), 1):
                 if regex.search(line):
-                    rel_path = file_path.relative_to(ws_for_relative)
-                    # Truncate long lines
                     display_line = line.strip()[:100]
-                    results.append(f"{rel_path}:{i}: {display_line}")
+                    results.append(f"{rel_display}:{i}: {display_line}")
                     total_matches += 1
-                    if len(results) >= 50:  # Limit results per query
+                    if len(results) >= 50:
                         break
         except Exception:
             continue
-
         if len(results) >= 50:
             break
 
     if not results:
         return f"No matches found for pattern '{pattern}' in {files_searched} file(s)"
 
-    # Warn the LLM if results were capped so it knows to refine the search.
     truncated = total_matches > len(results)
     truncation_note = f" (showing first {len(results)} of {total_matches}+ — refine pattern or path for more)" if truncated else ""
     header = f"🔍 Found {total_matches}+ match(es) in {files_searched} file(s) for pattern '{pattern}'{truncation_note}:\n"
     return header + "\n".join(results)
 
 
-def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None = None) -> str:
-    """Find files matching glob patterns.
+async def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None = None) -> str:
+    """Find files matching glob patterns."""
+    import fnmatch
+    storage = _storage()
 
-    Args:
-        ws: Workspace root path
-        pattern: Glob pattern to match files
-        path: Base directory for search (relative to workspace root)
-        tenant_id: Optional tenant ID for enterprise_info
-
-    Returns:
-        List of matching files with sizes
-    """
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
     if path and path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
         sub = path[len("enterprise_info"):].lstrip("/")
-        search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(search_path).startswith(str(enterprise_root)):
+        if sub and not _validate_rel_path(sub):
             return "Access denied for this path"
-        ws_for_relative = enterprise_root
+        ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
+        search_prefix = f"{ent_prefix}{sub}/" if sub else ent_prefix
     else:
-        search_path = (ws / path).resolve() if path and path != "." else ws
-        if not str(search_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
-        ws_for_relative = ws
+        if path and path != ".":
+            if not _validate_rel_path(path):
+                return "Access denied for this path"
+            search_prefix = f"{ws.name}/{path.strip('/')}/"
+        else:
+            search_prefix = f"{ws.name}/"
 
-    if not search_path.exists():
-        return f"Directory not found: {path}"
+    all_entries = []
+    stack = [search_prefix]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = await storage.list(current)
+        except Exception:
+            continue
+        for entry in entries:
+            display = f"{current}{entry.name}"
+            all_entries.append((display, entry))
+            if entry.is_dir:
+                stack.append(f"{display}/")
 
-    try:
-        matches = list(search_path.glob(pattern))
-    except Exception as e:
-        return f"Invalid glob pattern: {e}"
+    matches = []
+    for display, info in all_entries:
+        rel = display[len(search_prefix):] if display.startswith(search_prefix) else display
+        if fnmatch.fnmatch(info.name, pattern) or fnmatch.fnmatch(rel, pattern):
+            matches.append((rel, info))
 
     if not matches:
         return f"No files matching pattern: {pattern}"
 
-    # Sort by modification time (most recent first)
-    matches.sort(key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
-
     results = []
     dir_count = 0
     file_count = 0
-
-    for m in matches[:100]:  # Limit to 100 results
-        rel_path = m.relative_to(ws_for_relative)
-        if m.is_dir():
+    for rel, info in matches[:100]:
+        if info.is_dir:
             dir_count += 1
-            results.append(f"📁 {rel_path}/")
+            results.append(f"📁 {rel}/")
         else:
             file_count += 1
-            try:
-                size = m.stat().st_size
-                size_str = f"{size//1024}KB" if size > 1024 else f"{size}B"
-                results.append(f"📄 {rel_path} ({size_str})")
-            except Exception:
-                results.append(f"📄 {rel_path}")
+            size = info.size
+            size_str = f"{size//1024}KB" if size > 1024 else f"{size}B"
+            results.append(f"📄 {rel} ({size_str})")
 
     header = f"📂 Found {len(matches)} item(s) ({dir_count} dirs, {file_count} files) matching '{pattern}':\n"
     return header + "\n".join(results)
@@ -6594,17 +5863,30 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     if not agent_name or not rel_path:
         return "❌ Please provide both agent_name and file_path"
 
-    storage = get_storage_backend()
-    source_key = normalize_storage_key(f"{from_agent_id}/{rel_path}")
-    if not await storage.is_file(source_key):
-        return f"❌ Source file not found: {rel_path}"
-    source_entry = await storage.stat(source_key)
+    if ".." in rel_path.split("/"):
+        return "❌ Access denied: path traversal not allowed"
 
-    # File size limit (50 MB)
+    storage = get_storage()
+
+    if ".." in rel_path.split("/"):
+        return "❌ Access denied: path traversal not allowed"
+
+    storage = get_storage()
+
+    source_key = f"{from_agent_id}/{rel_path.strip('/')}"
+    if not await storage.exists(source_key):
+        return f"❌ Source file not found: {rel_path}"
+
+    parent_key = f"{from_agent_id}/{str(Path(rel_path).parent).strip('./')}/" if str(Path(rel_path).parent) != '.' else f"{from_agent_id}/"
+    filename = Path(rel_path).name
+    parent_entries = await storage.list(parent_key)
+    file_info = next((e for e in parent_entries if e.name == filename and not e.is_dir), None)
+    if not file_info:
+        return f"❌ Source file not found: {rel_path}"
+
     MAX_FILE_SIZE = 50 * 1024 * 1024
-    file_size = source_entry.size
-    if file_size > MAX_FILE_SIZE:
-        size_mb = file_size / (1024 * 1024)
+    if file_info.size > MAX_FILE_SIZE:
+        size_mb = file_info.size / (1024 * 1024)
         return f"❌ File too large ({size_mb:.1f} MB). Maximum allowed is 50 MB."
     source_bytes = await storage.read_bytes(source_key)
     source_name = Path(rel_path).name
@@ -6671,21 +5953,22 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             target_name = target_agent.name
             target_id = target_agent.id
 
+        target_ws = await ensure_workspace(target_id, tenant_id=target_tenant_id)
+        target_ws.mkdir(parents=True, exist_ok=True)
+        (target_ws / "workspace" / "inbox" / "files").mkdir(parents=True, exist_ok=True)
+
         ts = datetime.now(timezone.utc)
         stamp = ts.strftime("%Y%m%d_%H%M%S_%f")
-        delivered_name = source_name
-        target_rel_path = f"workspace/inbox/files/{delivered_name}"
-        target_key = normalize_storage_key(f"{target_id}/{target_rel_path}")
-        while await storage.exists(target_key):
-            delivered_name = f"{stamp}_{source_name}"
-            target_rel_path = f"workspace/inbox/files/{delivered_name}"
-            target_key = normalize_storage_key(f"{target_id}/{target_rel_path}")
+        delivered_name = Path(rel_path).name
+        dst_key = f"{target_id}/workspace/inbox/files/{delivered_name}"
+        if await storage.exists(dst_key):
+            delivered_name = f"{stamp}_{Path(rel_path).name}"
+            dst_key = f"{target_id}/workspace/inbox/files/{delivered_name}"
 
-        await storage.write_bytes(target_key, source_bytes)
+        await storage.copy(source_key, dst_key)
 
         sender_short = str(from_agent_id)[:8]
-        note_rel_path = f"workspace/inbox/{stamp}_{sender_short}_file_delivery.md"
-        note_key = normalize_storage_key(f"{target_id}/{note_rel_path}")
+        target_rel_path = f"workspace/inbox/files/{delivered_name}"
         note_lines = [
             f"# File delivery from {source_agent_name}",
             "",
@@ -6701,7 +5984,8 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             note_lines.append("")
         note_lines.append("## Action")
         note_lines.append(f"- Read the file via `read_file(path=\"{target_rel_path}\")`")
-        await storage.write_text(note_key, "\n".join(note_lines), encoding="utf-8")
+        note_key = f"{target_id}/workspace/inbox/{stamp}_{sender_short}_file_delivery.md"
+        await storage.write(note_key, "\n".join(note_lines))
 
         from app.models.audit import AuditLog
         async with async_session() as db:
@@ -6740,84 +6024,11 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             detail={"source_agent": source_agent_name, "source_file": rel_path, "delivered_file": target_rel_path},
         )
 
-        # ── Inject file-delivery message into A2A chat session ──
-        # This ensures the target agent sees the file delivery in its
-        # conversation context when send_message_to_agent is called next.
-        logger.info(
-            "[A2A-File] Injecting file delivery message: from=%s to=%s file=%s",
-            source_name,
-            target_name,
-            delivered_name,
-        )
-        try:
-            from app.models.audit import ChatMessage
-            from app.models.chat_session import ChatSession
-            from app.models.participant import Participant
-            async with async_session() as db2:
-                # Find or create A2A session (same ordering as send_message_to_agent)
-                session_agent_id = min(from_agent_id, target_id, key=str)
-                session_peer_id = max(from_agent_id, target_id, key=str)
-                sess_r = await db2.execute(
-                    select(ChatSession).where(
-                        ChatSession.agent_id == session_agent_id,
-                        ChatSession.peer_agent_id == session_peer_id,
-                        ChatSession.source_channel == "agent",
-                    )
-                )
-                chat_session = sess_r.scalar_one_or_none()
-                if not chat_session:
-                    src_part_r = await db2.execute(
-                        select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id)
-                    )
-                    src_participant = src_part_r.scalar_one_or_none()
-                    chat_session = ChatSession(
-                        agent_id=session_agent_id,
-                        user_id=source_creator_id,
-                        title=f"{source_name} ↔ {target_name}",
-                        source_channel="agent",
-                        participant_id=src_participant.id if src_participant else None,
-                        peer_agent_id=session_peer_id,
-                    )
-                    db2.add(chat_session)
-                    await db2.flush()
-
-                file_msg_content = (
-                    f"[File delivery from {source_name}]\n"
-                    f"{source_name} sent you a file: {delivered_name}\n"
-                    f"File path: {target_rel_path}\n"
-                    f"Use read_file(path=\"{target_rel_path}\") to inspect it."
-                )
-                if delivery_note:
-                    file_msg_content += f"\nNote: {delivery_note}"
-
-                # Resolve sender participant for proper attribution
-                src_part_r2 = await db2.execute(
-                    select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id)
-                )
-                src_part2 = src_part_r2.scalar_one_or_none()
-
-                db2.add(ChatMessage(
-                    agent_id=session_agent_id,
-                    user_id=source_creator_id,
-                    role="user",
-                    content=file_msg_content,
-                    conversation_id=str(chat_session.id),
-                    participant_id=src_part2.id if src_part2 else None,
-                ))
-                chat_session.last_message_at = ts
-                await db2.commit()
-                logger.info(
-                    "[A2A-File] Injected file delivery message into session %s for %s",
-                    chat_session.id,
-                    target_name,
-                )
-        except Exception as e:
-            logger.error(f"[A2A-File] FAILED to inject file delivery message: {e}")
-
+        note_filename = note_key.rsplit("/", 1)[-1]
         return (
             f"✅ File sent to {target_name}.\n"
             f"- Delivered to: {target_rel_path}\n"
-            f"- Inbox note: {note_rel_path}"
+            f"- Inbox note: workspace/inbox/{note_filename}"
         )
     except Exception as e:
         return f"❌ Agent file send error: {str(e)[:200]}"
@@ -11119,6 +10330,45 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
+    from app.services.feishu_service import feishu_service
+    token = await feishu_service.get_tenant_access_token(app_id, app_secret)
+
+    # ── Load local contacts cache ─────────────────────────────────────────────
+    _cache_file = _pl.Path(_settings.FEISHU_CACHE_DIR) / str(agent_id) / "feishu_contacts_cache.json"
+    _cached_users: list[dict] = []
+    try:
+        if _cache_file.exists():
+            _raw = _json.loads(_cache_file.read_text())
+            _cached_users = _raw.get("users", [])
+    except Exception:
+        pass
+
+    name_lower = name.lower()
+
+    def _matches(u: dict) -> bool:
+        return (
+            name_lower in (u.get("name") or "").lower()
+            or name_lower in (u.get("en_name") or "").lower()
+        )
+
+    matched = [u for u in _cached_users if _matches(u)]
+
+    if matched:
+        lines = [f"🔍 找到 {len(matched)} 位匹配「{name}」的用户：\n"]
+        for u in matched:
+            open_id = u.get("open_id", "")
+            user_id = u.get("user_id", "")
+            display_name = u.get("name", "")
+            en_name = u.get("en_name", "")
+            email = u.get("email", "")
+            lines.append(f"• **{display_name}**{'（' + en_name + '）' if en_name else ''}")
+            if user_id:
+                lines.append(f"  user_id: `{user_id}`")
+            if open_id:
+                lines.append(f"  open_id: `{open_id}`")
+            if email:
+                lines.append(f"  邮箱: {email}")
+        return "\n".join(lines)
 
     # ── Cache miss: try OrgMember table first (has user_id from org sync) ──────
     try:
@@ -11199,7 +10449,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 async def _feishu_contacts_refresh(agent_id: uuid.UUID) -> None:
     """Force-clear the local contacts cache so next search re-fetches from API."""
     import pathlib as _pl
-    _cache_file = _pl.Path("/data/workspaces") / str(agent_id) / "feishu_contacts_cache.json"
+    _cache_file = _pl.Path(_settings.FEISHU_CACHE_DIR) / str(agent_id) / "feishu_contacts_cache.json"
     try:
         if _cache_file.exists():
             _cache_file.unlink()

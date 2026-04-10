@@ -185,12 +185,13 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             model_request_timeout = getattr(model, 'request_timeout', None)
 
             # Read HEARTBEAT.md if it exists, otherwise use default
-            storage = get_storage_backend()
-            hb_key = agent_storage_key(agent_id, "HEARTBEAT.md")
+            from app.services.storage.factory import get_storage
+            storage = get_storage()
+
+            hb_key = f"{agent_id}/HEARTBEAT.md"
             if await storage.exists(hb_key):
                 try:
-                    custom = await storage.read_text(hb_key, encoding="utf-8", errors="replace")
-                    custom = custom.strip()
+                    custom = (await storage.read(hb_key)).strip()
                     if custom:
                         # Prepend privacy rules to custom heartbeat
                         heartbeat_instruction = custom + """

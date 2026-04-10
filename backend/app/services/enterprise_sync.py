@@ -64,6 +64,11 @@ class EnterpriseSyncService:
 
         Filters by visible_roles — if empty, all roles can see it.
         """
+        from app.services.storage.factory import get_storage
+        storage = get_storage()
+
+        enterprise_info_prefix = f"{agent_id}/enterprise_info/"
+
         result = await db.execute(select(EnterpriseInfo))
         all_info = result.scalars().all()
 
@@ -72,16 +77,12 @@ class EnterpriseSyncService:
             if info.visible_roles and agent_role and agent_role not in info.visible_roles:
                 continue
 
-            await store_agent_bytes(
-                agent_id,
-                f"enterprise_info/{info.info_type}.json",
-                json.dumps({
-                    "type": info.info_type,
-                    "version": info.version,
-                    "content": info.content,
-                }, ensure_ascii=False, indent=2).encode("utf-8"),
-                content_type="application/json",
-            )
+            file_key = f"{enterprise_info_prefix}{info.info_type}.json"
+            await storage.write(file_key, json.dumps({
+                "type": info.info_type,
+                "version": info.version,
+                "content": info.content,
+            }, ensure_ascii=False, indent=2))
 
         logger.info(f"Synced enterprise info to agent {agent_id}")
 

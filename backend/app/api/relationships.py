@@ -562,5 +562,70 @@ async def delete_agent_relationship(
 # ─── relationships.md Generation ──────────────────────
 
 async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
-    """Obsolete. relationships.md is no longer generated as relationships are read directly from the database."""
-    pass
+    """Regenerate relationships.md with both human and agent relationships."""
+    from app.models.identity import IdentityProvider
+    from app.services.storage.factory import get_storage
+
+    storage = get_storage()
+    relationships_key = f"{agent_id}/relationships.md"
+
+    # Load human relationships with provider name
+    h_result = await db.execute(
+        select(AgentRelationship, IdentityProvider.name.label("provider_name"))
+        .outerjoin(OrgMember, AgentRelationship.member_id == OrgMember.id)
+        .outerjoin(IdentityProvider, OrgMember.provider_id == IdentityProvider.id)
+        .where(AgentRelationship.agent_id == agent_id)
+        .options(selectinload(AgentRelationship.member))
+    )
+    human_rows = h_result.all()
+
+    # Load agent relationships
+    a_result = await db.execute(
+        select(AgentAgentRelationship)
+        .where(AgentAgentRelationship.agent_id == agent_id)
+        .options(selectinload(AgentAgentRelationship.target_agent))
+    )
+    agent_rels = a_result.scalars().all()
+
+    if not human_rows and not agent_rels:
+        await storage.write(relationships_key, "# 关系网络\n\n_暂无配置的关系。_\n")
+        return
+
+    lines = ["# 关系网络\n"]
+
+    # Human relationships
+    if human_rows:
+        lines.append("## 👤 人类同事\n")
+        for r, provider_name in human_rows:
+            m = r.member
+            if not m:
+                continue
+            label = RELATION_LABELS.get(r.relation, r.relation)
+            source = f"（通过 {provider_name} 同步）" if provider_name else ""
+            lines.append(f"### {m.name} — {m.title or '未设置职位'}{source}")
+            lines.append(f"- 部门：{m.department_path or '未设置'}")
+            lines.append(f"- 关系：{label}")
+            if m.open_id:
+                lines.append(f"- OpenID：{m.open_id}")
+            if m.email:
+                lines.append(f"- 邮箱：{m.email}")
+            if r.description:
+                lines.append(f"- {r.description}")
+            lines.append("")
+
+    # Agent relationships
+    if agent_rels:
+        lines.append("## 🤖 数字员工同事\n")
+        for r in agent_rels:
+            a = r.target_agent
+            if not a:
+                continue
+            label = AGENT_RELATION_LABELS.get(r.relation, r.relation)
+            lines.append(f"### {a.name} — {a.role_description or '数字员工'}")
+            lines.append(f"- 关系：{label}")
+            lines.append(f"- 可以用 send_message_to_agent 工具给 {a.name} 发消息协作")
+            if r.description:
+                lines.append(f"- {r.description}")
+            lines.append("")
+
+    await storage.write(relationships_key, "\n".join(lines))

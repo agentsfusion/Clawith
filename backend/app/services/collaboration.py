@@ -112,11 +112,15 @@ class CollaborationService:
         from_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
         from_agent = from_result.scalar_one_or_none()
 
+        # Write message to target agent's workspace
+        from app.services.storage.factory import get_storage
+        storage = get_storage()
+
+        inbox_key_prefix = f"{to_agent_id}/workspace/inbox/"
+
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        rel_path = f"workspace/inbox/{timestamp}_{str(from_agent_id)[:8]}.md"
-        await store_agent_bytes(
-            to_agent_id,
-            rel_path,
+        msg_file_key = f"{inbox_key_prefix}{timestamp}_{str(from_agent_id)[:8]}.md"
+        await storage.write(msg_file_key,
             f"# 来自 {from_agent.name if from_agent else 'Unknown'} 的消息\n"
             f"- 类型: {msg_type}\n"
             f"- 时间: {datetime.now(timezone.utc).isoformat()}\n\n"

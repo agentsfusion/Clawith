@@ -289,19 +289,41 @@ async def seed_default_agents():
         await db.flush()
 
         # ── Permissions (company-wide, manage) ──
-        for agent in created_agents:
-            db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level="manage"))
+        db.add(AgentPermission(agent_id=morty.id, scope_type="company", access_level="manage"))
+        db.add(AgentPermission(agent_id=meeseeks.id, scope_type="company", access_level="manage"))
+
+        # ── Initialize workspace files ──
+        from app.services.storage.factory import get_storage
+        storage = get_storage()
+
+        template_dir = Path(settings.AGENT_TEMPLATE_DIR)
 
         for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
-            if agent.name not in created_names:
-                continue
-            await agent_manager.initialize_agent_files(db, agent)
-            await store_agent_bytes(
-                agent.id,
-                "soul.md",
-                (soul_content.strip() + "\n").encode("utf-8"),
-                content_type="text/markdown; charset=utf-8",
-            )
+            # Template copying is skipped - storage abstraction handles file creation
+            # Storage.write() creates parent directories implicitly
+
+            # Overlay custom soul (rich Morty/Meeseeks persona over the generic template)
+            await storage.write(f"{agent.id}/soul.md", soul_content.strip() + "\n")
+
+            # Ensure memory.md exists (template does not include it; holds runtime context)
+            mem_key = f"{agent.id}/memory/memory.md"
+            if not await storage.exists(mem_key):
+                await storage.write(mem_key, "# Memory\n\n_Record important information and knowledge here._\n")
+
+            # Ensure reflections.md exists (not in agent_template; lives in app/templates)
+            refl_key = f"{agent.id}/memory/reflections.md"
+            if not await storage.exists(refl_key):
+                refl_src = Path(__file__).parent.parent / "templates" / "reflections.md"
+                await storage.write(refl_key, refl_src.read_text(encoding="utf-8") if refl_src.exists() else "# Reflections Journal\n")
+
+            # Stamp agent identity into state.json if present
+            state_key = f"{agent.id}/state.json"
+            if await storage.exists(state_key):
+                import json as _json
+                state = _json.loads(await storage.read(state_key))
+                state["agent_id"] = str(agent.id)
+                state["name"] = agent.name
+                await storage.write(state_key, _json.dumps(state, ensure_ascii=False, indent=2))
 
         # ── Assign skills ──
         all_skills_result = await db.execute(
@@ -310,8 +332,9 @@ async def seed_default_agents():
         all_skills = {s.folder_name: s for s in all_skills_result.scalars().all()}
 
         for agent, skill_folders in [(morty, MORTY_SKILLS), (meeseeks, MEESEEKS_SKILLS)]:
-            if agent.name not in created_names:
-                continue
+            # Skills are stored under agent workspace
+            agent_prefix = f"{agent.id}/skills/"
+
             # Always include default skills
             folders_to_copy = set(skill_folders)
             for fname, skill in all_skills.items():
@@ -323,12 +346,8 @@ async def seed_default_agents():
                 if not skill:
                     continue
                 for sf in skill.files:
-                    await store_agent_bytes(
-                        agent.id,
-                        f"skills/{skill.folder_name}/{sf.path}",
-                        sf.content.encode("utf-8"),
-                        content_type="text/plain; charset=utf-8",
-                    )
+                    file_key = f"{agent_prefix}{skill.folder_name}/{sf.path}"
+                    await storage.write(file_key, sf.content)
 
         # ── Assign all default tools ──
         default_tools_result = await db.execute(
@@ -368,7 +387,17 @@ async def seed_default_agents():
                     description=description,
                 ))
 
-
+        # ── Write relationships.md for each ──
+        await storage.write(f"{morty.id}/relationships.md",
+            "# Relationships\n\n"
+            "## Digital Employee Colleagues\n\n"
+            "- **Meeseeks** (collaborator): Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.\n"
+        )
+        await storage.write(f"{meeseeks.id}/relationships.md",
+            "# Relationships\n\n"
+            "## Digital Employee Colleagues\n\n"
+            "- **Morty** (collaborator): Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.\n"
+        )
 
         await db.commit()
         logger.info(

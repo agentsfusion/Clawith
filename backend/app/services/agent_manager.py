@@ -1,7 +1,6 @@
 """Agent lifecycle manager — Docker container management for OpenClaw Gateway instances."""
 
 import json
-import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,10 +14,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.agent import Agent
 from app.models.llm import LLMModel
-from app.services.llm import get_model_api_key
-from app.services.storage import get_storage_backend, normalize_storage_key
+from app.services.llm_utils import get_model_api_key
+from app.services.storage.factory import get_storage
 
 settings = get_settings()
+
+
+async def _collect_storage_keys(prefix: str) -> list[str]:
+    """Recursively collect all file keys under a storage prefix."""
+    storage = get_storage()
+    keys: list[str] = []
+    entries = await storage.list(prefix)
+    for entry in entries:
+        if entry.is_dir:
+            keys.extend(await _collect_storage_keys(entry.path))
+        else:
+            keys.append(entry.path)
+    return keys
 
 
 class AgentManager:
@@ -67,6 +79,8 @@ class AgentManager:
     async def initialize_agent_files(self, db: AsyncSession, agent: Agent,
                                       personality: str = "", boundaries: str = "") -> None:
         """Copy template files and customize for this agent."""
+        storage = get_storage()
+        aid = str(agent.id)
         agent_dir = self._agent_dir(agent.id)
         template_dir = self._template_dir()
         storage = get_storage_backend()
@@ -76,39 +90,26 @@ class AgentManager:
             logger.warning(f"Agent dir already exists: {agent_dir}")
             return
 
+        # --- Step 1: Copy template files to storage ---
         if template_dir.exists():
-            import asyncio
-            import time
-            t_start_files = time.perf_counter()
-            tasks = []
-            for src in template_dir.rglob("*"):
-                if src.is_dir():
-                    continue
-                rel = src.relative_to(template_dir).as_posix()
-                if rel == "tasks.json" or rel == "todo.json" or rel.startswith("enterprise_info/"):
-                    continue
-                tasks.append(
-                    storage.write_bytes(
-                        f"{agent_prefix}/{rel}",
-                        src.read_bytes(),
-                    )
-                )
-            if tasks:
-                await asyncio.gather(*tasks)
-            logger.info(f"[AgentManager] Uploaded {len(tasks)} template files concurrently in {time.perf_counter() - t_start_files:.2f}s for agent {agent.id}")
+            for template_file in sorted(template_dir.rglob("*")):
+                if template_file.is_file():
+                    rel = template_file.relative_to(template_dir)
+                    key = f"{aid}/{rel.as_posix()}"
+                    content = template_file.read_text(encoding="utf-8")
+                    await storage.write(key, content)
         else:
+            # No template dir (local dev) — write minimal files via storage
             logger.info(f"Template dir not found ({template_dir}), creating minimal workspace")
-            await storage.write_text(f"{agent_prefix}/tasks.json", "[]", encoding="utf-8")
-            await storage.write_text(f"{agent_prefix}/tasks.json", "[]", encoding="utf-8")
-            for placeholder in (
-                "workspace/.gitkeep",
-                "workspace/knowledge_base/.gitkeep",
-                "memory/.gitkeep",
-                "skills/.gitkeep",
-            ):
-                await storage.write_text(f"{agent_prefix}/{placeholder}", "", encoding="utf-8")
+            await storage.write(f"{aid}/tasks.json", "[]")
 
-        # Customize soul.md
+        # Create local directory structure for Docker volume mounts
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        for subdir in ["workspace", "workspace/knowledge_base", "memory", "skills"]:
+            (agent_dir / subdir).mkdir(exist_ok=True)
+
+        # --- Step 2: Customize soul.md ---
+        soul_key = f"{aid}/soul.md"
         # Get creator name
         from app.models.user import User
         result = await db.execute(select(User).where(User.id == agent.creator_id))
@@ -116,9 +117,8 @@ class AgentManager:
         creator_name = creator.display_name if creator else "Unknown"
 
         soul_content = f"# Personality\n\nI'm {agent.name}, {agent.role_description or 'a digital assistant'}.\n"
-        soul_key = f"{agent_prefix}/soul.md"
         if await storage.exists(soul_key):
-            template_content = await storage.read_text(soul_key, encoding="utf-8", errors="replace")
+            template_content = await storage.read(soul_key)
             soul_content = template_content.replace("{{agent_name}}", agent.name)
             soul_content = soul_content.replace("{{role_description}}", agent.role_description or "通用助手")
             soul_content = soul_content.replace("{{creator_name}}", creator_name)
@@ -129,12 +129,12 @@ class AgentManager:
             """Replace existing ## SectionName or append if not found."""
             if not section_content:
                 return content
-            
+
             # Pattern to match existing section (case-insensitive header)
             import re
             pattern = rf"^##\s+{re.escape(section_name)}\s*$"
             lines = content.split('\n')
-            
+
             # Find the section header
             for i, line in enumerate(lines):
                 if re.match(pattern, line.strip(), re.IGNORECASE):
@@ -145,12 +145,12 @@ class AgentManager:
                         if lines[j].strip().startswith('## '):
                             section_end = j
                             break
-                    
+
                     # Replace the section content (with trailing newline for proper spacing)
                     new_section = f"## {section_name}\n{section_content}\n"
                     lines = lines[:section_start] + [new_section] + lines[section_end:]
                     return '\n'.join(lines)
-            
+
             # Section not found - append at the end
             return content + f"\n## {section_name}\n{section_content}\n"
 
@@ -158,34 +158,34 @@ class AgentManager:
         soul_content = replace_or_append_section(soul_content, "Personality", personality)
         soul_content = replace_or_append_section(soul_content, "Boundaries", boundaries)
 
-        await storage.write_text(soul_key, soul_content, encoding="utf-8")
+        await storage.write(soul_key, soul_content)
 
-        # Ensure memory.md exists
-        mem_key = f"{agent_prefix}/memory/memory.md"
+        # --- Step 3: Ensure memory.md exists ---
+        mem_key = f"{aid}/memory/memory.md"
         if not await storage.exists(mem_key):
-            await storage.write_text(mem_key, "# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
+            await storage.write(mem_key, "# Memory\n\n_Record important information and knowledge here._\n")
 
-        # Ensure reflections.md exists — copy from central template
-        refl_key = f"{agent_prefix}/memory/reflections.md"
+        # --- Step 4: Ensure reflections.md exists — copy from central template ---
+        refl_key = f"{aid}/memory/reflections.md"
         if not await storage.exists(refl_key):
             refl_template = Path(__file__).parent.parent / "templates" / "reflections.md"
             refl_content = refl_template.read_text(encoding="utf-8") if refl_template.exists() else "# Reflections Journal\n"
-            await storage.write_text(refl_key, refl_content, encoding="utf-8")
+            await storage.write(refl_key, refl_content)
 
-        # Ensure HEARTBEAT.md exists — copy from central template
-        hb_key = f"{agent_prefix}/HEARTBEAT.md"
+        # --- Step 5: Ensure HEARTBEAT.md exists — copy from central template ---
+        hb_key = f"{aid}/HEARTBEAT.md"
         if not await storage.exists(hb_key):
             hb_template = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
             hb_content = hb_template.read_text(encoding="utf-8") if hb_template.exists() else "# Heartbeat Instructions\n"
-            await storage.write_text(hb_key, hb_content, encoding="utf-8")
+            await storage.write(hb_key, hb_content)
 
-        # Customize state.json
-        state_key = f"{agent_prefix}/state.json"
+        # --- Step 6: Customize state.json ---
+        state_key = f"{aid}/state.json"
         if await storage.exists(state_key):
-            state = json.loads(await storage.read_text(state_key, encoding="utf-8", errors="replace"))
+            state = json.loads(await storage.read(state_key))
             state["agent_id"] = str(agent.id)
             state["name"] = agent.name
-            await storage.write_text(state_key, json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            await storage.write(state_key, json.dumps(state, ensure_ascii=False, indent=2))
 
         logger.info(f"Initialized agent files at {agent_dir}")
 
@@ -317,14 +317,27 @@ class AgentManager:
 
     async def archive_agent_files(self, agent_id: uuid.UUID) -> Path:
         """Archive agent files to a backup location and return the archive directory."""
-        agent_dir = self._agent_dir(agent_id)
-        local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
-        archive_dir = Path(local_root) / "_archived"
+        storage = get_storage()
+        aid = str(agent_id)
+        archive_dir = Path(settings.AGENT_DATA_DIR) / "_archived"
         archive_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         dest = archive_dir / f"{agent_id}_{timestamp}"
-        if agent_dir.exists():
-            shutil.move(str(agent_dir), str(dest))
+
+        # Collect all file keys from storage
+        all_keys = await _collect_storage_keys(aid)
+
+        if all_keys:
+            dest.mkdir(parents=True, exist_ok=True)
+            for key in all_keys:
+                content = await storage.read(key)
+                rel = key.removeprefix(aid + "/")
+                local_file = dest / rel
+                local_file.parent.mkdir(parents=True, exist_ok=True)
+                local_file.write_text(content, encoding="utf-8")
+
+            # Delete originals from storage
+            await storage.delete_prefix(aid)
             logger.info(f"Archived agent files to {dest}")
         else:
             dest.mkdir(parents=True, exist_ok=True)

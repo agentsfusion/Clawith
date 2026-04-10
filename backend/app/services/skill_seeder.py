@@ -1032,9 +1032,9 @@ async def push_default_skills_to_existing_agents():
     from app.models.skill import Skill
     from app.models.system_settings import SystemSetting
     from sqlalchemy.orm import selectinload
-    from app.services.agent_manager import agent_manager
-    from app.services.storage import get_storage_backend
-    import hashlib
+    from app.services.storage.factory import get_storage
+
+    storage = get_storage()
 
     async with async_session() as db:
         # Load all is_default skills with their files
@@ -1068,17 +1068,22 @@ async def push_default_skills_to_existing_agents():
         removed_legacy = 0
         storage = get_storage_backend()
         for agent in agents:
-            agent_prefix = agent_manager._agent_storage_prefix(agent.id)
-            legacy_key = f"{agent_prefix}/skills/MCP_INSTALLER.md"
-            if await storage.is_file(legacy_key):
-                try:
-                    await storage.delete(legacy_key)
-                    removed_legacy += 1
-                except Exception as exc:
-                    logger.warning(f"[SkillSeeder] Failed to remove legacy MCP_INSTALLER.md for agent {agent.id}: {exc}")
+            skills_prefix = f"{agent.id}/skills/"
             for skill in default_skills:
                 if not skill.files:
                     continue
+                for sf in skill.files:
+                    file_key = f"{skills_prefix}{skill.folder_name}/{sf.path}"
+                    if await storage.exists(file_key):
+                        existing_content = await storage.read(file_key)
+                        if existing_content == sf.content:
+                            continue  # already up-to-date
+                        await storage.write(file_key, sf.content)
+                        updated += 1
+                    else:
+                        await storage.write(file_key, sf.content)
+                        pushed += 1
+                        logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
 
                 # Determine if the agent already has this skill by checking if its first file exists in storage
                 first_file_key = f"{agent_prefix}/skills/{skill.folder_name}/{skill.files[0].path}"

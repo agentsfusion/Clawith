@@ -5,20 +5,23 @@ workspace files and composes a comprehensive system prompt.
 """
 
 import uuid
-from pathlib import Path
 
-from app.config import get_settings
-from app.services.storage import get_storage_backend, normalize_storage_key
+from app.services.storage.factory import get_storage
 
-settings = get_settings()
+
+def _agent_workspace(agent_id: uuid.UUID) -> str:
+    """Return the storage key prefix for an agent's workspace."""
+    return f"{agent_id}/"
+
 
 async def _read_file_safe(key: str, max_chars: int = 3000) -> str:
-    """Read a storage-backed text file, return empty string if missing."""
-    storage = get_storage_backend()
-    if not await storage.exists(key) or not await storage.is_file(key):
+    """Read a file via storage, return empty string if missing. Truncate if too long."""
+    storage = get_storage()
+    if not await storage.exists(key):
         return ""
     try:
-        content = (await storage.read_text(key, encoding="utf-8", errors="replace")).strip()
+        content = await storage.read(key)
+        content = content.strip()
         if len(content) > max_chars:
             content = content[:max_chars] + "\n...(truncated)"
         return content
@@ -71,7 +74,7 @@ def _parse_skill_frontmatter(content: str, filename: str) -> tuple[str, str]:
 
 
 async def _load_skills_index(agent_id: uuid.UUID) -> str:
-    """Load skill index (name + description) from skills/ directory.
+    """Load skill index (name + description) from skills/ directory via storage.
 
     Supports two formats:
     - Flat file:   skills/my-skill.md
@@ -81,36 +84,42 @@ async def _load_skills_index(agent_id: uuid.UUID) -> str:
     prompt. The model is instructed to call read_file to load full content
     when a skill is relevant.
     """
+    storage = get_storage()
+    prefix = _agent_workspace(agent_id)  # e.g. "{agent_id}/"
     skills: list[tuple[str, str, str]] = []  # (name, description, path_relative_to_skills)
-    storage = get_storage_backend()
-    skills_prefix = normalize_storage_key(f"{agent_id}/skills")
-    if await storage.exists(skills_prefix) and await storage.is_dir(skills_prefix):
-        for entry in await storage.list_dir(skills_prefix):
-            if entry.name.startswith("."):
-                continue
-            entry_key = entry.key
 
-            # Case 1: Folder-based skill — skills/<folder>/SKILL.md
-            if entry.is_dir:
-                skill_md_key = f"{entry_key}/SKILL.md"
-                if not await storage.exists(skill_md_key):
-                    skill_md_key = f"{entry_key}/skill.md"
-                if await storage.exists(skill_md_key):
-                    try:
-                        content = (await storage.read_text(skill_md_key, encoding="utf-8", errors="replace")).strip()
-                        name, desc = _parse_skill_frontmatter(content, entry.name)
-                        skills.append((name, desc, f"{entry.name}/SKILL.md"))
-                    except Exception:
-                        skills.append((entry.name, "", f"{entry.name}/SKILL.md"))
+    try:
+        entries = await storage.list(f"{prefix}skills")
+    except Exception:
+        return ""
 
-            # Case 2: Flat file — skills/<name>.md
-            elif Path(entry.name).suffix == ".md" and not entry.is_dir:
+    for entry in sorted(entries, key=lambda e: (not e.is_dir, e.name)):
+        if entry.name.startswith("."):
+            continue
+
+        # Case 1: Folder-based skill — skills/<folder>/SKILL.md
+        if entry.is_dir:
+            skill_key = f"{prefix}skills/{entry.name}/SKILL.md"
+            if not await storage.exists(skill_key):
+                # Also try lowercase skill.md
+                skill_key = f"{prefix}skills/{entry.name}/skill.md"
+            if await storage.exists(skill_key):
                 try:
-                    content = (await storage.read_text(entry_key, encoding="utf-8", errors="replace")).strip()
-                    name, desc = _parse_skill_frontmatter(content, Path(entry.name).stem)
-                    skills.append((name, desc, entry.name))
+                    content = (await storage.read(skill_key)).strip()
+                    name, desc = _parse_skill_frontmatter(content, entry.name)
+                    skills.append((name, desc, f"{entry.name}/SKILL.md"))
                 except Exception:
-                    skills.append((Path(entry.name).stem, "", entry.name))
+                    skills.append((entry.name, "", f"{entry.name}/SKILL.md"))
+
+        # Case 2: Flat file — skills/<name>.md
+        elif entry.name.endswith(".md") and not entry.is_dir:
+            try:
+                content = (await storage.read(entry.path)).strip()
+                stem = entry.name[:-3]  # remove .md suffix
+                name, desc = _parse_skill_frontmatter(content, stem)
+                skills.append((name, desc, entry.name))
+            except Exception:
+                skills.append((entry.name[:-3], "", entry.name))
 
     # Deduplicate by name
     seen: set[str] = set()
@@ -137,7 +146,7 @@ async def _load_skills_index(agent_id: uuid.UUID) -> str:
     lines.append("⚠️ SKILL USAGE RULES:")
     lines.append("1. When a user request matches a skill, FIRST call `read_file` with the File path above to load the full instructions.")
     lines.append("2. Follow the loaded instructions to complete the task.")
-    lines.append("3. Do NOT guess what the skill contains — always read it first.")
+    lines.append("3. Do NOT guess what a skill contains — always read it first.")
     lines.append("4. Folder-based skills may contain auxiliary files (scripts/, references/, examples/). Use `list_files` on the skill folder to discover them.")
 
     return "\n".join(lines)
@@ -249,16 +258,16 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     - skills/ → skill names + summaries
     - Database → relationship network (human + agent)
     """
+    ws_root = _agent_workspace(agent_id)  # e.g. "{agent_id}/"
+
     # --- Soul ---
-    soul = await _read_file_safe(normalize_storage_key(f"{agent_id}/soul.md"), 2000)
+    soul = await _read_file_safe(f"{ws_root}soul.md", 2000)
     # Strip markdown heading if present
     if soul.startswith("# "):
         soul = "\n".join(soul.split("\n")[1:]).strip()
 
     # --- Memory ---
-    memory = await _read_file_safe(normalize_storage_key(f"{agent_id}/memory/memory.md"), 2000)
-    if not memory:
-        memory = await _read_file_safe(normalize_storage_key(f"{agent_id}/memory.md"), 2000)
+    memory = await _read_file_safe(f"{ws_root}memory/memory.md", 2000) or await _read_file_safe(f"{ws_root}memory.md", 2000)
     if memory.startswith("# "):
         memory = "\n".join(memory.split("\n")[1:]).strip()
 
@@ -266,9 +275,9 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     skills_text = await _load_skills_index(agent_id)
 
     # --- Relationships ---
-    from app.database import async_session
-    async with async_session() as db:
-        relationships = await _load_relationships_from_db(db, agent_id)
+    relationships = await _read_file_safe(f"{ws_root}relationships.md", 2000)
+    if relationships.startswith("# "):
+        relationships = "\n".join(relationships.split("\n")[1:]).strip()
 
     # --- Compose static and dynamic system prompt blocks ---
     from datetime import datetime, timezone as _tz
@@ -666,16 +675,16 @@ If no search or webpage-reading tool is available, say that web lookup is not en
     if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
-    # --- Focus (working memory) --- DISABLED: injecting completed focus items
-    # into the system prompt was reinforcing stale workflow patterns over updated
-    # soul.md instructions.  Agents can still query focus via list_focus_items.
-    # try:
-    #     from app.services.focus_service import render_focus_context
-    #     focus = await render_focus_context(agent_id)
-    #     if focus.strip():
-    #         dynamic_parts.append(f"\n## Focus\n{focus}")
-    # except Exception:
-    #     pass
+    # --- Focus (working memory) ---
+    focus = (
+        await _read_file_safe(f"{ws_root}focus.md", 3000)
+        # Backward compat: also check old name
+        or await _read_file_safe(f"{ws_root}agenda.md", 3000)
+    )
+    if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
+        if focus.startswith("# "):
+            focus = "\n".join(focus.split("\n")[1:]).strip()
+        dynamic_parts.append(f"\n## Focus\n{focus}")
 
     # --- Active Triggers ---
     try:
