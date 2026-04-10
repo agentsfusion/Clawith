@@ -78,6 +78,16 @@ async def lifespan(app: FastAPI):
             "[startup] WARNING: SECRET_KEY or JWT_SECRET_KEY contains default 'change-me' value. "
             "This is insecure for production. Set unique secrets in your .env file."
         )
+    # Storage backend health check
+    try:
+        from app.services.storage.factory import get_storage as _get_storage
+        _storage = _get_storage()
+        if not await _storage.health_check():
+            logger.warning("[startup] Storage backend health check FAILED — file operations may fail")
+        else:
+            logger.info(f"[startup] Storage backend healthy ({_storage.backend_name})")
+    except Exception as e:
+        logger.warning(f"[startup] Storage backend init failed: {e}")
 
     import asyncio
     import sys

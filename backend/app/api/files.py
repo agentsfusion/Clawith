@@ -1,24 +1,25 @@
 """File management API routes for agent workspaces."""
 
-import os
 import uuid
 from pathlib import Path
 
-import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
-from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.services.storage.factory import get_storage
+from app.services.storage.interface import (
+    FileNotFoundError as StorageFileNotFoundError,
+    StorageError,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-settings = get_settings()
 router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
 
 
@@ -40,17 +41,13 @@ class FileWrite(BaseModel):
     content: str
 
 
-def _agent_base_dir(agent_id: uuid.UUID) -> Path:
-    return Path(settings.AGENT_DATA_DIR) / str(agent_id)
-
-
-def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
-    """Ensure the path is within the agent's directory (no path traversal)."""
-    base = _agent_base_dir(agent_id)
-    full = (base / rel_path).resolve()
-    if not str(full).startswith(str(base.resolve())):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Path traversal not allowed")
-    return full
+def _validate_path(rel_path: str) -> None:
+    """Ensure the path doesn't contain traversal components."""
+    if ".." in rel_path.split("/"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Path traversal not allowed",
+        )
 
 
 @router.get("/", response_model=list[FileInfo])
@@ -62,29 +59,26 @@ async def list_files(
 ):
     """List files and directories in an agent's file system."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
+    if path:
+        _validate_path(path)
 
-    if not target.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
-    if not target.is_dir():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a directory")
+    storage = get_storage()
+    prefix = f"{agent_id}/{path}" if path else str(agent_id)
+    agent_prefix = f"{agent_id}/"
 
-    items = []
-    base_abs = _agent_base_dir(agent_id).resolve()
-    for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
-        if entry.name == '.gitkeep':
-            continue
-        rel = str(entry.resolve().relative_to(base_abs))
-        stat = entry.stat()
-        items.append(FileInfo(
-            name=entry.name,
+    items = await storage.list(prefix)
+    result = []
+    for item in items:
+        rel = item.path.removeprefix(agent_prefix)
+        result.append(FileInfo(
+            name=item.name,
             path=rel,
-            is_dir=entry.is_dir(),
-            size=stat.st_size if entry.is_file() else 0,
-            modified_at=str(stat.st_mtime),
-            url=f"/api/agents/{agent_id}/files/download?path={rel}" if not entry.is_dir() else None
+            is_dir=item.is_dir,
+            size=item.size,
+            modified_at=item.modified_at,
+            url=f"/api/agents/{agent_id}/files/download?path={rel}" if not item.is_dir else None,
         ))
-    return items
+    return result
 
 
 @router.get("/content", response_model=FileContent)
@@ -96,17 +90,18 @@ async def read_file(
 ):
     """Read the content of a file."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
+    _validate_path(path)
 
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-
+    storage = get_storage()
+    key = f"{agent_id}/{path}"
     try:
-        async with aiofiles.open(target, "r", encoding="utf-8") as f:
-            content = await f.read()
-        return FileContent(path=path, content=content)
+        content = await storage.read(key)
+    except StorageFileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     except UnicodeDecodeError:
-        return FileContent(path=path, content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]")
+        raw = await storage.read_bytes(key)
+        return FileContent(path=path, content=f"[二进制文件: {Path(path).name}, {len(raw)} bytes]")
+    return FileContent(path=path, content=content)
 
 
 @router.get("/download")
@@ -118,7 +113,7 @@ async def download_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Download / serve a file from the agent workspace (browser-friendly).
-    
+
     Auth via Bearer header OR `token` query parameter (for <img> tags).
     """
     from app.core.security import decode_access_token
@@ -144,10 +139,29 @@ async def download_file(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
     await check_agent_access(db, user, agent_id)
-    target = _safe_path(agent_id, path)
-    if not target.exists() or not target.is_file():
+    _validate_path(path)
+
+    storage = get_storage()
+    key = f"{agent_id}/{path}"
+    filename = Path(path).name
+
+    # Try presigned URL first (works for S3/cloud backends)
+    try:
+        url = await storage.get_presigned_url(key)
+        return RedirectResponse(url=url)
+    except StorageError:
+        pass
+
+    # Fallback: read bytes and return as response (works for local backend)
+    try:
+        data = await storage.read_bytes(key)
+    except StorageFileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(path=str(target), filename=target.name)
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.put("/content")
@@ -160,11 +174,11 @@ async def write_file(
 ):
     """Write content to a file (create or overwrite)."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
+    _validate_path(path)
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    async with aiofiles.open(target, "w", encoding="utf-8") as f:
-        await f.write(data.content)
+    storage = get_storage()
+    key = f"{agent_id}/{path}"
+    await storage.write(key, data.content)
 
     return {"status": "ok", "path": path}
 
@@ -176,18 +190,23 @@ async def delete_file(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a file."""
+    """Delete a file or directory."""
     await check_agent_access(db, current_user, agent_id)
-    target = _safe_path(agent_id, path)
+    _validate_path(path)
 
-    if not target.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    storage = get_storage()
+    key = f"{agent_id}/{path}"
 
-    if target.is_dir():
-        import shutil
-        shutil.rmtree(target)
+    # Check if it's a file
+    if await storage.exists(key):
+        await storage.delete(key)
     else:
-        target.unlink()
+        # Check if it's a directory (prefix with children)
+        items = await storage.list(key)
+        if items:
+            await storage.delete_prefix(key)
+        else:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
     return {"status": "ok", "path": path}
 
@@ -224,19 +243,15 @@ async def import_skill_to_agent(
     if not skill.files:
         raise HTTPException(status_code=400, detail="Skill has no files")
 
-    # Write each file into the agent's workspace
-    base = _agent_base_dir(agent_id)
-    skill_dir = base / "skills" / skill.folder_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
+    # Write each file into the agent's workspace via storage
+    storage = get_storage()
     written = []
     for f in skill.files:
-        file_path = (skill_dir / f.path).resolve()
-        # Safety check
-        if not str(file_path).startswith(str(base.resolve())):
+        # Skip paths with traversal
+        if ".." in f.path.split("/"):
             continue
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(f.content, encoding="utf-8")
+        key = f"{agent_id}/skills/{skill.folder_name}/{f.path}"
+        await storage.write(key, f.content)
         written.append(f.path)
 
     return {
@@ -270,28 +285,26 @@ async def upload_file_to_workspace(
     if not path.startswith(("workspace/", "skills/")):
         raise HTTPException(status_code=400, detail="只能上传到 workspace/ 或 skills/ 目录")
 
-    base = _agent_base_dir(agent_id)
-    target_dir = (base / path).resolve()
-    if not str(target_dir).startswith(str(base.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-
-    target_dir.mkdir(parents=True, exist_ok=True)
+    _validate_path(path)
     filename = file.filename or "unnamed"
     # Sanitize filename
     filename = filename.replace("/", "_").replace("\\", "_")
-    save_path = target_dir / filename
 
+    storage = get_storage()
+    key = f"{agent_id}/{path}/{filename}"
     content = await file.read()
-    save_path.write_bytes(content)
+    await storage.write_bytes(key, content)
 
     # Auto-extract text from non-text files
     extracted_path = None
-    from app.services.text_extractor import needs_extraction, save_extracted_text
+    from app.services.text_extractor import needs_extraction, extract_text
     if needs_extraction(filename):
-        txt_file = save_extracted_text(save_path, content, filename)
-        if txt_file:
-            base_abs = base.resolve()
-            extracted_path = str(txt_file.resolve().relative_to(base_abs))
+        text = extract_text(content, filename)
+        if text and text.strip():
+            stem = Path(filename).stem
+            txt_key = f"{agent_id}/{path}/{stem}.txt"
+            await storage.write(txt_key, text)
+            extracted_path = f"{path}/{stem}.txt"
 
     return {
         "status": "ok",
@@ -308,14 +321,6 @@ async def upload_file_to_workspace(
 enterprise_kb_router = APIRouter(prefix="/enterprise/knowledge-base", tags=["enterprise"])
 
 
-def _enterprise_kb_dir(tenant_id: str) -> Path:
-    return Path(settings.AGENT_DATA_DIR) / f"enterprise_info_{tenant_id}" / "knowledge_base"
-
-
-def _enterprise_info_dir(tenant_id: str) -> Path:
-    return Path(settings.AGENT_DATA_DIR) / f"enterprise_info_{tenant_id}"
-
-
 @enterprise_kb_router.get("/files")
 async def list_enterprise_kb_files(
     path: str = "",
@@ -324,33 +329,27 @@ async def list_enterprise_kb_files(
     """List files in enterprise knowledge base (tenant-scoped)."""
     if not current_user.tenant_id:
         return []
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id)).resolve()
-    info_dir.mkdir(parents=True, exist_ok=True)
 
+    tenant_id = str(current_user.tenant_id)
     if path:
-        target = (info_dir / path).resolve()
-    else:
-        target = info_dir
-    if not str(target).startswith(str(info_dir)):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
+        _validate_path(path)
 
-    if not target.exists() or not target.is_dir():
-        return []
+    storage = get_storage()
+    prefix = f"enterprise_info_{tenant_id}/{path}" if path else f"enterprise_info_{tenant_id}"
+    ep_prefix = f"enterprise_info_{tenant_id}/"
 
-    items = []
-    for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
-        if entry.name == '.gitkeep':
-            continue
-        rel = str(entry.resolve().relative_to(info_dir.resolve()))
-        stat = entry.stat()
-        items.append({
-            "name": entry.name,
+    items = await storage.list(prefix)
+    result = []
+    for item in items:
+        rel = item.path.removeprefix(ep_prefix)
+        result.append({
+            "name": item.name,
             "path": rel,
-            "is_dir": entry.is_dir(),
-            "size": stat.st_size if entry.is_file() else 0,
-            "url": f"/api/enterprise/knowledge-base/download?path={rel}" if not entry.is_dir() else None
+            "is_dir": item.is_dir,
+            "size": item.size,
+            "url": f"/api/enterprise/knowledge-base/download?path={rel}" if not item.is_dir else None,
         })
-    return items
+    return result
 
 
 @enterprise_kb_router.post("/upload")
@@ -360,33 +359,37 @@ async def upload_enterprise_kb_file(
     current_user: User = Depends(get_current_user),
 ):
     """Upload a file to enterprise knowledge base (tenant-scoped)."""
-    from app.core.security import require_role
     # Only admin can upload to enterprise KB
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=403, detail="Only admins can upload to enterprise knowledge base")
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
 
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id))
-    target_dir = (info_dir / sub_path).resolve()
-    if not str(target_dir).startswith(str(info_dir.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
+    if sub_path:
+        _validate_path(sub_path)
 
-    target_dir.mkdir(parents=True, exist_ok=True)
+    tenant_id = str(current_user.tenant_id)
     filename = file.filename or "unnamed"
     filename = filename.replace("/", "_").replace("\\", "_")
-    save_path = target_dir / filename
 
+    storage = get_storage()
+    key = f"enterprise_info_{tenant_id}/{sub_path}/{filename}" if sub_path else f"enterprise_info_{tenant_id}/{filename}"
     content = await file.read()
-    save_path.write_bytes(content)
+    await storage.write_bytes(key, content)
 
     # Auto-extract text from non-text files
     extracted_path = None
-    from app.services.text_extractor import needs_extraction, save_extracted_text
+    from app.services.text_extractor import needs_extraction, extract_text
     if needs_extraction(filename):
-        txt_file = save_extracted_text(save_path, content, filename)
-        if txt_file:
-            extracted_path = str(txt_file.resolve().relative_to(info_dir.resolve()))
+        text = extract_text(content, filename)
+        if text and text.strip():
+            stem = Path(filename).stem
+            if sub_path:
+                txt_key = f"enterprise_info_{tenant_id}/{sub_path}/{stem}.txt"
+            else:
+                txt_key = f"enterprise_info_{tenant_id}/{stem}.txt"
+            await storage.write(txt_key, text)
+            extracted_path = f"{sub_path}/{stem}.txt" if sub_path else f"{stem}.txt"
 
     rel_path = f"{sub_path}/{filename}" if sub_path else filename
     return {
@@ -407,18 +410,20 @@ async def read_enterprise_file(
     """Read content of an enterprise knowledge base file (tenant-scoped)."""
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id))
-    target = (info_dir / path).resolve()
-    if not str(target).startswith(str(info_dir.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
 
+    _validate_path(path)
+    tenant_id = str(current_user.tenant_id)
+
+    storage = get_storage()
+    key = f"enterprise_info_{tenant_id}/{path}"
     try:
-        content = target.read_text(encoding="utf-8", errors="replace")
-        return {"path": path, "content": content}
-    except Exception:
-        return {"path": path, "content": f"[二进制文件: {target.name}, {target.stat().st_size} bytes]"}
+        content = await storage.read(key)
+    except StorageFileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found")
+    except UnicodeDecodeError:
+        raw = await storage.read_bytes(key)
+        return {"path": path, "content": f"[二进制文件: {Path(path).name}, {len(raw)} bytes]"}
+    return {"path": path, "content": content}
 
 
 @enterprise_kb_router.put("/content")
@@ -433,14 +438,12 @@ async def write_enterprise_file(
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
 
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id))
-    target = (info_dir / path).resolve()
-    if not str(target).startswith(str(info_dir.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
+    _validate_path(path)
+    tenant_id = str(current_user.tenant_id)
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    async with aiofiles.open(target, "w", encoding="utf-8") as f:
-        await f.write(data.content)
+    storage = get_storage()
+    key = f"enterprise_info_{tenant_id}/{path}"
+    await storage.write(key, data.content)
     return {"status": "ok", "path": path}
 
 
@@ -455,18 +458,20 @@ async def delete_enterprise_file(
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
 
-    info_dir = _enterprise_info_dir(str(current_user.tenant_id))
-    target = (info_dir / path).resolve()
-    if not str(target).startswith(str(info_dir.resolve())):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+    _validate_path(path)
+    tenant_id = str(current_user.tenant_id)
 
-    if target.is_dir():
-        import shutil
-        shutil.rmtree(target)
+    storage = get_storage()
+    key = f"enterprise_info_{tenant_id}/{path}"
+
+    if await storage.exists(key):
+        await storage.delete(key)
     else:
-        target.unlink()
+        items = await storage.list(key)
+        if items:
+            await storage.delete_prefix(key)
+        else:
+            raise HTTPException(status_code=404, detail="File not found")
     return {"status": "ok", "path": path}
 
 
@@ -522,19 +527,16 @@ async def agent_import_from_clawhub(
     token = await _get_github_token(tenant_id)
     files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token)
 
-    # 3. Write to agent workspace: skills/<slug>/
-    base = _agent_base_dir(agent_id)
+    # 3. Write to agent workspace via storage
+    storage = get_storage()
     folder_name = slug
-    skill_dir = base / "skills" / folder_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
 
     written = []
     for f in files:
-        file_path = (skill_dir / f["path"]).resolve()
-        if not str(file_path).startswith(str(base.resolve())):
+        if ".." in f["path"].split("/"):
             continue
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(f["content"], encoding="utf-8")
+        key = f"{agent_id}/skills/{folder_name}/{f['path']}"
+        await storage.write(key, f["content"])
         written.append(f["path"])
 
     return {
@@ -572,18 +574,14 @@ async def agent_import_from_url(
     # Derive folder name
     folder_name = path.rstrip("/").split("/")[-1] if path else repo
 
-    # Write to agent workspace
-    base = _agent_base_dir(agent_id)
-    skill_dir = base / "skills" / folder_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
+    # Write to agent workspace via storage
+    storage = get_storage()
     written = []
     for f in files:
-        file_path = (skill_dir / f["path"]).resolve()
-        if not str(file_path).startswith(str(base.resolve())):
+        if ".." in f["path"].split("/"):
             continue
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(f["content"], encoding="utf-8")
+        key = f"{agent_id}/skills/{folder_name}/{f['path']}"
+        await storage.write(key, f["content"])
         written.append(f["path"])
 
     return {

@@ -1,7 +1,6 @@
 """Public pages API — serves published HTML without authentication."""
 
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
@@ -22,16 +21,15 @@ public_router = APIRouter(tags=["pages"])
 # Authenticated router — under /api prefix
 router = APIRouter(prefix="/pages", tags=["pages"])
 
-
-def _agent_base_dir(agent_id: uuid.UUID) -> Path:
-    return Path(settings.AGENT_DATA_DIR) / str(agent_id)
-
-
-# ── Public render (NO auth) ────────────────────────────
+# ── Public render (NO auth) ────────────────────
 
 @public_router.get("/p/{short_id}")
 async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
     """Serve a published HTML page. No authentication required."""
+    from app.services.storage.factory import get_storage
+
+    storage = get_storage()
+
     result = await db.execute(
         select(PublishedPage).where(PublishedPage.short_id == short_id)
     )
@@ -39,12 +37,12 @@ async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
     if not page:
         raise HTTPException(status_code=404, detail="Page not found")
 
-    # Read the HTML file from agent workspace
-    file_path = _agent_base_dir(page.agent_id) / page.source_path
-    if not file_path.exists() or not file_path.is_file():
+    # Read HTML file from agent workspace
+    file_key = f"{page.agent_id}/{page.source_path}"
+    if not await storage.exists(file_key):
         raise HTTPException(status_code=404, detail="Source file no longer exists")
 
-    html_content = file_path.read_text(encoding="utf-8", errors="replace")
+    html_content = await storage.read(file_key)
 
     # Increment view count
     await db.execute(

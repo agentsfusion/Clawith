@@ -375,21 +375,21 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             _image_markers = []
             if _post_image_keys:
                 import base64 as _b64
+                from app.services.storage.factory import get_storage
+
+                storage = get_storage()
+                _uploads_prefix = f"{agent_id}/workspace/uploads/"
+
                 _msg_id = message.get("message_id", "")
-                from pathlib import Path as _PostPath
-                from app.config import get_settings as _post_gs
-                _post_settings = _post_gs()
-                _upload_dir = _PostPath(_post_settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
-                _upload_dir.mkdir(parents=True, exist_ok=True)
                 for _ik in _post_image_keys:
                     try:
                         _img_bytes = await feishu_service.download_message_resource(
                             config.app_id, config.app_secret, _msg_id, _ik, "image"
                         )
                         # Save to workspace
-                        _save_path = _upload_dir / f"image_{_ik[-8:]}.jpg"
-                        _save_path.write_bytes(_img_bytes)
-                        logger.info(f"[Feishu] Saved post image to {_save_path} ({len(_img_bytes)} bytes)")
+                        _save_key = f"{_uploads_prefix}image_{_ik[-8:]}.jpg"
+                        await storage.write_bytes(_save_key, _img_bytes)
+                        logger.info(f"[Feishu] Saved post image to {_save_key} ({len(_img_bytes)} bytes)")
                         # Embed as base64 marker for vision models
                         _b64_data = _b64.b64encode(_img_bytes).decode("ascii")
                         _image_markers.append(f"[image_data:data:image/jpeg;base64,{_b64_data}]")
@@ -520,7 +520,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                                 try:
                                     import pathlib as _pl, json as _cj, time as _ct
                                     _safe_id = str(agent_id).replace("..", "").replace("/", "")
-                                    _cache = _pl.Path(f"/data/workspaces/{_safe_id}/feishu_contacts_cache.json")
+                                    from app.config import get_settings as _get_settings
+                                    _cache = _pl.Path(_get_settings().FEISHU_CACHE_DIR) / _safe_id / "feishu_contacts_cache.json"
                                     _cache.parent.mkdir(parents=True, exist_ok=True)
                                     _existing = {}
                                     if _cache.exists():
@@ -590,26 +591,38 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 llm_user_text = f"[发送者: {sender_name}{id_part}] {user_text}"
 
             # ── Inject recent uploaded file context ──────────────────────────
-            # Check the uploads directory for recently modified files (within 30 min).
-            # This is more reliable than scanning DB history, because the file save
-            # to disk always succeeds even if the DB transaction fails.
+            # Check uploads directory for recently modified files (within 30 min).
+            # This is more reliable than scanning DB history, because file save
+            # to disk always succeeds even if DB transaction fails.
             try:
                 import time as _time
-                import pathlib as _pl
-                from app.config import get_settings as _gs
-                _upload_dir = _pl.Path(_gs().AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
+                from app.services.storage.factory import get_storage
+
+                storage = get_storage()
+                _upload_prefix = f"{agent_id}/workspace/uploads/"
                 _recent_file_path = None
-                if _upload_dir.exists() and "uploads/" not in user_text and "workspace/" not in user_text:
-                    _now = _time.time()
-                    _candidates = sorted(
-                        _upload_dir.iterdir(),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
-                    )
-                    for _fp in _candidates:
-                        if _fp.is_file() and (_now - _fp.stat().st_mtime) < 1800:  # 30 min
-                            _recent_file_path = f"uploads/{_fp.name}"
-                            break
+                if "uploads/" not in user_text and "workspace/" not in user_text:
+                    try:
+                        _now = _time.time()
+                        _candidates = await storage.list(_upload_prefix)
+                        # Parse modified_at to timestamp (format may vary by backend)
+                        import datetime as _dt_parser
+                        _files = []
+                        for _f in _candidates:
+                            if not _f.is_dir:
+                                try:
+                                    _mtime = _dt_parser.datetime.fromisoformat(_f.modified_at).timestamp() if _f.modified_at else 0
+                                except Exception:
+                                    _mtime = 0
+                                _files.append((_f, _mtime))
+                        # Sort by mtime descending and find most recent within 30 min
+                        _files.sort(key=lambda x: x[1], reverse=True)
+                        for _f, _mtime in _files:
+                            if (_now - _mtime) < 1800:  # 30 min
+                                _recent_file_path = f"workspace/uploads/{_f.name}"
+                                break
+                    except Exception:
+                        pass
                 if _recent_file_path:
                     # _recent_file_path is relative to uploads dir; agent workspace root is
                     # AGENT_DATA_DIR/{agent_id}/, so the correct relative path is workspace/uploads/
