@@ -567,3 +567,49 @@ export const gwsApi = {
         request<{ ok: boolean; imported: number }>('/gws/skills/import', { method: 'POST' }),
 };
 
+// ─── Lark / 飞书 ─────────────────────────────────
+export interface LarkCredentialStatus {
+    configured: boolean;
+    masked_app_id: string;
+    has_app_secret: boolean;
+    brand: string;
+    scope_preset: string;
+    custom_scopes: string[];
+    resolved_scopes: string[];
+}
+
+export interface LarkScopeOptions {
+    presets: Record<string, { label: string; description: string; scopes: string[] }>;
+    available_scopes: { scope: string; label: string; category: string }[];
+    default_preset: string;
+}
+
+export const larkApi = {
+    getCredentials: () =>
+        request<LarkCredentialStatus>('/lark/settings/credentials'),
+
+    saveCredentials: (data: {
+        app_id: string;
+        app_secret: string;
+        brand: string;
+        scope_preset?: string;
+        custom_scopes?: string[];
+    }) =>
+        request<{ ok: boolean }>('/lark/settings/credentials', { method: 'PUT', body: JSON.stringify(data) }),
+
+    getScopeOptions: () =>
+        request<LarkScopeOptions>('/lark/settings/scope-options'),
+
+    authorize: (agentId: string) =>
+        request<{ authorize_url: string }>(`/lark/agents/${agentId}/auth/authorize`, { method: 'POST' }),
+
+    listAccounts: (agentId: string) =>
+        request<{ lark_user_name: string; lark_user_id: string; lark_avatar_url: string; status: string; scopes: string[]; authorized_at: string; last_used_at: string | null }[]>(`/lark/agents/${agentId}/auth/accounts`),
+
+    revoke: (agentId: string) =>
+        request<{ ok: boolean }>(`/lark/agents/${agentId}/auth/revoke`, { method: 'DELETE' }),
+
+    importSkills: () =>
+        request<{ ok: boolean; imported: number }>('/lark/skills/import', { method: 'POST' }),
+};
+
