@@ -10562,14 +10562,12 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
     except Exception as e:
         return f"Failed to publish: {e}"
 
-    # Build public URL from the same settings loader used by the app. Reading
-    # os.environ directly misses values that come from the local .env file.
-    try:
-        from app.config import get_settings as _get_publish_settings
-        public_base = (_get_publish_settings().PUBLIC_BASE_URL or os.environ.get("PUBLIC_BASE_URL", "")).rstrip("/")
-    except Exception:
-        public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
-    if not public_base:
+    # Build public URL. Tool handlers have no HTTP request context;
+    # the resolver will use env var → Replit → cached URL → fallback.
+    from app.services.platform_service import platform_service
+    public_base = (await platform_service.get_public_base_url(db)).rstrip("/")
+    is_fallback = public_base == "https://try.clawith.ai"
+    if not public_base or is_fallback:
         # Relative path works inside the same deployment; include a note so
         # the user can configure PUBLIC_BASE_URL for a fully-qualified link.
         url = f"/p/{short_id}"
