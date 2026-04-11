@@ -1920,6 +1920,11 @@ async def seed_builtin_tools():
     """Insert or update builtin tools in the database."""
     from app.models.tool import AgentTool
     from app.models.agent import Agent
+    from app.services.seeder_state import is_seeder_done, mark_seeder_done
+
+    if await is_seeder_done("seeder:tools", 1):
+        logger.info("[ToolSeeder] Already seeded (seeder:tools v1), skipping")
+        return
 
     async with async_session() as db:
         new_tool_ids = []
@@ -2002,6 +2007,8 @@ async def seed_builtin_tools():
 
         await db.commit()
         logger.info("[ToolSeeder] Builtin tools seeded")
+
+    await mark_seeder_done("seeder:tools", 1, {"count": len(BUILTIN_TOOLS)})
 
 
 async def clean_orphaned_mcp_tools():
