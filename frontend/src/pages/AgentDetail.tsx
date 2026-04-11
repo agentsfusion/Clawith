@@ -905,15 +905,32 @@ function LarkSection({ agentId }: { agentId: string }) {
         enabled: !!credStatus?.configured,
     });
 
+    useEffect(() => {
+        const handler = (e: MessageEvent) => {
+            if (e.data?.type !== 'lark-oauth') return;
+            const isCh = i18n.language?.startsWith('zh');
+            if (e.data.status === 'success') {
+                refetchAccounts();
+                alert(isCh ? 'Lark 连接成功！' : 'Lark connected successfully!');
+            } else {
+                const msg = e.data.message || '';
+                alert(isCh ? `Lark 连接失败${msg ? ': ' + msg : ''}` : `Failed to connect Lark.${msg ? ' ' + msg : ''}`);
+            }
+            setAuthorizing(false);
+        };
+        window.addEventListener('message', handler);
+        return () => window.removeEventListener('message', handler);
+    }, [i18n.language, refetchAccounts]);
+
     const handleConnect = async () => {
         setAuthorizing(true);
         try {
             const { authorize_url } = await larkApi.authorize(agentId);
-            window.open(authorize_url, '_blank', 'width=600,height=700');
+            window.open(authorize_url, 'lark_oauth', 'width=600,height=700');
         } catch (e: any) {
             alert(e?.message || 'Failed to start authorization');
+            setAuthorizing(false);
         }
-        setAuthorizing(false);
     };
 
     const handleRevoke = async (lark_user_id: string) => {

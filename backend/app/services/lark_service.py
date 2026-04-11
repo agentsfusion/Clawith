@@ -206,6 +206,25 @@ async def exchange_code_for_tokens(
         return body.get("data", body)
 
 
+async def fetch_user_info(
+    access_token: str,
+    tenant_id: uuid.UUID,
+    db: AsyncSession | None = None,
+) -> dict:
+    base_url = await resolve_lark_base_url(tenant_id, db)
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{base_url}/open-apis/authen/v1/user_info",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("code", -1) != 0:
+            logger.warning(f"Failed to fetch Lark user info: {body}")
+            return {}
+        return body.get("data", {})
+
+
 async def refresh_access_token(
     token_record: LarkOAuthToken,
     tenant_id: uuid.UUID,

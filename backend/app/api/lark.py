@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,13 @@ from app.database import get_db
 from app.models.lark_oauth_token import LarkOAuthToken
 from app.models.user import User
 from app.services import lark_service
+
+
+def _oauth_popup_response(status: str, message: str = "") -> HTMLResponse:
+    return HTMLResponse(f"""<!DOCTYPE html><html><body><script>
+    window.opener && window.opener.postMessage({{type:'lark-oauth',status:'{status}',message:{repr(message)}}}, '*');
+    window.close();
+    </script><p>{'Authorization successful. This window will close automatically.' if status == 'success' else f'Error: {message}'}</p></body></html>""")
 
 router = APIRouter(prefix="/lark", tags=["lark"])
 
@@ -290,8 +298,6 @@ async def handle_lark_oauth_callback(
 
     Exchanges code for tokens, stores them encrypted, redirects to frontend.
     """
-    from fastapi.responses import RedirectResponse
-
     try:
         state_data = lark_service.decrypt_oauth_state(state)
     except ValueError as e:
@@ -313,28 +319,23 @@ async def handle_lark_oauth_callback(
         )
     except Exception as e:
         logger.error(f"Failed to exchange OAuth code: {e}")
-        return RedirectResponse(
-            url=f"{settings.PUBLIC_BASE_URL}/agents/{agent_id}?lark=error&message={str(e)[:100]}",
-            status_code=302,
-        )
+        return _oauth_popup_response("error", str(e)[:100])
 
     if "access_token" not in token_response:
         err_msg = token_response.get("message", token_response.get("msg", "Unknown error"))
         err_code = token_response.get("code", "?")
         logger.error(f"Lark token exchange returned error: code={err_code}, msg={err_msg}")
-        from urllib.parse import quote
-        return RedirectResponse(
-            url=f"{settings.PUBLIC_BASE_URL}/agents/{agent_id}?lark=error&message={quote(str(err_msg)[:100])}",
-            status_code=302,
-        )
+        return _oauth_popup_response("error", str(err_msg)[:100])
 
     access_token = token_response["access_token"]
     refresh_token = token_response.get("refresh_token", "")
     expires_in = token_response.get("expires_in", 3600)
     scopes = token_response.get("scope", "").split(" ") if token_response.get("scope") else []
     lark_user_id = token_response.get("open_id", "")
-    lark_user_name = token_response.get("name", "")
-    lark_avatar_url = token_response.get("avatar_url", "")
+
+    user_info = await lark_service.fetch_user_info(access_token, tenant_id, db)
+    lark_user_name = user_info.get("name", "") or token_response.get("name", "")
+    lark_avatar_url = user_info.get("avatar_url", "") or token_response.get("avatar_url", "")
 
     result = await db.execute(
         select(LarkOAuthToken).where(
@@ -381,10 +382,7 @@ async def handle_lark_oauth_callback(
 
     await db.commit()
 
-    return RedirectResponse(
-        url=f"{settings.PUBLIC_BASE_URL}/agents/{agent_id}?lark=success",
-        status_code=302,
-    )
+    return _oauth_popup_response("success")
 
 
 @router.delete("/agents/{agent_id}/auth/revoke")
