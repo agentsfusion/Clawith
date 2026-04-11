@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 from app.services.sandbox.config import SandboxConfig, SandboxType
@@ -147,6 +148,23 @@ class Settings(BaseSettings):
     SANDBOX_ALLOW_NETWORK: bool = False
     SANDBOX_DEFAULT_TIMEOUT: int = 30
     SANDBOX_MAX_TIMEOUT: int = 60
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, v: str) -> str:
+        """Ensure PostgreSQL URLs use the asyncpg driver.
+
+        Platforms like Replit provide ``postgresql://`` without a driver
+        suffix, but SQLAlchemy's async engine requires
+        ``postgresql+asyncpg://``.  This validator adds the suffix
+        transparently at config-load time.
+        """
+        if isinstance(v, str) and v.startswith("postgresql://"):
+            # Only inject asyncpg when no explicit driver is specified.
+            scheme = v.split("://", 1)[0]
+            if "+" not in scheme:
+                return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     model_config = {
         "env_file": [".env", "../.env"],
