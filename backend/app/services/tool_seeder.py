@@ -1625,6 +1625,23 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    {
+        "name": "lark",
+        "display_name": "Lark CLI",
+        "description": "Interact with Lark/Feishu services (IM, Docs, Sheets, Drive, Calendar, Mail, Tasks, Wiki, Base, VC, Approval, Whiteboard) via the lark-cli. Requires per-user Lark OAuth authorization.",
+        "category": "lark",
+        "icon": "🐦",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The lark-cli command to execute, e.g. 'calendar +agenda', 'im +messages-send --chat-id oc_xxx --text Hello'"}
+            },
+            "required": ["command"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
 ]
 
 # ── AgentBay Tools ──────────────────────────────────────────────────────────
