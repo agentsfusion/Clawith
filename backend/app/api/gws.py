@@ -34,7 +34,7 @@ router = APIRouter(prefix="/gws", tags=["google-workspace"])
 settings = get_settings()
 
 
-def _get_gws_redirect_uri() -> str:
+async def _get_gws_redirect_uri(db: AsyncSession) -> str:
     """Resolve GWS OAuth redirect URI.
 
     If GWS_OAUTH_REDIRECT_URI is explicitly set (e.g. http://localhost:8008/api/gws/auth/callback
@@ -43,7 +43,9 @@ def _get_gws_redirect_uri() -> str:
     """
     if settings.GWS_OAUTH_REDIRECT_URI:
         return settings.GWS_OAUTH_REDIRECT_URI
-    return f"{settings.PUBLIC_BASE_URL}{settings.GWS_OAUTH_CALLBACK_PATH}"
+    from app.services.platform_service import platform_service
+    base_url = await platform_service.get_public_base_url(db)
+    return f"{base_url}{settings.GWS_OAUTH_CALLBACK_PATH}"
 
 GWS_SCOPE_PRESETS = {
     "readonly": {
@@ -287,7 +289,7 @@ async def get_gws_authorize_url(
         tenant_id=tenant_id,
     )
 
-    redirect_uri = _get_gws_redirect_uri()
+    redirect_uri = await _get_gws_redirect_uri(db)
 
     params = {
         "client_id": config["client_id"],
@@ -324,7 +326,7 @@ async def handle_gws_oauth_callback(
     user_id = uuid.UUID(state_data["user_id"])
     tenant_id = uuid.UUID(state_data["tenant_id"])
     
-    redirect_uri = _get_gws_redirect_uri()
+    redirect_uri = await _get_gws_redirect_uri(db)
     
     try:
         token_response = await gws_service.exchange_code_for_tokens(

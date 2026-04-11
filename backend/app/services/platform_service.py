@@ -1,11 +1,71 @@
 """Platform-wide service for URL resolution and host type detection."""
 
+import logging
 import os
 import re
 from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.system_settings import SystemSetting
+
+logger = logging.getLogger(__name__)
+
+# Module-level cache for background tasks (no request context).
+# Populated on the first successful request-based detection.
+_cached_public_base_url: str | None = None
+
+
+def _build_replit_url() -> str | None:
+    """Construct the public base URL from Replit environment variables.
+
+    Returns:
+        The constructed URL (e.g. ``https://slug--owner.repl.co``) or
+        ``None`` when not running on Replit.
+    """
+    if not os.environ.get("REPL_ID"):
+        return None
+
+    slug = os.environ.get("REPL_SLUG", "")
+    owner = os.environ.get("REPL_OWNER", "")
+    if not slug:
+        return None
+
+    # Deployed repls use the simpler https://{slug}.repl.co format.
+    if os.environ.get("REPL_DEPLOYMENT"):
+        return f"https://{slug}.repl.co"
+
+    # Standard (development) repls use https://{slug}--{owner}.repl.co.
+    if owner:
+        return f"https://{slug}--{owner}.repl.co"
+
+    # Fallback: slug only (edge case, shouldn't normally happen).
+    return f"https://{slug}.repl.co"
+
+
+def _resolve_from_request(request: Request) -> str | None:
+    """Resolve public URL from request headers or ``request.base_url``.
+
+    Prefers ``X-Forwarded-Host`` / ``X-Forwarded-Proto`` headers (set by
+    reverse proxies like Replit, Cloudflare, nginx) over the raw
+    ``request.base_url`` which often reflects an internal address.
+
+    Returns:
+        The resolved URL or ``None`` if nothing useful could be extracted.
+    """
+    forwarded_host = request.headers.get("x-forwarded-host")
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+
+    if forwarded_host:
+        proto = forwarded_proto or "https"
+        return f"{proto}://{forwarded_host}".rstrip("/")
+
+    # Fall back to request.base_url (Starlette reads Host header).
+    base = str(request.base_url).rstrip("/")
+    # Guard against obviously internal/unusable addresses.
+    # request.base_url always includes a scheme, so after rstrip("/") it
+    # looks like "http://host:port" — never empty.
+    return base
+
 
 class PlatformService:
     """Service to handle platform-wide settings and URL resolution."""
@@ -21,22 +81,37 @@ class PlatformService:
     async def get_public_base_url(self, db: AsyncSession | None = None, request: Request | None = None) -> str:
         """Resolve the platform's public base URL with priority lookup.
         
-        Priority:
-        1. Environment variable (PUBLIC_BASE_URL) - from .env or docker
-        2. Incoming request's base URL (browser address)
-        3. Hardcoded fallback (https://try.clawith.ai)
+        Priority chain:
+        1. Environment variable (PUBLIC_BASE_URL) — manual override, always wins
+        2. Replit domain construction (REPL_SLUG + REPL_OWNER)
+        3. Cached URL from a previous request-based detection
+        4. Request-based detection (X-Forwarded-* headers → request.base_url)
+        5. Hardcoded fallback (https://try.clawith.ai)
         """
-        # 1. Try environment variable
+        global _cached_public_base_url
+
+        # 1. Explicit environment variable — highest priority, allows manual override.
         env_url = os.environ.get("PUBLIC_BASE_URL")
         if env_url:
             return env_url.rstrip("/")
 
-        # 2. Fallback to request (browser address)
-        if request:
-            # Note: request.base_url might include trailing slash
-            return str(request.base_url).rstrip("/")
+        # 2. Replit domain auto-detection.
+        replit_url = _build_replit_url()
+        if replit_url:
+            return replit_url
 
-        # 3. Absolute fallback
+        # 3. Cached URL (populated by previous request-based detection).
+        if _cached_public_base_url:
+            return _cached_public_base_url
+
+        # 4. Request-based detection (headers + base_url).
+        if request:
+            resolved = _resolve_from_request(request)
+            if resolved:
+                _cached_public_base_url = resolved
+                return resolved
+
+        # 5. Absolute fallback.
         return "https://try.clawith.ai"
 
 
@@ -45,7 +120,7 @@ class PlatformService:
         
         Priority:
         1. Explicit sso_domain stored in tenant record (if present)
-        2. Auto-generated URL based on the unified public_base_url (ENV > Request > Fallback)
+        2. Auto-generated URL based on the unified public_base_url (ENV > Replit > Cache > Request > Fallback)
         """
         if tenant.sso_domain:
             return tenant.sso_domain.rstrip("/")
