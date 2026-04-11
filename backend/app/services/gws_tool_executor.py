@@ -105,15 +105,31 @@ async def _get_valid_access_token(token_record: GwsOAuthToken) -> str:
     return decrypt_data(token_record.access_token, settings.SECRET_KEY)
 
 
+def _get_npm_global_bin() -> str:
+    try:
+        result = __import__("subprocess").run(
+            ["npm", "config", "get", "prefix"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return os.path.join(result.stdout.strip(), "bin")
+    except Exception:
+        pass
+    return os.path.expanduser("~/.config/npm/node_global/bin")
+
+
 def _find_gws_cli() -> str | None:
     gws = shutil.which("gws")
     if gws:
         return gws
 
+    npm_bin = _get_npm_global_bin()
     common_paths = [
+        os.path.join(npm_bin, "gws"),
         "/usr/local/bin/gws",
         "/usr/bin/gws",
         os.path.expanduser("~/.npm-global/bin/gws"),
+        os.path.expanduser("~/.config/npm/node_global/bin/gws"),
         os.path.expanduser("~/node_modules/.bin/gws"),
     ]
 
