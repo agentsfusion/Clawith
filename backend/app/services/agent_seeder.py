@@ -95,14 +95,13 @@ MEESEEKS_SKILLS = [
 async def seed_default_agents():
     """Create Morty & Meeseeks if they don't already exist.
 
-    Idempotency is guarded by a '.seeded' marker file in AGENT_DATA_DIR rather
-    than by agent name, so the seeder does NOT re-run if the user renames or
-    deletes the default agents.  Delete the marker manually to re-seed.
+    Idempotency is guarded by a database-backed marker in system_settings.
+    To force re-seed: DELETE FROM system_settings WHERE key = 'seeder:agents';
     """
-    # --- Idempotency guard: file-based marker (survives agent renames/deletes) ---
-    seed_marker = Path(settings.AGENT_DATA_DIR) / ".seeded"
-    if seed_marker.exists():
-        logger.info("[AgentSeeder] Seed marker found, skipping default agent creation")
+    from app.services.seeder_state import is_seeder_done, mark_seeder_done
+
+    if await is_seeder_done("seeder:agents", 1):
+        logger.info("[AgentSeeder] Already seeded (seeder:agents v1), skipping")
         return
 
     async with async_session() as db:
@@ -246,10 +245,7 @@ async def seed_default_agents():
         await db.commit()
         logger.info(f"[AgentSeeder] Created default agents: Morty ({morty.id}), Meeseeks ({meeseeks.id})")
 
-    # Write seed marker AFTER a successful commit so a failed seed can be retried
-    seed_marker.parent.mkdir(parents=True, exist_ok=True)
-    seed_marker.write_text(
-        f"seeded\nmorty={morty.id}\nmeeseeks={meeseeks.id}\n",
-        encoding="utf-8",
-    )
-    logger.info(f"[AgentSeeder] Wrote seed marker to {seed_marker}")
+    await mark_seeder_done("seeder:agents", 1, {
+        "morty": str(morty.id),
+        "meeseeks": str(meeseeks.id),
+    })
