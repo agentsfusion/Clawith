@@ -8581,14 +8581,12 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
     except Exception as e:
         return f"Failed to publish: {e}"
 
-    # Build public URL.
-    # _publish_page is called from a tool handler — there is no HTTP request
-    # object available, so platform_service.get_public_base_url() would fall
-    # back to the hardcoded 'https://try.clawith.ai' when PUBLIC_BASE_URL is
-    # not set. Instead, read the env var directly and surface a clear error
-    # when it is missing, so source-code deployers know exactly what to fix.
-    public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
-    if not public_base:
+    # Build public URL. Tool handlers have no HTTP request context;
+    # the resolver will use env var → Replit → cached URL → fallback.
+    from app.services.platform_service import platform_service
+    public_base = (await platform_service.get_public_base_url(db)).rstrip("/")
+    is_fallback = public_base == "https://try.clawith.ai"
+    if not public_base or is_fallback:
         # Relative path works inside the same deployment; include a note so
         # the user can configure PUBLIC_BASE_URL for a fully-qualified link.
         url = f"/p/{short_id}"
