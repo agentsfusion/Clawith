@@ -1494,6 +1494,23 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "lark",
+            "description": "Execute Lark/Feishu CLI commands to interact with IM, Docs, Sheets, Drive, Calendar, Mail, Tasks, Wiki, Base, VC, and Approval. The user must have connected their Lark account via agent settings. Examples: 'calendar +agenda', 'im +messages-send --chat-id oc_xxx --text Hello', 'drive +upload --file ./report.pdf'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The lark-cli command to execute, e.g. 'calendar +agenda', 'sheets +read --spreadsheet-token xxx'",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
     # ── AgentBay Tools ────────────────────────────────────────────
     {
         "type": "function",
@@ -2434,6 +2451,8 @@ async def execute_tool(
             result = await _install_skill(agent_id, ws, arguments)
         elif tool_name == "gws":
             result = await _execute_gws(agent_id, user_id, arguments)
+        elif tool_name == "lark":
+            result = await _execute_lark(agent_id, user_id, arguments)
         else:
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
@@ -9032,6 +9051,14 @@ async def _install_skill(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
             except Exception as e:
                 logger.warning(f"[install_skill] Failed to auto-enable gws tool: {e}")
 
+        from app.services.lark_skill_seeder import is_lark_skill
+        if is_lark_skill(folder_name):
+            try:
+                from app.services.lark_skill_seeder import ensure_lark_tool_enabled_for_agent
+                await ensure_lark_tool_enabled_for_agent(agent_id)
+            except Exception as e:
+                logger.warning(f"[install_skill] Failed to auto-enable lark tool: {e}")
+
         return f"✅ Skill '{folder_name}' installed successfully ({len(written)} files written to skills/{folder_name}/).\n\nFiles: {', '.join(written)}"
 
     except Exception as e:
@@ -9750,6 +9777,29 @@ async def _execute_gws(agent_id: uuid.UUID, user_id: uuid.UUID, arguments: dict)
         return "Error: command is required"
 
     result = await execute_gws_command(agent_id, user_id, command)
+
+    if "error" in result and "output" not in result:
+        return f"❌ {result['error']}"
+
+    output_parts = []
+    if result.get("output"):
+        output_parts.append(result["output"])
+    if result.get("error"):
+        output_parts.append(f"⚠️ {result['error']}")
+    if result.get("exit_code") and result["exit_code"] != 0:
+        output_parts.append(f"Exit code: {result['exit_code']}")
+
+    return "\n\n".join(output_parts) if output_parts else "✅ Command executed successfully"
+
+
+async def _execute_lark(agent_id: uuid.UUID, user_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.lark_tool_executor import execute_lark_command
+
+    command = arguments.get("command", "")
+    if not command:
+        return "Error: command is required"
+
+    result = await execute_lark_command(agent_id, user_id, command)
 
     if "error" in result and "output" not in result:
         return f"❌ {result['error']}"

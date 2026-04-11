@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { enterpriseApi, gwsApi, skillApi } from '../services/api';
+import { enterpriseApi, gwsApi, larkApi, skillApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
@@ -298,6 +298,8 @@ function OrgTab({ tenant }: { tenant: any }) {
         const [skillsImported, setSkillsImported] = useState<number | null>(null);
         const [scopeInitialized, setScopeInitialized] = useState(false);
 
+        const gwsCallbackUrl = `${window.location.origin}/api/gws/auth/callback`;
+
         const { data: gwsCred } = useQuery({
             queryKey: ['gws-credentials'],
             queryFn: () => gwsApi.getCredentials(),
@@ -546,6 +548,357 @@ function OrgTab({ tenant }: { tenant: any }) {
                             </span>
                         )}
                     </div>
+
+                    {(gwsCred?.configured || gwsSaved) && (
+                        <div style={{
+                            marginTop: '16px',
+                            padding: '14px 16px',
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '8px',
+                        }}>
+                            <label className="form-label" style={{ marginBottom: '6px', display: 'block', fontWeight: 600, fontSize: '12px' }}>
+                                Redirect URL / 回调地址
+                            </label>
+                            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                Add this URL as an Authorized redirect URI in Google Cloud Console → APIs & Credentials → OAuth 2.0 Client
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{
+                                    flex: 1,
+                                    padding: '8px 12px',
+                                    background: 'var(--bg-elevated)',
+                                    border: '1px solid var(--border-subtle)',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    color: 'var(--text-primary)',
+                                    fontFamily: 'monospace',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    userSelect: 'all',
+                                }}>
+                                    {gwsCallbackUrl}
+                                </div>
+                                <LinearCopyButton
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ fontSize: '11px', width: 'auto', minWidth: '70px', height: '33px' }}
+                                    textToCopy={gwsCallbackUrl}
+                                    label={t('common.copy', 'Copy')}
+                                    copiedLabel="Copied"
+                                />
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    };
+
+
+    const LarkConfigCard = () => {
+        const [larkForm, setLarkForm] = useState({ app_id: '', app_secret: '', brand: 'lark' });
+        const [scopePreset, setScopePreset] = useState('standard');
+        const [customScopes, setCustomScopes] = useState<string[]>([]);
+        const [larkSaving, setLarkSaving] = useState(false);
+        const [larkSaved, setLarkSaved] = useState(false);
+        const [larkError, setLarkError] = useState('');
+        const [importingSkills, setImportingSkills] = useState(false);
+        const [skillsImported, setSkillsImported] = useState<number | null>(null);
+        const [scopeInitialized, setScopeInitialized] = useState(false);
+
+        const larkCallbackUrl = `${window.location.origin}/api/lark/auth/callback`;
+
+        const { data: larkCred } = useQuery({
+            queryKey: ['lark-credentials'],
+            queryFn: () => larkApi.getCredentials(),
+        });
+
+        const { data: scopeOptions } = useQuery({
+            queryKey: ['lark-scope-options'],
+            queryFn: () => larkApi.getScopeOptions(),
+        });
+
+        useEffect(() => {
+            if (larkCred && !scopeInitialized) {
+                setScopePreset(larkCred.scope_preset || 'standard');
+                setCustomScopes(larkCred.custom_scopes || []);
+                setLarkForm(f => ({ ...f, brand: larkCred.brand || 'lark' }));
+                setScopeInitialized(true);
+            }
+        }, [larkCred, scopeInitialized]);
+
+        const handleSave = async () => {
+            setLarkSaving(true);
+            setLarkError('');
+            try {
+                await larkApi.saveCredentials({
+                    ...larkForm,
+                    scope_preset: scopePreset,
+                    custom_scopes: scopePreset === 'custom' ? customScopes : [],
+                });
+                setLarkSaved(true);
+                setTimeout(() => setLarkSaved(false), 2000);
+                qc.invalidateQueries({ queryKey: ['lark-credentials'] });
+            } catch (e: any) {
+                setLarkError(e?.message || 'Failed to save');
+            }
+            setLarkSaving(false);
+        };
+
+        const handleImportSkills = async () => {
+            setImportingSkills(true);
+            try {
+                const result = await larkApi.importSkills();
+                setSkillsImported(result.imported);
+                setTimeout(() => setSkillsImported(null), 4000);
+            } catch (e: any) {
+                setLarkError(e?.message || 'Failed to import skills');
+            }
+            setImportingSkills(false);
+        };
+
+        const toggleCustomScope = (scope: string) => {
+            setCustomScopes(prev =>
+                prev.includes(scope) ? prev.filter(s => s !== scope) : [...prev, scope]
+            );
+        };
+
+        const scopeCategories = useMemo(() => {
+            if (!scopeOptions?.available_scopes) return {};
+            const cats: Record<string, typeof scopeOptions.available_scopes> = {};
+            for (const s of scopeOptions.available_scopes) {
+                if (!cats[s.category]) cats[s.category] = [];
+                cats[s.category].push(s);
+            }
+            return cats;
+        }, [scopeOptions]);
+
+        return (
+            <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+                <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
+                    <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>
+                        Lark / 飞书
+                    </h3>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                        Configure Lark / Feishu App credentials and permission scopes.
+                    </div>
+                </div>
+
+                <div style={{ padding: '20px' }}>
+                    {larkCred?.configured && (
+                        <div style={{ marginBottom: '16px', display: 'flex', gap: '12px', alignItems: 'center' }}>
+                            <span className="badge badge-success" style={{ fontSize: '10px' }}>Configured</span>
+                            {larkCred.masked_app_id && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                                    App ID: {larkCred.masked_app_id}
+                                </span>
+                            )}
+                            {larkCred.brand && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                    Brand: {larkCred.brand === 'feishu' ? '飞书 (China)' : 'Lark (International)'}
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                        <div className="form-group">
+                            <label className="form-label">App ID</label>
+                            <input
+                                className="form-input"
+                                value={larkForm.app_id}
+                                onChange={e => setLarkForm(f => ({ ...f, app_id: e.target.value }))}
+                                placeholder={larkCred?.masked_app_id || 'Enter Lark App ID'}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">App Secret</label>
+                            <input
+                                className="form-input"
+                                type="password"
+                                value={larkForm.app_secret}
+                                onChange={e => setLarkForm(f => ({ ...f, app_secret: e.target.value }))}
+                                placeholder={larkCred?.has_app_secret ? '••••••••' : 'Enter Lark App Secret'}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">Brand</label>
+                            <select
+                                className="form-input"
+                                value={larkForm.brand}
+                                onChange={e => setLarkForm(f => ({ ...f, brand: e.target.value }))}
+                            >
+                                <option value="lark">Lark (International)</option>
+                                <option value="feishu">飞书 (China)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style={{ marginBottom: '16px', borderTop: '1px solid var(--border-subtle)', paddingTop: '16px' }}>
+                        <label className="form-label" style={{ marginBottom: '8px', display: 'block', fontWeight: 600 }}>
+                            OAuth Permission Scopes
+                        </label>
+                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                            Choose which Lark permissions to request when users connect their accounts.
+                            {larkCred?.configured && (
+                                <span style={{ color: 'var(--warning)', marginLeft: '4px' }}>
+                                    Changing scopes requires users to re-authorize their Lark accounts.
+                                </span>
+                            )}
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                            {scopeOptions?.presets && Object.entries(scopeOptions.presets).map(([key, preset]) => (
+                                <button
+                                    key={key}
+                                    className={`btn btn-sm ${scopePreset === key ? 'btn-primary' : 'btn-secondary'}`}
+                                    onClick={() => setScopePreset(key)}
+                                    style={{ position: 'relative' }}
+                                    title={preset.description}
+                                >
+                                    {preset.label}
+                                </button>
+                            ))}
+                            <button
+                                className={`btn btn-sm ${scopePreset === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
+                                onClick={() => setScopePreset('custom')}
+                                title="Select individual scopes"
+                            >
+                                Custom
+                            </button>
+                        </div>
+
+                        {scopePreset !== 'custom' && scopeOptions?.presets?.[scopePreset] && (
+                            <div style={{
+                                fontSize: '11px', color: 'var(--text-secondary)',
+                                padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: '6px',
+                                marginBottom: '8px'
+                            }}>
+                                <div style={{ marginBottom: '4px', fontWeight: 500 }}>
+                                    {scopeOptions.presets[scopePreset].description}
+                                </div>
+                                <div style={{ color: 'var(--text-tertiary)' }}>
+                                    {scopeOptions.presets[scopePreset].scopes.length} permission(s)
+                                </div>
+                            </div>
+                        )}
+
+                        {scopePreset === 'custom' && (
+                            <div style={{
+                                border: '1px solid var(--border-subtle)', borderRadius: '8px',
+                                padding: '12px', maxHeight: '300px', overflowY: 'auto',
+                                background: 'var(--bg-secondary)'
+                            }}>
+                                {Object.entries(scopeCategories).map(([category, scopes]) => (
+                                    <div key={category} style={{ marginBottom: '12px' }}>
+                                        <div style={{
+                                            fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)',
+                                            textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px'
+                                        }}>
+                                            {category}
+                                        </div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                            {scopes.map(s => (
+                                                <label key={s.scope} style={{
+                                                    display: 'flex', alignItems: 'center', gap: '8px',
+                                                    fontSize: '12px', cursor: 'pointer', padding: '4px 8px',
+                                                    borderRadius: '4px',
+                                                    background: customScopes.includes(s.scope) ? 'var(--bg-hover)' : 'transparent'
+                                                }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={customScopes.includes(s.scope)}
+                                                        onChange={() => toggleCustomScope(s.scope)}
+                                                        style={{ margin: 0 }}
+                                                    />
+                                                    <span>{s.label}</span>
+                                                    <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>
+                                                        {s.scope}
+                                                    </span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))}
+                                {customScopes.length > 0 && (
+                                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', borderTop: '1px solid var(--border-subtle)', paddingTop: '8px', marginTop: '4px' }}>
+                                        {customScopes.length} scope(s) selected
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {larkError && (
+                        <div style={{ fontSize: '12px', color: 'var(--error)', marginBottom: '12px' }}>{larkError}</div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={larkSaving}>
+                            {larkSaving ? t('common.loading') : t('common.save', 'Save')}
+                        </button>
+                        {larkSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>Saved</span>}
+
+                        <div style={{ flex: 1 }} />
+
+                        <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={handleImportSkills}
+                            disabled={importingSkills || !larkCred?.configured}
+                        >
+                            {importingSkills ? t('common.loading') : 'Import Lark Skills'}
+                        </button>
+                        {skillsImported !== null && (
+                            <span style={{ fontSize: '12px', color: 'var(--success)' }}>
+                                Imported {skillsImported} skill{skillsImported !== 1 ? 's' : ''}
+                            </span>
+                        )}
+                    </div>
+
+                    {(larkCred?.configured || larkSaved) && (
+                        <div style={{
+                            marginTop: '16px',
+                            padding: '14px 16px',
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '8px',
+                        }}>
+                            <label className="form-label" style={{ marginBottom: '6px', display: 'block', fontWeight: 600, fontSize: '12px' }}>
+                                Redirect URL / 回调地址
+                            </label>
+                            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                {(larkCred?.brand || larkForm.brand) === 'feishu'
+                                    ? '请将此地址添加到飞书开放平台 → 应用 → 安全设置 → 重定向 URL'
+                                    : 'Add this URL as the Redirect URL in Lark Open Platform → App → Security Settings → Redirect URLs'}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{
+                                    flex: 1,
+                                    padding: '8px 12px',
+                                    background: 'var(--bg-elevated)',
+                                    border: '1px solid var(--border-subtle)',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    color: 'var(--text-primary)',
+                                    fontFamily: 'monospace',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    userSelect: 'all',
+                                }}>
+                                    {larkCallbackUrl}
+                                </div>
+                                <LinearCopyButton
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ fontSize: '11px', width: 'auto', minWidth: '70px', height: '33px' }}
+                                    textToCopy={larkCallbackUrl}
+                                    label={t('common.copy', 'Copy')}
+                                    copiedLabel="Copied"
+                                />
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -1127,6 +1480,7 @@ function OrgTab({ tenant }: { tenant: any }) {
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <GoogleWorkspaceConfigCard />
+            <LarkConfigCard />
 
             {/* 1. Identity Providers Section */}
             <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
