@@ -275,6 +275,10 @@ async def ensure_gws_tool_for_agents_with_skills() -> int:
     """
     from app.models.agent import Agent
     from app.services.storage.factory import get_storage
+    from app.services.seeder_state import is_seeder_done, mark_seeder_done
+
+    if await is_seeder_done("seeder:gws-tool-check", 1):
+        return 0
 
     storage = get_storage()
 
@@ -302,6 +306,8 @@ async def ensure_gws_tool_for_agents_with_skills() -> int:
 
     if count > 0:
         logger.info(f"[GWS Seeder] Auto-enabled 'gws' tool for {count} agent(s) with GWS skills")
+
+    await mark_seeder_done("seeder:gws-tool-check", 1)
     return count
 
 
