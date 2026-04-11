@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,14 @@ from app.database import get_db
 from app.models.gws_oauth_token import GwsOAuthToken
 from app.models.user import User
 from app.services import gws_service
+
+
+def _oauth_popup_response(status: str, message: str = "") -> HTMLResponse:
+    return HTMLResponse(f"""<!DOCTYPE html><html><body><script>
+    window.opener && window.opener.postMessage({{type:'gws-oauth',status:'{status}',message:{repr(message)}}}, '*');
+    window.close();
+    </script><p>{'Authorization successful. This window will close automatically.' if status == 'success' else f'Error: {message}'}</p></body></html>""")
+
 
 router = APIRouter(prefix="/gws", tags=["google-workspace"])
 
@@ -326,11 +335,7 @@ async def handle_gws_oauth_callback(
         )
     except Exception as e:
         logger.error(f"Failed to exchange OAuth code: {e}")
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(
-            url=f"{settings.PUBLIC_BASE_URL}/agents/{agent_id}?gws=error&message={str(e)[:100]}",
-            status_code=302,
-        )
+        return _oauth_popup_response("error", str(e)[:100])
     
     google_email = None
     google_user_id = None
@@ -382,12 +387,8 @@ async def handle_gws_oauth_callback(
         db.add(new_token)
     
     await db.commit()
-    
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(
-        url=f"{settings.PUBLIC_BASE_URL}/agents/{agent_id}?gws=success",
-        status_code=302,
-    )
+
+    return _oauth_popup_response("success")
 
 
 @router.delete("/agents/{agent_id}/auth/revoke")
