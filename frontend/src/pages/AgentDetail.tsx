@@ -768,15 +768,32 @@ function GoogleWorkspaceSection({ agentId }: { agentId: string }) {
         enabled: !!credStatus?.configured,
     });
 
+    useEffect(() => {
+        const handler = (e: MessageEvent) => {
+            if (e.data?.type !== 'gws-oauth') return;
+            const isCh = i18n.language?.startsWith('zh');
+            if (e.data.status === 'success') {
+                refetchAccounts();
+                alert(isCh ? 'Google Workspace 连接成功！' : 'Google Workspace connected successfully!');
+            } else {
+                const msg = e.data.message || '';
+                alert(isCh ? `Google Workspace 连接失败${msg ? ': ' + msg : ''}` : `Failed to connect Google Workspace.${msg ? ' ' + msg : ''}`);
+            }
+            setAuthorizing(false);
+        };
+        window.addEventListener('message', handler);
+        return () => window.removeEventListener('message', handler);
+    }, [i18n.language, refetchAccounts]);
+
     const handleConnect = async () => {
         setAuthorizing(true);
         try {
             const { authorize_url } = await gwsApi.authorize(agentId);
-            window.open(authorize_url, '_blank', 'width=600,height=700');
+            window.open(authorize_url, 'gws_oauth', 'width=600,height=700');
         } catch (e: any) {
             alert(e?.message || 'Failed to start authorization');
+            setAuthorizing(false);
         }
-        setAuthorizing(false);
     };
 
     const handleRevoke = async (google_email: string) => {
