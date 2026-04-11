@@ -1,6 +1,6 @@
-"""Google Workspace CLI (gws) tool executor.
+"""Lark CLI tool executor.
 
-Executes gws CLI commands with automatic OAuth credential injection.
+Executes lark-cli commands with automatic OAuth credential injection.
 """
 
 import asyncio
@@ -14,13 +14,13 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.core.security import decrypt_data
 from app.database import async_session
-from app.models.gws_oauth_token import GwsOAuthToken
-from app.services.gws_service import refresh_access_token
+from app.models.lark_oauth_token import LarkOAuthToken
+from app.services.lark_service import refresh_access_token, get_tenant_lark_config
 
 settings = get_settings()
 
 
-async def execute_gws_command(
+async def execute_lark_command(
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
     command: str,
@@ -28,31 +28,43 @@ async def execute_gws_command(
 ) -> dict:
     async with async_session() as db:
         result = await db.execute(
-            select(GwsOAuthToken).where(
-                GwsOAuthToken.agent_id == agent_id,
-                GwsOAuthToken.user_id == user_id,
-                GwsOAuthToken.status == "active",
+            select(LarkOAuthToken).where(
+                LarkOAuthToken.agent_id == agent_id,
+                LarkOAuthToken.user_id == user_id,
+                LarkOAuthToken.status == "active",
             )
         )
         token_record = result.scalar_one_or_none()
 
     if not token_record:
         return {
-            "error": "Google Workspace not authorized. Ask the user to connect their Google account in agent settings."
+            "error": "Lark not authorized. Ask the user to connect their Lark account in agent settings."
         }
+
+    if not token_record.tenant_id:
+        return {"error": "Lark token has no tenant association. Please re-authorize."}
 
     access_token = await _get_valid_access_token(token_record)
 
-    gws_path = await _ensure_gws_installed()
-    if not gws_path:
+    tenant_config = await get_tenant_lark_config(token_record.tenant_id)  # type: ignore[arg-type]
+    if not tenant_config.get("app_id"):
+        return {"error": "Lark not configured for tenant. Ask the admin to configure App credentials."}
+    app_id = tenant_config["app_id"]
+    app_secret = tenant_config.get("app_secret", "")
+
+    lark_cli_path = await _ensure_lark_installed()
+    if not lark_cli_path:
         return {
-            "error": "Google Workspace CLI is not available. Please contact your administrator to install @googleworkspace/cli, or wait a moment while it system attempts automatic installation."
+            "error": "Lark CLI is not available. Please contact your administrator to install @larksuite/cli, or wait a moment while the system attempts automatic installation."
         }
 
-    full_command = f"{gws_path} {command}"
+    full_command = f"{lark_cli_path} {command}"
 
     safe_env = dict(os.environ)
-    safe_env["GOOGLE_WORKSPACE_CLI_TOKEN"] = access_token
+    safe_env["LARKSUITE_CLI_USER_ACCESS_TOKEN"] = access_token
+    safe_env["LARKSUITE_CLI_APP_ID"] = app_id
+    safe_env["LARKSUITE_CLI_APP_SECRET"] = app_secret
+    safe_env["LARKSUITE_CLI_DEFAULT_AS"] = "user"
 
     try:
         proc = await asyncio.create_subprocess_shell(
@@ -82,11 +94,11 @@ async def execute_gws_command(
         return {"output": stdout_str[:10000]}
 
     except Exception as e:
-        logger.exception(f"[GWS] Execution failed: {e}")
+        logger.exception(f"[Lark] Execution failed: {e}")
         return {"error": f"Execution error: {str(e)[:200]}"}
 
 
-async def _get_valid_access_token(token_record: GwsOAuthToken) -> str:
+async def _get_valid_access_token(token_record: LarkOAuthToken) -> str:
     from datetime import datetime, timedelta, timezone
 
     now = datetime.now(timezone.utc)
@@ -99,38 +111,22 @@ async def _get_valid_access_token(token_record: GwsOAuthToken) -> str:
         if not token_record.tenant_id:
             raise ValueError("Cannot refresh token: tenant_id is missing")
 
-        logger.info(f"[GWS] Refreshing expired token for agent {token_record.agent_id}")
+        logger.info(f"[Lark] Refreshing expired token for agent {token_record.agent_id}")
         return await refresh_access_token(token_record, token_record.tenant_id)
 
     return decrypt_data(token_record.access_token, settings.SECRET_KEY)
 
 
-def _get_npm_global_bin() -> str:
-    try:
-        result = __import__("subprocess").run(
-            ["npm", "config", "get", "prefix"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return os.path.join(result.stdout.strip(), "bin")
-    except Exception:
-        pass
-    return os.path.expanduser("~/.config/npm/node_global/bin")
+def _find_lark_cli() -> str | None:
+    lark = shutil.which("lark-cli")
+    if lark:
+        return lark
 
-
-def _find_gws_cli() -> str | None:
-    gws = shutil.which("gws")
-    if gws:
-        return gws
-
-    npm_bin = _get_npm_global_bin()
     common_paths = [
-        os.path.join(npm_bin, "gws"),
-        "/usr/local/bin/gws",
-        "/usr/bin/gws",
-        os.path.expanduser("~/.npm-global/bin/gws"),
-        os.path.expanduser("~/.config/npm/node_global/bin/gws"),
-        os.path.expanduser("~/node_modules/.bin/gws"),
+        "/usr/local/bin/lark-cli",
+        "/usr/bin/lark-cli",
+        os.path.expanduser("~/.npm-global/bin/lark-cli"),
+        os.path.expanduser("~/node_modules/.bin/lark-cli"),
     ]
 
     for path in common_paths:
@@ -140,31 +136,31 @@ def _find_gws_cli() -> str | None:
     return None
 
 
-async def _ensure_gws_installed() -> str | None:
-    gws_path = _find_gws_cli()
-    if gws_path:
-        return gws_path
+async def _ensure_lark_installed() -> str | None:
+    lark_path = _find_lark_cli()
+    if lark_path:
+        return lark_path
 
-    logger.info("[GWS] gws CLI not found, attempting on-demand installation...")
+    logger.info("[Lark] lark-cli not found, attempting on-demand installation...")
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "npm", "install", "-g", "@googleworkspace/cli",
+            "npm", "install", "-g", "@larksuite/cli",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
 
         if proc.returncode == 0:
-            logger.info("[GWS] Successfully installed @googleworkspace/cli")
-            return _find_gws_cli()
+            logger.info("[Lark] Successfully installed @larksuite/cli")
+            return _find_lark_cli()
         else:
             stderr_str = stderr.decode('utf-8', errors='replace') if stderr else ''
-            logger.error(f"[GWS] Installation failed with code {proc.returncode}: {stderr_str[:500]}")
+            logger.error(f"[Lark] Installation failed with code {proc.returncode}: {stderr_str[:500]}")
             return None
     except asyncio.TimeoutError:
-        logger.error("[GWS] Installation timed out after 120s")
+        logger.error("[Lark] Installation timed out after 120s")
         return None
     except Exception as e:
-        logger.error(f"[GWS] Failed to install gws CLI: {e}")
+        logger.error(f"[Lark] Failed to install lark-cli: {e}")
         return None

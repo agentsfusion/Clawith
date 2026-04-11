@@ -130,6 +130,10 @@ class Settings(BaseSettings):
     GWS_OAUTH_CALLBACK_PATH: str = "/api/gws/auth/callback"
     GWS_OAUTH_REDIRECT_URI: str = ""
 
+    # Lark CLI
+    LARK_OAUTH_CALLBACK_PATH: str = "/api/lark/auth/callback"
+    LARK_OAUTH_REDIRECT_URI: str = ""
+
     # Jina AI (Reader + Search APIs)
     JINA_API_KEY: str = ""
 
