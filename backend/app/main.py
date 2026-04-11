@@ -144,12 +144,17 @@ async def lifespan(app: FastAPI):
         from app.models.tenant import Tenant
         from app.database import async_session as _session
         from sqlalchemy import select as _select
-        async with _session() as _db:
-            _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
-            if not _existing.scalar_one_or_none():
-                _db.add(Tenant(name="Default", slug="default", im_provider="web_only"))
-                await _db.commit()
-                logger.info("[startup] Default company created")
+        from app.services.seeder_state import is_seeder_done as _is_done, mark_seeder_done as _mark_done
+        if await _is_done("seeder:tenant", 1):
+            logger.info("[startup] Tenant already seeded, skipping")
+        else:
+            async with _session() as _db:
+                _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
+                if not _existing.scalar_one_or_none():
+                    _db.add(Tenant(name="Default", slug="default", im_provider="web_only"))
+                    await _db.commit()
+                    logger.info("[startup] Default company created")
+            await _mark_done("seeder:tenant", 1)
     except Exception as e:
         logger.warning(f"[startup] Default company seed failed: {e}")
 
