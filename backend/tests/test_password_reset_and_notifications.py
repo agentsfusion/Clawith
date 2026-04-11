@@ -132,11 +132,10 @@ async def test_create_password_reset_token_invalidates_older_tokens(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_build_password_reset_url_uses_env_public_base_url(monkeypatch):
-    monkeypatch.setattr(
-        password_reset_service,
-        "get_settings",
-        lambda: SimpleNamespace(PASSWORD_RESET_TOKEN_EXPIRE_MINUTES=30, PUBLIC_BASE_URL="https://app.example.com/"),
-    )
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.example.com/")
+    from app.services.platform_service import _cached_public_base_url
+    import app.services.platform_service as ps_mod
+    ps_mod._cached_public_base_url = None
     db = RecordingDB([DummyResult(None)])
 
     url = await password_reset_service.build_password_reset_url(db, "abc123")
