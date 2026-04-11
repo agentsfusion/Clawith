@@ -33,7 +33,7 @@ router = APIRouter(prefix="/lark", tags=["lark"])
 settings = get_settings()
 
 
-def _get_lark_redirect_uri() -> str:
+async def _get_lark_redirect_uri(db: AsyncSession) -> str:
     """Resolve Lark OAuth redirect URI.
 
     If LARK_OAUTH_REDIRECT_URI is explicitly set, use it directly.
@@ -41,7 +41,9 @@ def _get_lark_redirect_uri() -> str:
     """
     if settings.LARK_OAUTH_REDIRECT_URI:
         return settings.LARK_OAUTH_REDIRECT_URI
-    return f"{settings.PUBLIC_BASE_URL}{settings.LARK_OAUTH_CALLBACK_PATH}"
+    from app.services.platform_service import platform_service
+    base_url = await platform_service.get_public_base_url(db)
+    return f"{base_url}{settings.LARK_OAUTH_CALLBACK_PATH}"
 
 
 LARK_SCOPE_PRESETS = {
@@ -273,7 +275,7 @@ async def get_lark_authorize_url(
         tenant_id=tenant_id,
     )
 
-    redirect_uri = _get_lark_redirect_uri()
+    redirect_uri = await _get_lark_redirect_uri(db)
     brand = config.get("brand", "lark")
     domain = _get_brand_domain(brand)
 
@@ -308,7 +310,7 @@ async def handle_lark_oauth_callback(
     user_id = uuid.UUID(state_data["user_id"])
     tenant_id = uuid.UUID(state_data["tenant_id"])
 
-    redirect_uri = _get_lark_redirect_uri()
+    redirect_uri = await _get_lark_redirect_uri(db)
 
     try:
         token_response = await lark_service.exchange_code_for_tokens(
