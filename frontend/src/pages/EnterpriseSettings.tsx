@@ -562,6 +562,8 @@ function OrgTab({ tenant }: { tenant: any }) {
         const [skillsImported, setSkillsImported] = useState<number | null>(null);
         const [scopeInitialized, setScopeInitialized] = useState(false);
 
+        const larkCallbackUrl = `${window.location.origin}/api/lark/auth/callback`;
+
         const { data: larkCred } = useQuery({
             queryKey: ['lark-credentials'],
             queryFn: () => larkApi.getCredentials(),
@@ -808,6 +810,50 @@ function OrgTab({ tenant }: { tenant: any }) {
                             </span>
                         )}
                     </div>
+
+                    {(larkCred?.configured || larkSaved) && (
+                        <div style={{
+                            marginTop: '16px',
+                            padding: '14px 16px',
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '8px',
+                        }}>
+                            <label className="form-label" style={{ marginBottom: '6px', display: 'block', fontWeight: 600, fontSize: '12px' }}>
+                                Redirect URL / 回调地址
+                            </label>
+                            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                {(larkCred?.brand || larkForm.brand) === 'feishu'
+                                    ? '请将此地址添加到飞书开放平台 → 应用 → 安全设置 → 重定向 URL'
+                                    : 'Add this URL as the Redirect URL in Lark Open Platform → App → Security Settings → Redirect URLs'}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{
+                                    flex: 1,
+                                    padding: '8px 12px',
+                                    background: 'var(--bg-elevated)',
+                                    border: '1px solid var(--border-subtle)',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    color: 'var(--text-primary)',
+                                    fontFamily: 'monospace',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    userSelect: 'all',
+                                }}>
+                                    {larkCallbackUrl}
+                                </div>
+                                <LinearCopyButton
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ fontSize: '11px', width: 'auto', minWidth: '70px', height: '33px' }}
+                                    textToCopy={larkCallbackUrl}
+                                    label={t('common.copy', 'Copy')}
+                                    copiedLabel="Copied"
+                                />
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         );
