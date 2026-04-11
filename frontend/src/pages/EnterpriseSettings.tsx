@@ -297,6 +297,8 @@ function OrgTab({ tenant }: { tenant: any }) {
         const [skillsImported, setSkillsImported] = useState<number | null>(null);
         const [scopeInitialized, setScopeInitialized] = useState(false);
 
+        const gwsCallbackUrl = `${window.location.origin}/api/gws/auth/callback`;
+
         const { data: gwsCred } = useQuery({
             queryKey: ['gws-credentials'],
             queryFn: () => gwsApi.getCredentials(),
@@ -545,6 +547,48 @@ function OrgTab({ tenant }: { tenant: any }) {
                             </span>
                         )}
                     </div>
+
+                    {(gwsCred?.configured || gwsSaved) && (
+                        <div style={{
+                            marginTop: '16px',
+                            padding: '14px 16px',
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '8px',
+                        }}>
+                            <label className="form-label" style={{ marginBottom: '6px', display: 'block', fontWeight: 600, fontSize: '12px' }}>
+                                Redirect URL / 回调地址
+                            </label>
+                            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                Add this URL as an Authorized redirect URI in Google Cloud Console → APIs & Credentials → OAuth 2.0 Client
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{
+                                    flex: 1,
+                                    padding: '8px 12px',
+                                    background: 'var(--bg-elevated)',
+                                    border: '1px solid var(--border-subtle)',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    color: 'var(--text-primary)',
+                                    fontFamily: 'monospace',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    userSelect: 'all',
+                                }}>
+                                    {gwsCallbackUrl}
+                                </div>
+                                <LinearCopyButton
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ fontSize: '11px', width: 'auto', minWidth: '70px', height: '33px' }}
+                                    textToCopy={gwsCallbackUrl}
+                                    label={t('common.copy', 'Copy')}
+                                    copiedLabel="Copied"
+                                />
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         );
