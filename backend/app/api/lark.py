@@ -318,6 +318,16 @@ async def handle_lark_oauth_callback(
             status_code=302,
         )
 
+    if "access_token" not in token_response:
+        err_msg = token_response.get("message", token_response.get("msg", "Unknown error"))
+        err_code = token_response.get("code", "?")
+        logger.error(f"Lark token exchange returned error: code={err_code}, msg={err_msg}")
+        from urllib.parse import quote
+        return RedirectResponse(
+            url=f"{settings.PUBLIC_BASE_URL}/agents/{agent_id}?lark=error&message={quote(str(err_msg)[:100])}",
+            status_code=302,
+        )
+
     access_token = token_response["access_token"]
     refresh_token = token_response.get("refresh_token", "")
     expires_in = token_response.get("expires_in", 3600)

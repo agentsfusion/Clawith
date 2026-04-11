@@ -151,6 +151,21 @@ async def resolve_lark_base_url(tenant_id: uuid.UUID, db: AsyncSession | None = 
     return "https://open.larksuite.com"
 
 
+async def _get_app_access_token(
+    app_id: str, app_secret: str, base_url: str,
+) -> str:
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{base_url}/open-apis/auth/v3/app_access_token/internal",
+            json={"app_id": app_id, "app_secret": app_secret},
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("code", -1) != 0:
+            raise ValueError(f"Failed to get app_access_token: {body.get('msg', body)}")
+        return body["app_access_token"]
+
+
 async def exchange_code_for_tokens(
     code: str,
     tenant_id: uuid.UUID,
@@ -159,8 +174,9 @@ async def exchange_code_for_tokens(
 ) -> dict:
     """Exchange OAuth authorization code for access and refresh tokens.
 
-    POST to brand-specific OIDC access_token endpoint with app credentials.
-    Returns token response dict with access_token, refresh_token, open_id, name, avatar_url, etc.
+    1. Obtain an app_access_token via internal endpoint.
+    2. POST to OIDC access_token endpoint with Bearer header.
+    Returns token response data dict with access_token, refresh_token, open_id, etc.
     """
     config = await get_tenant_lark_config(tenant_id, db)
 
@@ -168,19 +184,26 @@ async def exchange_code_for_tokens(
         raise ValueError("Lark not configured for tenant")
 
     base_url = await resolve_lark_base_url(tenant_id, db)
+    app_token = await _get_app_access_token(config["app_id"], config["app_secret"], base_url)
+
     token_url = f"{base_url}/open-apis/authen/v1/oidc/access_token"
     data = {
-        "app_id": config["app_id"],
-        "app_secret": config["app_secret"],
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": redirect_uri,
     }
 
     async with httpx.AsyncClient() as client:
-        response = await client.post(token_url, json=data)
+        response = await client.post(
+            token_url,
+            json=data,
+            headers={"Authorization": f"Bearer {app_token}"},
+        )
         response.raise_for_status()
-        return response.json()
+        body = response.json()
+        if body.get("code", -1) != 0:
+            raise ValueError(f"Lark token exchange failed ({body.get('code')}): {body.get('message', body.get('msg', ''))}")
+        return body.get("data", body)
 
 
 async def refresh_access_token(
@@ -203,18 +226,25 @@ async def refresh_access_token(
     refresh_token = decrypt_data(token_record.refresh_token, settings.SECRET_KEY)
 
     base_url = await resolve_lark_base_url(tenant_id, db)
+    app_token = await _get_app_access_token(config["app_id"], config["app_secret"], base_url)
+
     token_url = f"{base_url}/open-apis/authen/v1/oidc/refresh_access_token"
     data = {
-        "app_id": config["app_id"],
-        "app_secret": config["app_secret"],
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
     }
 
     async with httpx.AsyncClient() as client:
-        response = await client.post(token_url, json=data)
+        response = await client.post(
+            token_url,
+            json=data,
+            headers={"Authorization": f"Bearer {app_token}"},
+        )
         response.raise_for_status()
-        token_data = response.json()
+        body = response.json()
+        if body.get("code", -1) != 0:
+            raise ValueError(f"Lark token refresh failed ({body.get('code')}): {body.get('message', body.get('msg', ''))}")
+        token_data = body.get("data", body)
 
     new_access_token = token_data["access_token"]
     new_refresh_token = token_data.get("refresh_token", refresh_token)
