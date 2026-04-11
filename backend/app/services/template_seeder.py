@@ -159,6 +159,12 @@ DEFAULT_TEMPLATES = [
 
 async def seed_agent_templates():
     """Insert default agent templates if they don't exist. Update stale ones."""
+    from app.services.seeder_state import is_seeder_done, mark_seeder_done
+
+    if await is_seeder_done("seeder:templates", 1):
+        logger.info("[TemplateSeeder] Already seeded (seeder:templates v1), skipping")
+        return
+
     async with async_session() as db:
         with db.no_autoflush:
             # Remove old builtin templates that are no longer in our list
@@ -214,3 +220,5 @@ async def seed_agent_templates():
                     logger.info(f"[TemplateSeeder] Created template: {tmpl['name']}")
             await db.commit()
             logger.info("[TemplateSeeder] Agent templates seeded")
+
+    await mark_seeder_done("seeder:templates", 1)
