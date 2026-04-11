@@ -951,7 +951,12 @@ To avoid unnecessary deployments, save Vercel build limits, and prevent serving 
 async def seed_skills():
     """Insert builtin skills if they don't exist."""
     from app.services.skill_creator_content import get_skill_creator_files
+    from app.services.seeder_state import is_seeder_done, mark_seeder_done
     from pathlib import Path as _Path
+
+    if await is_seeder_done("seeder:skills", 1):
+        logger.info("[SkillSeeder] Already seeded (seeder:skills v1), skipping")
+        return
 
     _files_dir = _Path(__file__).parent / "skill_creator_files"
     _template_skills_dir = _Path(__file__).parent.parent.parent / "agent_template" / "skills"
@@ -1021,6 +1026,8 @@ async def seed_skills():
         await db.commit()
         logger.info("[SkillSeeder] Skills seeded")
 
+    await mark_seeder_done("seeder:skills", 1, {"count": len(BUILTIN_SKILLS)})
+
 
 async def push_default_skills_to_existing_agents():
     """Deploy all is_default skills into the workspace of every existing agent that is missing them.
@@ -1033,8 +1040,17 @@ async def push_default_skills_to_existing_agents():
     from app.models.system_settings import SystemSetting
     from sqlalchemy.orm import selectinload
     from app.services.storage.factory import get_storage
+    from app.services.seeder_state import is_seeder_done, get_seeder_state, mark_seeder_done
 
     storage = get_storage()
+    current_backend = storage.backend_name
+
+    state = await get_seeder_state("seeder:skills-push")
+    if state and state.get("version", 0) >= 1:
+        stored_backend = state.get("backend", "")
+        if stored_backend == current_backend:
+            logger.info(f"[SkillSeeder] Skills push already done for backend '{current_backend}', skipping")
+            return
 
     async with async_session() as db:
         # Load all is_default skills with their files
@@ -1100,13 +1116,6 @@ async def push_default_skills_to_existing_agents():
         if setting:
             setting.value = {"hash": current_hash}
         else:
-            db.add(SystemSetting(key="default_skills_sync_hash", value={"hash": current_hash}))
-        await db.commit()
+            logger.info("[SkillSeeder] All existing agents already have up-to-date default skills")
 
-        if pushed or removed_legacy:
-            logger.info(
-                f"[SkillSeeder] Pushed {pushed} new skill files "
-                f"to existing agents; removed {removed_legacy} legacy MCP installer files"
-            )
-        else:
-            logger.info("[SkillSeeder] All existing agents already have all default skills")
+    await mark_seeder_done("seeder:skills-push", 1, {"backend": current_backend})

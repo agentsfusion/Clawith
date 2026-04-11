@@ -205,28 +205,24 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"[startup] Default company seed failed: {e}")
 
-        try:
-            import shutil
-            from pathlib import Path as _Path
-            from app.config import get_settings as _gs
-            from app.models.tenant import Tenant as _T
-            from app.database import async_session as _ses
-            from sqlalchemy import select as _sel
-            _data_dir = _Path(_gs().AGENT_DATA_DIR)
-            _old_dir = _data_dir / "enterprise_info"
-            if _old_dir.exists() and any(_old_dir.iterdir()):
-                async with _ses() as _db:
-                    _first = await _db.execute(_sel(_T).order_by(_T.created_at).limit(1))
-                    _tenant = _first.scalar_one_or_none()
-                    if _tenant:
-                        _new_dir = _data_dir / f"enterprise_info_{_tenant.id}"
-                        if not _new_dir.exists():
-                            shutil.copytree(str(_old_dir), str(_new_dir))
-                            print(f"[startup] ✅ Migrated enterprise_info → enterprise_info_{_tenant.id}", flush=True)
-                        else:
-                            print(f"[startup] ℹ️ enterprise_info_{_tenant.id} already exists, skipping migration", flush=True)
-        except Exception as e:
-            print(f"[startup] ⚠️ enterprise_info migration failed: {e}", flush=True)
+    # Seed default company (Tenant) — required before users can register
+    try:
+        from app.models.tenant import Tenant
+        from app.database import async_session as _session
+        from sqlalchemy import select as _select
+        from app.services.seeder_state import is_seeder_done as _is_done, mark_seeder_done as _mark_done
+        if await _is_done("seeder:tenant", 1):
+            logger.info("[startup] Tenant already seeded, skipping")
+        else:
+            async with _session() as _db:
+                _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
+                if not _existing.scalar_one_or_none():
+                    _db.add(Tenant(name="Default", slug="default", im_provider="web_only"))
+                    await _db.commit()
+                    logger.info("[startup] Default company created")
+            await _mark_done("seeder:tenant", 1)
+    except Exception as e:
+        logger.warning(f"[startup] Default company seed failed: {e}")
 
         try:
             from app.services.tool_seeder import seed_builtin_tools, clean_orphaned_mcp_tools
