@@ -84,10 +84,18 @@ class E2bBackend(BaseSandboxBackend):
         language: str,
         timeout: int = 30,
         work_dir: str | None = None,
+        env: dict[str, str] | None = None,
         **kwargs
     ) -> ExecutionResult:
         """Execute code using E2B cloud sandbox."""
         start_time = time.time()
+
+        if env:
+            logger.warning(
+                "[E2B] OAuth credentials cannot be injected into cloud sandbox. "
+                "Code that requires GWS/Lark CLI will not have authentication. "
+                "Use execute_code (local) instead for authenticated operations."
+            )
 
         # Map language to E2B format
         e2b_language = _LANGUAGE_MAP.get(language, language)
