@@ -18,10 +18,18 @@ _cached_public_base_url: str | None = None
 def _build_replit_url() -> str | None:
     """Construct the public base URL from Replit environment variables.
 
+    Prefers ``REPLIT_DEV_DOMAIN`` (the actual proxy domain, e.g.
+    ``<id>.pike.replit.dev``) which is always accurate.  Falls back to the
+    legacy ``REPL_SLUG`` / ``REPL_OWNER`` construction only when the newer
+    variable is unavailable.
+
     Returns:
-        The constructed URL (e.g. ``https://slug--owner.repl.co``) or
-        ``None`` when not running on Replit.
+        The constructed URL or ``None`` when not running on Replit.
     """
+    dev_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+    if dev_domain:
+        return f"https://{dev_domain}"
+
     if not os.environ.get("REPL_ID"):
         return None
 
@@ -30,16 +38,27 @@ def _build_replit_url() -> str | None:
     if not slug:
         return None
 
-    # Deployed repls use the simpler https://{slug}.repl.co format.
     if os.environ.get("REPL_DEPLOYMENT"):
         return f"https://{slug}.repl.co"
 
-    # Standard (development) repls use https://{slug}--{owner}.repl.co.
     if owner:
         return f"https://{slug}--{owner}.repl.co"
 
-    # Fallback: slug only (edge case, shouldn't normally happen).
     return f"https://{slug}.repl.co"
+
+
+_INTERNAL_HOST_RE = re.compile(
+    r"^(localhost|0\.0\.0\.0|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|\[?::1\]?)$"
+)
+
+
+def _is_internal_host(url: str) -> bool:
+    """Return ``True`` if *url* points to a loopback or private-network host."""
+    try:
+        host = url.split("://", 1)[-1].split("/", 1)[0].split(":")[0]
+        return bool(_INTERNAL_HOST_RE.match(host))
+    except Exception:
+        return False
 
 
 def _resolve_from_request(request: Request) -> str | None:
@@ -51,19 +70,22 @@ def _resolve_from_request(request: Request) -> str | None:
 
     Returns:
         The resolved URL or ``None`` if nothing useful could be extracted.
+        Returns ``None`` when the resolved host is a loopback or private-
+        network address (e.g. ``localhost``, ``127.0.0.1``, ``10.x.x.x``)
+        so that it never poisons the module-level cache.
     """
     forwarded_host = request.headers.get("x-forwarded-host")
     forwarded_proto = request.headers.get("x-forwarded-proto")
 
     if forwarded_host:
         proto = forwarded_proto or "https"
-        return f"{proto}://{forwarded_host}".rstrip("/")
+        candidate = f"{proto}://{forwarded_host}".rstrip("/")
+        if not _is_internal_host(candidate):
+            return candidate
 
-    # Fall back to request.base_url (Starlette reads Host header).
     base = str(request.base_url).rstrip("/")
-    # Guard against obviously internal/unusable addresses.
-    # request.base_url always includes a scheme, so after rstrip("/") it
-    # looks like "http://host:port" — never empty.
+    if _is_internal_host(base):
+        return None
     return base
 
 
@@ -83,9 +105,10 @@ class PlatformService:
         
         Priority chain:
         1. Environment variable (PUBLIC_BASE_URL) — manual override, always wins
-        2. Replit domain construction (REPL_SLUG + REPL_OWNER)
+        2. Request-based detection (X-Forwarded-* headers → request.base_url)
+           — skips localhost / private-network addresses
         3. Cached URL from a previous request-based detection
-        4. Request-based detection (X-Forwarded-* headers → request.base_url)
+        4. Replit domain (REPLIT_DEV_DOMAIN → legacy REPL_SLUG fallback)
         5. Hardcoded fallback (https://try.clawith.ai)
         """
         global _cached_public_base_url
@@ -95,21 +118,21 @@ class PlatformService:
         if env_url:
             return env_url.rstrip("/")
 
-        # 2. Replit domain auto-detection.
-        replit_url = _build_replit_url()
-        if replit_url:
-            return replit_url
-
-        # 3. Cached URL (populated by previous request-based detection).
-        if _cached_public_base_url:
-            return _cached_public_base_url
-
-        # 4. Request-based detection (headers + base_url).
+        # 2. Request-based detection (headers + base_url) — most accurate for the current request.
         if request:
             resolved = _resolve_from_request(request)
             if resolved:
                 _cached_public_base_url = resolved
                 return resolved
+
+        # 3. Cached URL (populated by previous request-based detection).
+        if _cached_public_base_url:
+            return _cached_public_base_url
+
+        # 4. Replit domain auto-detection (fallback when no request context).
+        replit_url = _build_replit_url()
+        if replit_url:
+            return replit_url
 
         # 5. Absolute fallback.
         return "https://try.clawith.ai"
