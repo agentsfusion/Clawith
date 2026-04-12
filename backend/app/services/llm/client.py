@@ -684,6 +684,83 @@ class OpenAIResponsesClient(LLMClient):
 
         return input_items
 
+    @staticmethod
+    def _can_be_strict(schema: dict[str, Any]) -> bool:
+        """Check whether a JSON-Schema object can be used with strict mode.
+
+        Strict mode requires every ``type: object`` node to have explicit
+        ``properties``.  Free-form objects (no ``properties`` key) are
+        incompatible.
+        """
+        if not isinstance(schema, dict):
+            return True
+        if schema.get("type") == "object" and "properties" not in schema:
+            return False
+        for v in schema.values():
+            if isinstance(v, dict):
+                if not OpenAIResponsesClient._can_be_strict(v):
+                    return False
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict) and not OpenAIResponsesClient._can_be_strict(item):
+                        return False
+        return True
+
+    @staticmethod
+    def _make_strict_parameters(params: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a JSON-Schema parameters object for strict mode.
+
+        Strict mode requires:
+        - ``additionalProperties: false`` at every object level
+        - Every property listed in ``required``
+        - Optional properties made nullable (``[original_type, "null"]``)
+        """
+        import copy as _copy
+
+        if not params or params.get("type") != "object":
+            return params
+
+        params = _copy.deepcopy(params)
+        OpenAIResponsesClient._apply_strict(params)
+        return params
+
+    @staticmethod
+    def _apply_strict(schema: dict[str, Any]) -> None:
+        """Recursively apply strict-mode constraints in place.
+
+        Uses ``anyOf`` format for nullable types as required by OpenAI
+        Structured Outputs (type arrays like ``["string", "null"]`` are
+        not supported).
+        """
+        if not isinstance(schema, dict) or schema.get("type") != "object":
+            return
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        for prop_name, prop_schema in properties.items():
+            if prop_name not in required:
+                prop_type = prop_schema.get("type")
+                if prop_type and prop_type != "null" and "anyOf" not in prop_schema:
+                    desc = prop_schema.pop("description", None)
+                    original_type = prop_type if isinstance(prop_type, str) else prop_type[0]
+                    remaining = {k: v for k, v in prop_schema.items() if k != "type"}
+                    prop_schema.clear()
+                    prop_schema["anyOf"] = [
+                        {"type": original_type, **remaining},
+                        {"type": "null"},
+                    ]
+                    if desc is not None:
+                        prop_schema["description"] = desc
+            if isinstance(prop_schema, dict):
+                for sub in prop_schema.get("anyOf", []):
+                    if isinstance(sub, dict):
+                        OpenAIResponsesClient._apply_strict(sub)
+                OpenAIResponsesClient._apply_strict(prop_schema)
+                items = prop_schema.get("items")
+                if isinstance(items, dict):
+                    OpenAIResponsesClient._apply_strict(items)
+        schema["required"] = sorted(properties.keys())
+        schema["additionalProperties"] = False
+
     def _convert_tools(self, tools: list[dict] | None) -> list[dict] | None:
         """Convert OpenAI tool schema to Responses API function tool schema."""
         if not tools:
@@ -694,11 +771,28 @@ class OpenAIResponsesClient(LLMClient):
             if tool.get("type") != "function":
                 continue
             fn = tool.get("function", {})
+            raw_params = fn.get("parameters", {"type": "object", "properties": {}})
+            tool_name = fn.get("name", "")
+            if self._can_be_strict(raw_params):
+                try:
+                    strict_params = self._make_strict_parameters(raw_params)
+                    converted.append({
+                        "type": "function",
+                        "name": tool_name,
+                        "description": fn.get("description", ""),
+                        "parameters": strict_params,
+                        "strict": True,
+                    })
+                    continue
+                except Exception as exc:
+                    logger.debug("[ResponsesAPI] strict conversion failed for %s: %s", tool_name, exc)
+            else:
+                logger.debug("[ResponsesAPI] tool %s has free-form object params, skipping strict", tool_name)
             converted.append({
                 "type": "function",
                 "name": fn.get("name", ""),
                 "description": fn.get("description", ""),
-                "parameters": fn.get("parameters", {"type": "object"}),
+                "parameters": raw_params,
             })
         return converted or None
 
