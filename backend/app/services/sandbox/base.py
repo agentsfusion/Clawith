@@ -43,6 +43,7 @@ class SandboxBackend(Protocol):
         language: str,
         timeout: int = 30,
         work_dir: str | None = None,
+        env: dict[str, str] | None = None,
         **kwargs
     ) -> ExecutionResult:
         """
@@ -53,6 +54,7 @@ class SandboxBackend(Protocol):
             language: Programming language (python, bash, node, etc.)
             timeout: Execution timeout in seconds
             work_dir: Working directory for execution (optional)
+            env: Extra environment variables to inject (optional)
             **kwargs: Additional backend-specific options
 
         Returns:
@@ -95,6 +97,7 @@ class BaseSandboxBackend(ABC):
         language: str,
         timeout: int = 30,
         work_dir: str | None = None,
+        env: dict[str, str] | None = None,
         **kwargs
     ) -> ExecutionResult:
         """Execute code in the sandbox."""
