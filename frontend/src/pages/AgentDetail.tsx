@@ -4687,7 +4687,7 @@ function AgentDetailInner() {
                                         >
                                             {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
                                         </div>
-                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
+                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '48px 16px 12px' }}>
                                             {(() => {
                                                 // For A2A sessions, determine which participant is "this agent" (left side)
                                                 // Use agent.name matching against sender_name from messages
@@ -4779,7 +4779,7 @@ function AgentDetailInner() {
                                                 <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop files to attach (max 10)')}</div>
                                             </div>
                                         )}
-                                        <div ref={chatContainerRef} onScroll={handleChatScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+                                        <div ref={chatContainerRef} onScroll={handleChatScroll} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 16px' }}>
                                             {chatMessages.length === 0 && (
                                                 <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
                                                     <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>

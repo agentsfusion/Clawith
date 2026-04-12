@@ -281,9 +281,10 @@ export default function Chat() {
     const [wsSessionId, setWsSessionId] = useState<string>('');
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const chatMessagesRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    // Ref to the chat textarea for direct DOM height manipulation
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const [userScrolledUp, setUserScrolledUp] = useState(false);
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
@@ -615,9 +616,23 @@ export default function Chat() {
         }
     }, [connected]);
 
+    const handleChatScroll = useCallback(() => {
+        const el = chatMessagesRef.current;
+        if (!el) return;
+        const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        setUserScrolledUp(distanceFromBottom > 80);
+    }, []);
+
     useEffect(() => {
+        if (!userScrolledUp) {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [messages, userScrolledUp]);
+
+    const scrollToBottom = useCallback(() => {
+        setUserScrolledUp(false);
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
+    }, []);
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -764,7 +779,7 @@ export default function Chat() {
     });
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+        <div className="chat-page">
             <div className="page-header">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <div style={{ width: '36px', height: '36px', borderRadius: 'var(--radius-md)', background: 'var(--bg-tertiary)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)' }}>
@@ -790,7 +805,7 @@ export default function Chat() {
                 )}
                 {/* Wrap chat area in a column so it coexists with the live panel in flex-row */}
                 <div className="chat-main">
-                <div className="chat-messages">
+                <div className="chat-messages" ref={chatMessagesRef} onScroll={handleChatScroll}>
                     {messages.length === 0 && (
                         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--text-tertiary)' }}>
                             <div style={{ marginBottom: '12px', display: 'flex', justifyContent: 'center' }}>{Icons.chat}</div>
@@ -893,6 +908,16 @@ export default function Chat() {
                     )}
                     <div ref={messagesEndRef} />
                 </div>
+
+                {userScrolledUp && (
+                    <button
+                        className="scroll-to-bottom-btn"
+                        onClick={scrollToBottom}
+                        title={t('agent.chat.scrollToBottom', 'Scroll to bottom')}
+                    >
+                        ↓
+                    </button>
+                )}
 
                 <div className="chat-input-area">
                     <div className="chat-composer">
