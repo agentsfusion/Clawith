@@ -26,7 +26,7 @@ def _reset_cache():
 @pytest.fixture(autouse=True)
 def _clean_replit_env(monkeypatch):
     """Remove all Replit-related env vars so tests start clean."""
-    for key in ("REPL_ID", "REPL_SLUG", "REPL_OWNER", "REPL_DEPLOYMENT"):
+    for key in ("REPL_ID", "REPL_SLUG", "REPL_OWNER", "REPL_DEPLOYMENT", "REPLIT_DEV_DOMAIN"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -58,13 +58,24 @@ def _make_request(
 
 
 class TestBuildReplitUrl:
-    def test_standard_replit_url(self, monkeypatch):
+    def test_replit_dev_domain_takes_priority(self, monkeypatch):
+        monkeypatch.setenv("REPLIT_DEV_DOMAIN", "abc-123.pike.replit.dev")
+        monkeypatch.setenv("REPL_ID", "abc-123")
+        monkeypatch.setenv("REPL_SLUG", "hello-world")
+        monkeypatch.setenv("REPL_OWNER", "johndoe")
+        assert _build_replit_url() == "https://abc-123.pike.replit.dev"
+
+    def test_replit_dev_domain_without_legacy_vars(self, monkeypatch):
+        monkeypatch.setenv("REPLIT_DEV_DOMAIN", "xyz.pike.replit.dev")
+        assert _build_replit_url() == "https://xyz.pike.replit.dev"
+
+    def test_legacy_standard_replit_url(self, monkeypatch):
         monkeypatch.setenv("REPL_ID", "abc-123")
         monkeypatch.setenv("REPL_SLUG", "hello-world")
         monkeypatch.setenv("REPL_OWNER", "johndoe")
         assert _build_replit_url() == "https://hello-world--johndoe.repl.co"
 
-    def test_deployed_replit_url(self, monkeypatch):
+    def test_legacy_deployed_replit_url(self, monkeypatch):
         monkeypatch.setenv("REPL_ID", "abc-123")
         monkeypatch.setenv("REPL_SLUG", "hello-world")
         monkeypatch.setenv("REPL_OWNER", "johndoe")
@@ -100,10 +111,28 @@ class TestResolveFromRequest:
         )
         assert _resolve_from_request(req) == "https://app.example.com"
 
-    def test_no_forwarded_headers_falls_back_to_base_url(self):
+    def test_localhost_base_url_returns_none(self):
         req = _make_request(base_url="http://localhost:8000")
         result = _resolve_from_request(req)
-        assert result == "http://localhost:8000"
+        assert result is None
+
+    def test_private_ip_base_url_returns_none(self):
+        req = _make_request(base_url="http://10.0.0.5:8008")
+        result = _resolve_from_request(req)
+        assert result is None
+
+    def test_public_base_url_returned(self):
+        req = _make_request(base_url="http://app.example.com:8000")
+        result = _resolve_from_request(req)
+        assert result == "http://app.example.com:8000"
+
+    def test_forwarded_host_localhost_ignored(self):
+        req = _make_request(
+            headers={"x-forwarded-host": "localhost"},
+            base_url="http://myapp.example.com",
+        )
+        result = _resolve_from_request(req)
+        assert result == "http://myapp.example.com"
 
 
 class TestGetPublicBaseUrl:
@@ -178,6 +207,25 @@ class TestGetPublicBaseUrl:
         await svc.get_public_base_url(request=req)
         assert mod._cached_public_base_url == "https://first.example.com"
 
-        second_req = _make_request()
+        second_req = _make_request(base_url="http://localhost:8008")
         result = await svc.get_public_base_url(request=second_req)
         assert result == "https://first.example.com"
+
+    @pytest.mark.asyncio
+    async def test_localhost_request_does_not_poison_cache(self, monkeypatch):
+        import app.services.platform_service as mod
+
+        monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+        req = _make_request(base_url="http://localhost:8008")
+        svc = PlatformService()
+        await svc.get_public_base_url(request=req)
+        assert mod._cached_public_base_url is None
+
+    @pytest.mark.asyncio
+    async def test_replit_dev_domain_used_when_request_is_internal(self, monkeypatch):
+        monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+        monkeypatch.setenv("REPLIT_DEV_DOMAIN", "abc.pike.replit.dev")
+        req = _make_request(base_url="http://localhost:8008")
+        svc = PlatformService()
+        result = await svc.get_public_base_url(request=req)
+        assert result == "https://abc.pike.replit.dev"
