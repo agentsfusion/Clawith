@@ -128,6 +128,7 @@ class SubprocessBackend(BaseSandboxBackend):
         language: str,
         timeout: int = 30,
         work_dir: str | None = None,
+        env: dict[str, str] | None = None,
         **kwargs
     ) -> ExecutionResult:
         """Execute code in a subprocess."""
@@ -184,6 +185,8 @@ class SubprocessBackend(BaseSandboxBackend):
             safe_env = dict(os.environ)
             safe_env["HOME"] = str(work_path)
             safe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+            if env:
+                safe_env.update(env)
 
             # Execute
             proc = await asyncio.create_subprocess_exec(
