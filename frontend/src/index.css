@@ -3637,6 +3637,17 @@ select:focus {
 }
 
 /* Chat */
+.chat-page {
+  height: calc(100vh - var(--space-8) * 2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-page > .page-header {
+  flex-shrink: 0;
+}
+
 .chat-container {
   display: flex;
   flex-direction: column;
@@ -3672,6 +3683,7 @@ select:focus {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  position: relative;
 }
 
 .agent-detail-page--chat {
@@ -6755,6 +6767,7 @@ select:focus {
 
 .chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-4) 0;
 }
@@ -6784,10 +6797,13 @@ select:focus {
 
 .chat-bubble {
   max-width: 70%;
+  min-width: 0;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-lg);
   font-size: var(--text-sm);
   line-height: 1.6;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .chat-message.assistant .chat-bubble {
@@ -6800,6 +6816,7 @@ select:focus {
   color: white;
 }
 
+<<<<<<< HEAD
 /* ── SaaS chat message system (replaces inline styles) ── */
 .chat-msg-row {
   display: flex;
@@ -7203,6 +7220,33 @@ select:focus {
 }
 [data-theme="dark"] .chat-scroll-btn:hover {
   background: rgba(50, 50, 60, 0.9);
+=======
+.scroll-to-bottom-btn {
+  position: absolute;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+  transition: all 150ms ease;
+}
+
+.scroll-to-bottom-btn:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+>>>>>>> 6932b31 (fix: resolve chat scrolling with auto-scroll and return-to-bottom button (#9))
 }
 
 .chat-input-area {
