@@ -1846,6 +1846,13 @@ async def _agent_has_any_channel(agent_id: uuid.UUID) -> bool:
         return False
 
 
+_HARDCODED_TOOL_SCHEMAS: dict[str, dict] = {
+    t["function"]["name"]: t["function"].get("parameters", {"type": "object", "properties": {}})
+    for t in AGENT_TOOLS
+    if t.get("function", {}).get("parameters", {}).get("properties")
+}
+
+
 # ─── Dynamic Tool Loading from DB ──────────────────────────────
 
 
@@ -1943,12 +1950,15 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                     continue
 
                 # Build OpenAI function-calling format
+                db_schema = t.parameters_schema
+                if not db_schema or not db_schema.get("properties"):
+                    db_schema = _HARDCODED_TOOL_SCHEMAS.get(t.name, {"type": "object", "properties": {}})
                 tool_def = {
                     "type": "function",
                     "function": {
                         "name": t.name,
                         "description": t.description,
-                        "parameters": t.parameters_schema or {"type": "object", "properties": {}},
+                        "parameters": db_schema,
                     },
                 }
                 # Defensive dedup: skip if this name was already added.
