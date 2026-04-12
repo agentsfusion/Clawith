@@ -5183,14 +5183,22 @@ async def _execute_code(
         logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name})")
 
         extra_env: dict[str, str] = {}
+        cred_errors: list[str] = []
         if user_id and agent_id:
             try:
                 from app.services.credential_resolver import resolve_oauth_env
-                extra_env = await resolve_oauth_env(agent_id, user_id)
+                cred_result = await resolve_oauth_env(agent_id, user_id)
+                extra_env = cred_result.env_vars
+                cred_errors = cred_result.errors
                 if extra_env:
                     logger.info(
                         f"[Sandbox] Injected {len(extra_env)} OAuth env vars "
                         f"for agent {agent_id}, user {user_id}"
+                    )
+                if cred_errors:
+                    logger.warning(
+                        f"[Sandbox] Credential issues for agent {agent_id}: "
+                        + "; ".join(cred_errors)
                     )
             except Exception as e:
                 logger.warning(f"[Sandbox] Credential resolution failed (non-fatal): {e}")
