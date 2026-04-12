@@ -64,13 +64,10 @@ async def _start_ss_local() -> None:
     logger.warning("[Proxy] All SS nodes failed — Discord API calls will run without proxy")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application startup and shutdown events."""
-    # Configure logging first
-    configure_logging()
-    intercept_standard_logging()
-    logger.info("[startup] Logging configured")
+async def _deferred_startup():
+    """Run all seed and background tasks after the server is already accepting requests."""
+    import asyncio
+    import os
 
     # Warn about default JWT secrets in production
     if "change-me" in settings.SECRET_KEY.lower() or "change-me" in settings.JWT_SECRET_KEY.lower():
@@ -89,21 +86,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Storage backend init failed: {e}")
 
-    import asyncio
-    import sys
-    import os
     from app.services.trigger_daemon import start_trigger_daemon
-    from app.services.tool_seeder import seed_builtin_tools
     from app.services.template_seeder import seed_agent_templates
     from app.services.feishu_ws import feishu_ws_manager
     from app.services.dingtalk_stream import dingtalk_stream_manager
     from app.services.wecom_stream import wecom_stream_manager
     from app.services.discord_gateway import discord_gateway_manager
 
-    # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
+    # ── Step 0: Ensure all DB tables exist ──
     try:
         from app.database import Base, engine
-        # Import all models so Base.metadata is fully populated
         import app.models.user           # noqa
         import app.models.agent          # noqa
         import app.models.task           # noqa
@@ -128,7 +120,6 @@ async def lifespan(app: FastAPI):
         import app.models.agent_credential  # noqa
         import app.models.gws_oauth_token  # noqa
         import app.models.lark_oauth_token  # noqa
-
         import app.models.identity       # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -136,10 +127,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] create_all failed: {e}")
 
-    # Startup: seed data — each step isolated so one failure doesn't block others
     logger.info("[startup] seeding...")
 
-    # Seed default company (Tenant) — required before users can register
     try:
         from app.models.tenant import Tenant
         from app.database import async_session as _session
@@ -158,7 +147,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Default company seed failed: {e}")
 
-    # Migrate old shared enterprise_info/ → enterprise_info_{first_tenant_id}/
     try:
         import shutil
         from pathlib import Path as _Path
@@ -176,11 +164,11 @@ async def lifespan(app: FastAPI):
                     _new_dir = _data_dir / f"enterprise_info_{_tenant.id}"
                     if not _new_dir.exists():
                         shutil.copytree(str(_old_dir), str(_new_dir))
-                        print(f"[startup] ✅ Migrated enterprise_info → enterprise_info_{_tenant.id}", flush=True)
+                        logger.info(f"[startup] Migrated enterprise_info -> enterprise_info_{_tenant.id}")
                     else:
-                        print(f"[startup] ℹ️ enterprise_info_{_tenant.id} already exists, skipping migration", flush=True)
+                        logger.info(f"[startup] enterprise_info_{_tenant.id} already exists, skipping migration")
     except Exception as e:
-        print(f"[startup] ⚠️ enterprise_info migration failed: {e}", flush=True)
+        logger.warning(f"[startup] enterprise_info migration failed: {e}")
 
     try:
         from app.services.tool_seeder import seed_builtin_tools, clean_orphaned_mcp_tools
@@ -192,7 +180,6 @@ async def lifespan(app: FastAPI):
     try:
         from app.services.tool_seeder import seed_atlassian_rovo_config, get_atlassian_api_key
         await seed_atlassian_rovo_config()
-        # Auto-import Atlassian Rovo tools if an API key is already configured
         _rovo_key = await get_atlassian_api_key()
         if _rovo_key:
             from app.services.resource_discovery import seed_atlassian_rovo_tools
@@ -230,22 +217,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Default agents seed failed: {e}")
 
-    # Start background tasks (always, even if seeding failed)
+    def _bg_task_error(t):
+        try:
+            exc = t.exception()
+        except asyncio.CancelledError:
+            return
+        if exc:
+            logger.error(f"[startup] Background task {t.get_name()} CRASHED: {exc}")
+            import traceback
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+
     try:
         logger.info("[startup] starting background tasks...")
         from app.services.audit_logger import write_audit_log
         await write_audit_log("server_startup", {"pid": os.getpid()})
-
-        def _bg_task_error(t):
-            """Callback to surface background task exceptions."""
-            try:
-                exc = t.exception()
-            except asyncio.CancelledError:
-                return
-            if exc:
-                logger.error(f"[startup] Background task {t.get_name()} CRASHED: {exc}")
-                import traceback
-                traceback.print_exception(type(exc), exc, exc.__traceback__)
 
         for name, coro in [
             ("trigger_daemon", start_trigger_daemon()),
@@ -263,13 +248,31 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
 
-    # Start ss-local SOCKS5 proxy for Discord API calls (non-fatal)
     ss_task = asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
     ss_task.add_done_callback(_bg_task_error)
 
+    logger.info("[startup] deferred initialization complete")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application startup and shutdown events."""
+    import asyncio
+
+    configure_logging()
+    intercept_standard_logging()
+    logger.info("[startup] Logging configured")
+
+    _deferred_task = asyncio.create_task(_deferred_startup(), name="deferred-startup")
+    logger.info("[startup] Server ready — seed & background tasks running in background")
+
     yield
 
-    # Shutdown
+    _deferred_task.cancel()
+    try:
+        await _deferred_task
+    except asyncio.CancelledError:
+        pass
     await close_redis()
 
 
@@ -419,3 +422,35 @@ _version_cache = _load_version_info()
 async def get_version():
     """Return current Clawith version and commit hash."""
     return _version_cache
+
+
+# ── Production: serve frontend static files from frontend/dist ──
+import os as _os
+from pathlib import Path as _Path
+
+_frontend_dist = _Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+if not _frontend_dist.exists():
+    _alt = _Path(_os.environ.get("REPL_HOME", "/home/runner/workspace")) / "frontend" / "dist"
+    if _alt.exists():
+        _frontend_dist = _alt
+
+_index_html = _frontend_dist / "index.html"
+_assets_dir = _frontend_dist / "assets"
+
+if _frontend_dist.exists() and _index_html.exists() and _assets_dir.exists():
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+
+    _API_PREFIXES = ("api/", "ws/", "docs", "openapi.json", "redoc", "p/")
+
+    app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="static-assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        if full_path and any(full_path.startswith(p) for p in _API_PREFIXES):
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        file_path = _frontend_dist / full_path
+        if full_path and file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(_index_html))
