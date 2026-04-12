@@ -85,6 +85,7 @@ class DockerBackend(BaseSandboxBackend):
         language: str,
         timeout: int = 30,
         work_dir: str | None = None,
+        env: dict[str, str] | None = None,
         **kwargs
     ) -> ExecutionResult:
         """Execute code inside a docker container."""
@@ -105,10 +106,12 @@ class DockerBackend(BaseSandboxBackend):
         image = _DOCKER_IMAGES[language]
 
         # Prepare environment
-        env = {
+        env_dict = {
             "HOME": "/root",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+        if env:
+            env_dict.update(env)
 
         # Build docker run command
         if language == "python":
@@ -151,7 +154,7 @@ class DockerBackend(BaseSandboxBackend):
                 cpu_period=100000,  # Docker default
                 cpu_quota=int(float(cpu_limit) * 100000),
                 network_mode=network,
-                environment=env,
+                environment=env_dict,
                 remove=True,
                 stdout=True,
                 stderr=True,

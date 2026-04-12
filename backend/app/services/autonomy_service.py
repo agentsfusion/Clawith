@@ -196,7 +196,14 @@ class AutonomyService:
 
             # Import and call the tool's direct executor (no autonomy re-check)
             from app.services.agent_tools import _execute_tool_direct
-            result = await _execute_tool_direct(tool_name, arguments, agent_id)
+            requested_by = details.get("requested_by")
+            caller_user_id = None
+            if requested_by:
+                try:
+                    caller_user_id = uuid.UUID(requested_by)
+                except (ValueError, TypeError):
+                    pass
+            result = await _execute_tool_direct(tool_name, arguments, agent_id, user_id=caller_user_id)
             return result
         except Exception as e:
             logger.error(f"Failed to execute approved action {tool_name}: {e}")

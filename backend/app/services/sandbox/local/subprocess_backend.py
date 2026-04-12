@@ -313,6 +313,7 @@ class SubprocessBackend(BaseSandboxBackend):
         language: str,
         timeout: int = 30,
         work_dir: str | None = None,
+        env: dict[str, str] | None = None,
         **kwargs
     ) -> ExecutionResult:
         """Execute code in a subprocess."""
@@ -377,23 +378,12 @@ class SubprocessBackend(BaseSandboxBackend):
             self._ensure_workspace_venv(work_path)
             script_path.write_text(code, encoding="utf-8")
 
-            sandbox_command = self._build_command(language, f"/workspace/{script_path.name}", work_path)
-            bwrap_command = self._build_bwrap_command(sandbox_command, work_path)
-            if not bwrap_command:
-                if not self.config.allow_unsafe_fallback_when_bwrap_missing:
-                    duration_ms = int((time.time() - start_time) * 1000)
-                    return ExecutionResult(
-                        success=False,
-                        stdout="",
-                        stderr="",
-                        exit_code=1,
-                        duration_ms=duration_ms,
-                        error=(
-                            "bubblewrap (bwrap) is required for execute_code but is not available. "
-                            "Install bwrap in the runtime environment or enable "
-                            "allow_unsafe_fallback_when_bwrap_missing for local development."
-                        ),
-                    )
+            # Set up safe environment
+            safe_env = dict(os.environ)
+            safe_env["HOME"] = str(work_path)
+            safe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+            if env:
+                safe_env.update(env)
 
                 host_command = self._build_host_command(language, script_path, work_path)
                 logger.warning(

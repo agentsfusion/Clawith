@@ -2844,6 +2844,7 @@ async def _execute_tool_direct(
     tool_name: str,
     arguments: dict,
     agent_id: uuid.UUID,
+    user_id: uuid.UUID | None = None,
 ) -> str:
     """Execute a tool directly, bypassing autonomy checks.
 
@@ -2863,12 +2864,7 @@ async def _execute_tool_direct(
             return await _write_file(ws, path, content, tenant_id=_agent_tenant_id)
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
-            return await _run_with_temp_workspace(
-                agent_id,
-                _agent_tenant_id,
-                lambda temp_ws: _execute_code(agent_id, temp_ws, arguments, tool_name=tool_name),
-                sync_back=True,
-            )
+            return await _execute_code(agent_id, ws, arguments, tool_name=tool_name, user_id=user_id)
         elif tool_name == "web_search":
             return await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
@@ -3133,12 +3129,7 @@ async def execute_tool(
             result = await _plaza_add_comment(agent_id, arguments)
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
-            result = await _run_with_temp_workspace(
-                agent_id,
-                _agent_tenant_id,
-                lambda temp_ws: _execute_code(agent_id, temp_ws, arguments, tool_name=tool_name, on_output=on_output),
-                sync_back=True,
-            )
+            result = await _execute_code(agent_id, ws, arguments, tool_name=tool_name, user_id=user_id)
         elif tool_name == "upload_image":
             file_path = (arguments.get("file_path") or "").strip()
             result = await _run_with_temp_workspace(
@@ -7202,7 +7193,7 @@ async def _execute_code(
     arguments: dict,
     *,
     tool_name: str = "execute_code",
-    on_output=None,
+    user_id: Optional[uuid.UUID] = None,
 ) -> str:
     """Execute code using the configured sandbox backend.
 
@@ -7213,6 +7204,7 @@ async def _execute_code(
         tool_name: The originating tool name — either 'execute_code' (local)
                    or 'execute_code_e2b' (cloud).  Used to look up the
                    correct per-agent tool config entry in the database.
+        user_id: The user's UUID (used to resolve OAuth credentials).
     """
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
@@ -7254,13 +7246,35 @@ async def _execute_code(
         timeout = min(requested_timeout, sandbox_config.max_timeout)
 
         backend = get_sandbox_backend(sandbox_config)
-        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name}, timeout={timeout}s)")
+        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name})")
+
+        extra_env: dict[str, str] = {}
+        cred_errors: list[str] = []
+        if user_id and agent_id:
+            try:
+                from app.services.credential_resolver import resolve_oauth_env
+                cred_result = await resolve_oauth_env(agent_id, user_id)
+                extra_env = cred_result.env_vars
+                cred_errors = cred_result.errors
+                if extra_env:
+                    logger.info(
+                        f"[Sandbox] Injected {len(extra_env)} OAuth env vars "
+                        f"for agent {agent_id}, user {user_id}"
+                    )
+                if cred_errors:
+                    logger.warning(
+                        f"[Sandbox] Credential issues for agent {agent_id}: "
+                        + "; ".join(cred_errors)
+                    )
+            except Exception as e:
+                logger.warning(f"[Sandbox] Credential resolution failed (non-fatal): {e}")
+
         result = await backend.execute(
             code=code,
             language=language,
             timeout=timeout,
             work_dir=str(work_dir),
-            on_output=on_output,
+            env=extra_env if extra_env else None,
         )
 
         # Format result for user display
@@ -7272,22 +7286,20 @@ async def _execute_code(
             # Do not silently fall back — surface the config error to the user
             return f"❌ E2B sandbox configuration error: {str(e)[:300]}\nPlease check the API key in the tool settings."
         logger.warning(f"[Sandbox] Config issue, falling back to legacy subprocess: {e}")
-        return await _execute_code_legacy(ws, arguments, allow_network=fallback_config.allow_network, max_timeout=fallback_config.max_timeout, on_output=on_output)
+        return await _execute_code_legacy(ws, arguments, env=extra_env if extra_env else None)
 
     except Exception as e:
         logger.exception(f"[Sandbox] Execution failed for agent {agent_id} (tool={tool_name})")
         if is_e2b_tool:
-            # Do not silently fall back to local execution
             return f"❌ E2B execution error: {str(e)[:200]}"
-        # For local tool: try legacy subprocess as last resort
         try:
-            return await _execute_code_legacy(ws, arguments, allow_network=sandbox_config.allow_network, max_timeout=sandbox_config.max_timeout, on_output=on_output)
+            return await _execute_code_legacy(ws, arguments, env=extra_env if extra_env else None)
         except Exception:
             logger.exception(f"[Sandbox] Fallback also failed for agent {agent_id}")
             return f"❌ Execution error: {str(e)[:200]}"
 
 
-async def _execute_code_legacy(ws: Path, arguments: dict, allow_network: bool = False, max_timeout: int = 60, on_output=None) -> str:
+async def _execute_code_legacy(ws: Path, arguments: dict, env: dict[str, str] | None = None) -> str:
     """Legacy subprocess-based code execution (fallback)."""
     import asyncio
 
@@ -7333,6 +7345,8 @@ async def _execute_code_legacy(ws: Path, arguments: dict, allow_network: bool = 
         safe_env = dict(os.environ)
         safe_env["HOME"] = str(work_dir)
         safe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if env:
+            safe_env.update(env)
 
         proc = await asyncio.create_subprocess_exec(
             *cmd_prefix, str(script_path),
