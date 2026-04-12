@@ -1922,8 +1922,8 @@ async def seed_builtin_tools():
     from app.models.agent import Agent
     from app.services.seeder_state import is_seeder_done, mark_seeder_done
 
-    if await is_seeder_done("seeder:tools", 1):
-        logger.info("[ToolSeeder] Already seeded (seeder:tools v1), skipping")
+    if await is_seeder_done("seeder:tools", 2):
+        logger.info("[ToolSeeder] Already seeded (seeder:tools v2), skipping")
         return
 
     async with async_session() as db:
@@ -1940,6 +1940,7 @@ async def seed_builtin_tools():
                     category=t["category"],
                     icon=t["icon"],
                     is_default=t["is_default"],
+                    parameters_schema=t.get("parameters_schema", {}),
                     config=t.get("config", {}),
                     config_schema=t.get("config_schema", {}),
                     source="builtin",
@@ -2008,7 +2009,7 @@ async def seed_builtin_tools():
         await db.commit()
         logger.info("[ToolSeeder] Builtin tools seeded")
 
-    await mark_seeder_done("seeder:tools", 1, {"count": len(BUILTIN_TOOLS)})
+    await mark_seeder_done("seeder:tools", 2, {"count": len(BUILTIN_TOOLS)})
 
 
 async def clean_orphaned_mcp_tools():

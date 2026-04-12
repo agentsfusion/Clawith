@@ -239,6 +239,9 @@ async def call_llm(
     from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
     _accumulated_tokens = 0
 
+    _recent_tool_calls: list[str] = []
+    _DUPLICATE_TOOL_CALL_LIMIT = 3
+
     # Tool-calling loop (configurable per agent, default 50)
     for round_i in range(_max_tool_rounds):
         # ── Dynamic tool-call limit warning (Aware engine) ──
@@ -336,14 +339,36 @@ async def call_llm(
             except json.JSONDecodeError:
                 args = {}
 
-            # Guard: if a tool that requires arguments received empty args,
-            # return an error to LLM instead of executing (Claude sometimes
-            # emits tool_use blocks with no input_json_delta events)
             if not args and tool_name in _TOOLS_REQUIRING_ARGS:
                 logger.warning(f"[LLM] Empty arguments for {tool_name}, asking LLM to retry")
+                if tool_name == "read_file":
+                    hint = (
+                        "Error: read_file requires a 'path' argument. "
+                        "Example: read_file({\"path\": \"skills/my_skill/SKILL.md\"}). "
+                        "Use list_files to discover available paths first, then call read_file with the exact path."
+                    )
+                elif tool_name == "write_file":
+                    hint = "Error: write_file requires 'path' and 'content' arguments."
+                else:
+                    hint = f"Error: {tool_name} was called with empty arguments. You must provide the required parameters."
                 api_messages.append(LLMMessage(
                     role="tool",
-                    content=f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments.",
+                    content=hint,
+                    tool_call_id=tc.get("id", ""),
+                ))
+                continue
+
+            _call_sig = f"{tool_name}:{json.dumps(args, sort_keys=True)}"
+            _recent_tool_calls.append(_call_sig)
+            _dup_count = sum(1 for c in _recent_tool_calls if c == _call_sig)
+            if _dup_count > _DUPLICATE_TOOL_CALL_LIMIT:
+                logger.warning(f"[LLM] Duplicate tool call detected ({_dup_count}x): {tool_name}({args})")
+                api_messages.append(LLMMessage(
+                    role="tool",
+                    content=(
+                        f"Error: You have already called {tool_name} with the same arguments {_dup_count} times and received the same result each time. "
+                        "Please try a DIFFERENT approach — use a different tool, different arguments, or respond to the user directly based on the information you already have."
+                    ),
                     tool_call_id=tc.get("id", ""),
                 ))
                 continue
