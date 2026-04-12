@@ -160,13 +160,17 @@ class Settings(BaseSettings):
         Platforms like Replit provide ``postgresql://`` without a driver
         suffix, but SQLAlchemy's async engine requires
         ``postgresql+asyncpg://``.  This validator adds the suffix
-        transparently at config-load time.
+        transparently at config-load time.  It also rewrites the
+        ``sslmode`` query parameter to ``ssl`` because asyncpg does not
+        accept ``sslmode``.
         """
-        if isinstance(v, str) and v.startswith("postgresql://"):
-            # Only inject asyncpg when no explicit driver is specified.
+        if not isinstance(v, str):
+            return v
+        if v.startswith("postgresql://"):
             scheme = v.split("://", 1)[0]
             if "+" not in scheme:
-                return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+                v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        v = v.replace("sslmode=", "ssl=")
         return v
 
     model_config = {
