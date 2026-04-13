@@ -715,11 +715,12 @@ def build_system_prompt(parsed: ParsedScript, state: ScriptState) -> str:
 
     parts.append("""
 ## Execution Rules
-1. **Variable Updates**: When you learn a variable value from the user's message, respond with `[SET variable_name = value]` on its own line. This is critical for the script to track conversation state.
-2. **Topic Transitions**: To switch topics, respond with `[TRANSITION topic_name]` on its own line.
-3. **Action Execution**: When an action maps to a tool (tool://), call it using the standard tool-calling mechanism. When it maps to a skill (skill://), use `read_file` to load the skill first.
-4. **Stay in character** as defined by the script configuration.
-5. **Welcome message**: If the conversation has just started and no user message was sent yet, greet the user using the welcome message below.""")
+1. **ALWAYS respond to the user with visible text** — never respond with ONLY directives. Every response must contain a human-readable message. Place directives (`[SET]`/`[TRANSITION]`) AFTER your user-facing message.
+2. **Variable Updates**: When you learn a variable value from the user's message, append `[SET variable_name = value]` on its own line at the END of your response.
+3. **Topic Transitions**: To switch topics, append `[TRANSITION topic_name]` on its own line at the END of your response.
+4. **Action Execution**: When an action maps to a tool (tool://), call it using the standard tool-calling mechanism. When it maps to a skill (skill://), use `read_file` to load the skill first.
+5. **Stay in character** as defined by the script configuration.
+6. **Welcome message**: If the conversation has just started and no user message was sent yet, greet the user using the welcome message below.""")
 
     welcome = parsed.system_messages.get("welcome", "")
     error_msg = parsed.system_messages.get("error", "")
