@@ -7,36 +7,19 @@ import {
 import ReactMarkdown from 'react-markdown';
 import { SyntaxHighlighter } from '../components/script-builder/SyntaxHighlighter';
 import { AnalyzeResult } from '../components/script-builder/AnalyzeResult';
-
-const API_BASE = '/api';
-
-function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem('token');
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
-interface Conversation {
-  id: number;
-  title: string;
-  createdAt: string;
-}
-
-interface Message {
-  id: number;
-  role: string;
-  content: string;
-  createdAt: string;
-}
+import {
+  scriptBuilderApi,
+  type ScriptConversation,
+  type ScriptMessage,
+  type ScriptAnalysisResult,
+} from '../services/api';
 
 function extractScript(text: string): string | null {
   const match = text.match(/```ascript\n([\s\S]*?)```/);
   return match ? match[1].trim() : null;
 }
 
-function ChatMessage({ message }: { message: Message }) {
+function ChatMessage({ message }: { message: ScriptMessage }) {
   const isUser = message.role === 'user';
   const script = !isUser ? extractScript(message.content) : null;
   const displayContent = script
@@ -90,7 +73,7 @@ function StreamingMessage({ content }: { content: string }) {
 function Sidebar({
   conversations, activeId, onSelect, onCreate, onDelete, loading
 }: {
-  conversations: Conversation[];
+  conversations: ScriptConversation[];
   activeId: number | null;
   onSelect: (id: number) => void;
   onCreate: () => void;
@@ -149,7 +132,7 @@ function CodePanel({
 }: {
   script: string | null;
   onAnalyze: () => void;
-  analyzeResult: any;
+  analyzeResult: (ScriptAnalysisResult & { error?: string }) | { error: string } | null;
   isAnalyzing: boolean;
 }) {
   const [copied, setCopied] = useState(false);
@@ -234,7 +217,7 @@ function CodePanel({
                 <div style={{ padding: '48px', textAlign: 'center', color: 'var(--danger, #ef4444)' }}>
                   {analyzeResult.error}
                 </div>
-              ) : analyzeResult ? (
+              ) : analyzeResult && 'overallScore' in analyzeResult ? (
                 <AnalyzeResult data={analyzeResult} />
               ) : (
                 <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
@@ -250,15 +233,15 @@ function CodePanel({
 }
 
 export default function ScriptBuilder() {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversations, setConversations] = useState<ScriptConversation[]>([]);
   const [activeConvId, setActiveConvId] = useState<number | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ScriptMessage[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamedContent, setStreamedContent] = useState('');
   const [currentScript, setCurrentScript] = useState<string | null>(null);
   const [convLoading, setConvLoading] = useState(true);
-  const [analyzeResult, setAnalyzeResult] = useState<any>(null);
+  const [analyzeResult, setAnalyzeResult] = useState<(ScriptAnalysisResult & { error?: string }) | { error: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -268,11 +251,8 @@ export default function ScriptBuilder() {
 
   const loadConversations = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/script-builder/conversations`, { headers: authHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        setConversations(data);
-      }
+      const data = await scriptBuilderApi.listConversations();
+      setConversations(data);
     } catch (e) {
       console.error('Failed to load conversations', e);
     } finally {
@@ -290,14 +270,11 @@ export default function ScriptBuilder() {
 
   const loadMessages = useCallback(async (convId: number) => {
     try {
-      const res = await fetch(`${API_BASE}/script-builder/conversations/${convId}/messages`, { headers: authHeaders() });
-      if (res.ok) {
-        const data: Message[] = await res.json();
-        setMessages(data);
-        const lastScript = [...data].reverse().find(m => m.role === 'assistant' && extractScript(m.content));
-        if (lastScript) setCurrentScript(extractScript(lastScript.content));
-        else setCurrentScript(null);
-      }
+      const data = await scriptBuilderApi.listMessages(convId);
+      setMessages(data);
+      const lastScript = [...data].reverse().find(m => m.role === 'assistant' && extractScript(m.content));
+      if (lastScript) setCurrentScript(extractScript(lastScript.content));
+      else setCurrentScript(null);
     } catch (e) {
       console.error('Failed to load messages', e);
     }
@@ -320,16 +297,11 @@ export default function ScriptBuilder() {
   const handleCreate = async () => {
     const title = `Session ${new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
     try {
-      const res = await fetch(`${API_BASE}/script-builder/conversations`, {
-        method: 'POST', headers: authHeaders(), body: JSON.stringify({ title }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        await loadConversations();
-        setActiveConvId(data.id);
-        setCurrentScript(null);
-        setMessages([]);
-      }
+      const conv = await scriptBuilderApi.createConversation(title);
+      await loadConversations();
+      setActiveConvId(conv.id);
+      setCurrentScript(null);
+      setMessages([]);
     } catch (e) {
       console.error('Failed to create conversation', e);
     }
@@ -338,7 +310,7 @@ export default function ScriptBuilder() {
   const handleDelete = async (id: number) => {
     if (!confirm('Delete this conversation?')) return;
     try {
-      await fetch(`${API_BASE}/script-builder/conversations/${id}`, { method: 'DELETE', headers: authHeaders() });
+      await scriptBuilderApi.deleteConversation(id);
       if (activeConvId === id) {
         setActiveConvId(null);
         setCurrentScript(null);
@@ -367,12 +339,7 @@ export default function ScriptBuilder() {
     abortRef.current = new AbortController();
 
     try {
-      const res = await fetch(`${API_BASE}/script-builder/conversations/${activeConvId}/messages`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({ content }),
-        signal: abortRef.current.signal,
-      });
+      const res = await scriptBuilderApi.streamMessage(activeConvId, content, abortRef.current.signal);
 
       if (!res.ok || !res.body) throw new Error('Stream failed');
 
@@ -436,18 +403,11 @@ export default function ScriptBuilder() {
     setIsAnalyzing(true);
     setAnalyzeResult(null);
     try {
-      const res = await fetch(`${API_BASE}/script-builder/analyze`, {
-        method: 'POST', headers: authHeaders(), body: JSON.stringify({ script: currentScript }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && typeof data.overallScore === 'number' && Array.isArray(data.dimensions)) {
-          setAnalyzeResult(data);
-        } else {
-          setAnalyzeResult({ error: 'Unexpected analysis format' });
-        }
+      const data = await scriptBuilderApi.analyze(currentScript);
+      if (data && typeof data.overallScore === 'number' && Array.isArray(data.dimensions)) {
+        setAnalyzeResult(data);
       } else {
-        setAnalyzeResult({ error: 'Analysis request failed' });
+        setAnalyzeResult({ error: 'Unexpected analysis format' });
       }
     } catch (e) {
       console.error('Analyze failed', e);

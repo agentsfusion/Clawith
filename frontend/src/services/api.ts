@@ -636,3 +636,60 @@ export const larkApi = {
         request<{ ok: boolean; imported: number }>('/lark/skills/import', { method: 'POST' }),
 };
 
+// ─── Script Builder ─────────────────────────────────
+export interface ScriptConversation {
+    id: number;
+    title: string;
+    createdAt: string;
+}
+
+export interface ScriptMessage {
+    id: number;
+    role: string;
+    content: string;
+    createdAt: string;
+}
+
+export interface ScriptAnalysisResult {
+    overallScore: number;
+    dimensions: { name: string; score: number; feedback: string }[];
+    strengths: string[];
+    suggestions: string[];
+}
+
+export const scriptBuilderApi = {
+    listConversations: () =>
+        request<ScriptConversation[]>('/script-builder/conversations'),
+
+    createConversation: (title: string) =>
+        request<ScriptConversation>('/script-builder/conversations', {
+            method: 'POST',
+            body: JSON.stringify({ title }),
+        }),
+
+    deleteConversation: (id: number) =>
+        request<void>(`/script-builder/conversations/${id}`, { method: 'DELETE' }),
+
+    listMessages: (convId: number) =>
+        request<ScriptMessage[]>(`/script-builder/conversations/${convId}/messages`),
+
+    streamMessage: (convId: number, content: string, signal?: AbortSignal) => {
+        const token = localStorage.getItem('token');
+        return fetch(`${API_BASE}/script-builder/conversations/${convId}/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({ content }),
+            signal,
+        });
+    },
+
+    analyze: (script: string) =>
+        request<ScriptAnalysisResult>('/script-builder/analyze', {
+            method: 'POST',
+            body: JSON.stringify({ script }),
+        }),
+};
+

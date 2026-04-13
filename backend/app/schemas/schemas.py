@@ -571,3 +571,34 @@ class GatewaySendMessageRequest(BaseModel):
     target: str  # Name of target person or agent
     content: str = Field(min_length=1)
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
+
+
+# ─── Script Builder ──────────────────────────────────
+
+class ScriptConversationCreate(BaseModel):
+    title: str = Field(default="New Session", min_length=1, max_length=200)
+
+
+class ScriptConversationOut(BaseModel):
+    id: int
+    title: str
+    createdAt: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ScriptMessageSend(BaseModel):
+    content: str = Field(min_length=1, max_length=50000)
+
+
+class ScriptMessageOut(BaseModel):
+    id: int
+    role: str
+    content: str
+    createdAt: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ScriptAnalyzeRequest(BaseModel):
+    script: str = Field(min_length=1, max_length=100000)

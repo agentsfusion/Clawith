@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
-from pydantic import BaseModel
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -19,22 +18,17 @@ from app.models.user import User
 from app.models.llm import LLMModel
 from app.models.script_builder import ScriptConversation, ScriptMessage
 from app.api.auth import get_current_user
+from app.schemas.schemas import (
+    ScriptConversationCreate,
+    ScriptConversationOut,
+    ScriptMessageSend,
+    ScriptMessageOut,
+    ScriptAnalyzeRequest,
+)
 from app.services.agent_script_prompt import AGENT_SCRIPT_SYSTEM_PROMPT, ANALYZE_SYSTEM_PROMPT
 from app.services.llm_client import create_llm_client, LLMMessage, get_max_tokens
 
 router = APIRouter(prefix="/script-builder", tags=["script-builder"])
-
-
-class CreateConversationBody(BaseModel):
-    title: str = "New Session"
-
-
-class SendMessageBody(BaseModel):
-    content: str
-
-
-class AnalyzeBody(BaseModel):
-    script: str
 
 
 async def _get_llm_model(db: AsyncSession, user: User) -> LLMModel:
@@ -58,7 +52,7 @@ async def _get_llm_model(db: AsyncSession, user: User) -> LLMModel:
     return model
 
 
-@router.get("/conversations")
+@router.get("/conversations", response_model=list[ScriptConversationOut])
 async def list_conversations(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -73,14 +67,14 @@ async def list_conversations(
     )
     convs = result.scalars().all()
     return [
-        {"id": c.id, "title": c.title, "createdAt": c.created_at.isoformat()}
+        ScriptConversationOut(id=c.id, title=c.title, createdAt=c.created_at)
         for c in convs
     ]
 
 
-@router.post("/conversations", status_code=201)
+@router.post("/conversations", status_code=201, response_model=ScriptConversationOut)
 async def create_conversation(
-    body: CreateConversationBody,
+    body: ScriptConversationCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -92,7 +86,7 @@ async def create_conversation(
     db.add(conv)
     await db.commit()
     await db.refresh(conv)
-    return {"id": conv.id, "title": conv.title, "createdAt": conv.created_at.isoformat()}
+    return ScriptConversationOut(id=conv.id, title=conv.title, createdAt=conv.created_at)
 
 
 @router.delete("/conversations/{conv_id}", status_code=204)
@@ -114,7 +108,7 @@ async def delete_conversation(
     await db.commit()
 
 
-@router.get("/conversations/{conv_id}/messages")
+@router.get("/conversations/{conv_id}/messages", response_model=list[ScriptMessageOut])
 async def list_messages(
     conv_id: int,
     current_user: User = Depends(get_current_user),
@@ -136,7 +130,7 @@ async def list_messages(
     )
     msgs = msg_result.scalars().all()
     return [
-        {"id": m.id, "role": m.role, "content": m.content, "createdAt": m.created_at.isoformat()}
+        ScriptMessageOut(id=m.id, role=m.role, content=m.content, createdAt=m.created_at)
         for m in msgs
     ]
 
@@ -144,7 +138,7 @@ async def list_messages(
 @router.post("/conversations/{conv_id}/messages")
 async def send_message(
     conv_id: int,
-    body: SendMessageBody,
+    body: ScriptMessageSend,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -243,7 +237,7 @@ async def send_message(
 
 @router.post("/analyze")
 async def analyze_script(
-    body: AnalyzeBody,
+    body: ScriptAnalyzeRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
