@@ -904,8 +904,41 @@ export default function Chat() {
                                     const fi = fe === 'pdf' ? '\uD83D\uDCC4' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '\uD83D\uDCCA' : (fe === 'docx' || fe === 'doc') ? '\uD83D\uDCDD' : '\uD83D\uDCCE';
                                     return (<div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}><span>{fi}</span><span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span></div>);
                                 })()}
-                                {msg.scriptTrace && msg.scriptTrace.length > 0 && (
-                                    <details style={{
+                                {msg.scriptTrace && msg.scriptTrace.length > 0 && (() => {
+                                    const execTrace = msg.scriptTrace.find(t => t.phase === 'execution');
+                                    const outputTrace = msg.scriptTrace.find(t => t.phase === 'output');
+                                    const topicPath = execTrace?.topic_path || [];
+                                    const currentTopic = outputTrace?.new_topic || execTrace?.current_topic || '';
+                                    const hasEngineSteps = execTrace?.execution_steps && execTrace.execution_steps.length > 0;
+                                    const summaryParts: string[] = [];
+                                    if (currentTopic) summaryParts.push(currentTopic === '__start__' ? 'start_agent' : currentTopic);
+                                    if (execTrace?.llm_instructions?.length) summaryParts.push(`${execTrace.llm_instructions.length} instructions`);
+                                    if (outputTrace?.changes?.length) summaryParts.push(`${outputTrace.changes.length} changes`);
+                                    return (<>
+                                    {hasEngineSteps && (
+                                        <div style={{
+                                            display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                            background: 'rgba(249, 115, 22, 0.08)', borderRadius: '6px',
+                                            padding: '4px 10px', marginBottom: '6px',
+                                            border: '1px solid rgba(249, 115, 22, 0.2)',
+                                            fontSize: '11px', color: 'rgba(249, 115, 22, 0.85)', fontWeight: 600,
+                                        }}>
+                                            <span>{'\u2699'}</span>
+                                            <span>Agent Script</span>
+                                            {topicPath.length > 0 && (
+                                                <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}>
+                                                    {topicPath.map(t => t === '__start__' ? 'start' : t).join(' \u2192 ')}
+                                                </span>
+                                            )}
+                                            {summaryParts.length > 0 && (
+                                                <span style={{
+                                                    background: 'rgba(249, 115, 22, 0.12)', borderRadius: '3px',
+                                                    padding: '1px 5px', fontSize: '10px',
+                                                }}>{summaryParts.join(' | ')}</span>
+                                            )}
+                                        </div>
+                                    )}
+                                    <details open={hasEngineSteps} style={{
                                         marginBottom: '8px', fontSize: '12px',
                                         background: 'rgba(34, 197, 94, 0.06)', borderRadius: '8px',
                                         border: '1px solid rgba(34, 197, 94, 0.2)',
@@ -1259,7 +1292,8 @@ export default function Chat() {
                                             ))}
                                         </div>
                                     </details>
-                                )}
+                                    </>);
+                                })()}
                                 {msg.thinking && (
                                     <details style={{
                                         marginBottom: '8px', fontSize: '12px',
