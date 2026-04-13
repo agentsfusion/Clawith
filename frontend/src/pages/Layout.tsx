@@ -30,6 +30,7 @@ import {
     IconChevronRight,
     IconCheck,
     IconBolt,
+    IconCode,
 } from '@tabler/icons-react';
 import { useAppStore } from '../stores';
 
@@ -565,6 +566,12 @@ export default function Layout() {
                                 <IconBolt size={14} stroke={1.5} />
                             </span>
                             <span className="sidebar-item-text">{t('nav.factory', 'Agent Factory')}</span>
+                        </NavLink>
+                        <NavLink to="/script-builder" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                <IconCode size={14} stroke={1.5} />
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.scriptBuilder', 'Script Builder')}</span>
                         </NavLink>
                     </div>
                 </div>
