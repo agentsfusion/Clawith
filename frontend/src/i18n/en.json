@@ -206,7 +206,10 @@
       "chat": "Chat",
       "activityLog": "Activity Log",
       "approvals": "Approvals",
-      "settings": "Settings"
+      "settings": "Settings",
+      "feedback": "Feedback",
+      "health": "Health",
+      "script": "Script"
     },
     "fields": {
       "name": "Name",

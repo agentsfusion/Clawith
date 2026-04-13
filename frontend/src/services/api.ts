@@ -693,3 +693,74 @@ export const scriptBuilderApi = {
         }),
 };
 
+export interface EvolverFeedback {
+    id: string;
+    agent_id: string;
+    category: string;
+    content: string;
+    status: string;
+    created_at: string;
+}
+
+export interface EvolverHealthCheck {
+    id: string;
+    agent_id: string;
+    overall_score: number;
+    dimensions?: { name: string; score: number; feedback: string }[];
+    strengths?: string[];
+    suggestions?: string[];
+    script_version?: string;
+    created_at: string;
+}
+
+export interface EvolverScriptVersion {
+    id: string;
+    agent_id: string;
+    version: number;
+    folder: string;
+    content: string;
+    source?: string;
+    created_at: string;
+}
+
+export const evolverApi = {
+    listFeedbacks: (agentId: string) =>
+        request<EvolverFeedback[]>(`/evolver/agents/${agentId}/feedbacks`),
+
+    createFeedback: (agentId: string, category: string, content: string) =>
+        request<EvolverFeedback>(`/evolver/agents/${agentId}/feedbacks`, {
+            method: 'POST',
+            body: JSON.stringify({ category, content }),
+        }),
+
+    updateFeedback: (agentId: string, feedbackId: string, data: { status?: string; content?: string }) =>
+        request<EvolverFeedback>(`/evolver/agents/${agentId}/feedbacks/${feedbackId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(data),
+        }),
+
+    deleteFeedback: (agentId: string, feedbackId: string) =>
+        request<void>(`/evolver/agents/${agentId}/feedbacks/${feedbackId}`, { method: 'DELETE' }),
+
+    listHealthChecks: (agentId: string) =>
+        request<EvolverHealthCheck[]>(`/evolver/agents/${agentId}/health-checks`),
+
+    triggerHealthCheck: (agentId: string) =>
+        request<EvolverHealthCheck>(`/evolver/agents/${agentId}/health-checks`, { method: 'POST' }),
+
+    listScriptVersions: (agentId: string, folder?: string) =>
+        request<EvolverScriptVersion[]>(`/evolver/agents/${agentId}/script-versions${folder ? `?folder=${folder}` : ''}`),
+
+    createScriptVersion: (agentId: string, folder: string, content: string, source?: string) =>
+        request<EvolverScriptVersion>(`/evolver/agents/${agentId}/script-versions`, {
+            method: 'POST',
+            body: JSON.stringify({ folder, content, source }),
+        }),
+
+    triggerEvolution: (agentId: string, direction?: string) =>
+        request<{ status: string; version?: number; feedbacks_addressed?: number }>(
+            `/evolver/agents/${agentId}/evolve`,
+            { method: 'POST', body: JSON.stringify({ direction }) },
+        ),
+};
+

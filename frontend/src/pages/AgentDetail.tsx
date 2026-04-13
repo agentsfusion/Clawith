@@ -12,6 +12,9 @@ import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import AgentCredentials from '../components/AgentCredentials';
+import FeedbackTab from '../components/evolver/FeedbackTab';
+import HealthTab from '../components/evolver/HealthTab';
+import ScriptTab from '../components/evolver/ScriptTab';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, gwsApi, larkApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
@@ -20,7 +23,7 @@ import { formatFileSize } from '../utils/formatFileSize';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 
-const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings', 'feedback', 'health', 'script'] as const;
 
 // Format large token numbers with K/M suffixes
 const formatTokens = (n: number) => {
@@ -1629,7 +1632,7 @@ function AgentDetailInner() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
-    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'];
+    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings', 'feedback', 'health', 'script'];
     const hashTab = location.hash?.replace('#', '');
     const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
 
@@ -3222,6 +3225,9 @@ function AgentDetailInner() {
                         if ((agent as any)?.agent_type === 'openclaw') {
                             return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
                         }
+                        const isEvolver = (agent as any)?.agent_type === 'evolver';
+                        if (['feedback', 'health', 'script'].includes(tab)) return isEvolver;
+                        if (isEvolver && ['aware', 'mind', 'tools', 'skills', 'workspace'].includes(tab)) return false;
                         return true;
                     }).map((tab) => (
                         <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
@@ -6245,6 +6251,18 @@ function AgentDetailInner() {
                     </div>
                 )
             }
+
+                    {activeTab === 'feedback' && id && (
+                        <FeedbackTab agentId={id} />
+                    )}
+
+                    {activeTab === 'health' && id && (
+                        <HealthTab agentId={id} />
+                    )}
+
+                    {activeTab === 'script' && id && (
+                        <ScriptTab agentId={id} />
+                    )}
 
         </>
     );
