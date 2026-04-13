@@ -54,6 +54,7 @@ class ParsedScript:
     variables: dict[str, ScriptVariable] = field(default_factory=dict)
     start_agent: ScriptTopic | None = None
     topics: dict[str, ScriptTopic] = field(default_factory=dict)
+    user_input_handler: str = ""
     raw: str = ""
 
 
@@ -90,32 +91,103 @@ class ScriptExecutionResult:
     topic_path: list[str] = field(default_factory=list)
 
 
-def _resolve_var_ref(text: str, variables: dict[str, Any]) -> str:
-    def _repl(m):
-        var_name = m.group(1)
+def _resolve_template(text: str, variables: dict[str, Any],
+                       local_vars: dict[str, Any] | None = None,
+                       system_messages: dict[str, Any] | None = None) -> str:
+    result_parts = []
+    i = 0
+    while i < len(text):
+        if text[i:i+2] == '{!':
+            depth = 1
+            j = i + 2
+            while j < len(text) and depth > 0:
+                if text[j] == '{':
+                    depth += 1
+                elif text[j] == '}':
+                    depth -= 1
+                j += 1
+            if depth != 0:
+                result_parts.append(text[i:])
+                break
+            expr = text[i+2:j-1]
+            result_parts.append(_resolve_expr(expr, variables, local_vars, system_messages))
+            i = j
+        else:
+            result_parts.append(text[i])
+            i += 1
+    return ''.join(result_parts)
+
+
+def _resolve_expr(expr: str, variables: dict[str, Any],
+                  local_vars: dict[str, Any] | None = None,
+                  system_messages: dict[str, Any] | None = None) -> str:
+    if expr.startswith("@variables."):
+        var_name = expr[len("@variables."):].split(".")[0]
         val = variables.get(var_name, "")
         return str(val) if val is not None else ""
-    result = re.sub(r'\{!@variables\.(\w+)\}', _repl, text)
-    return result
+    if expr.startswith("system.messages."):
+        rest = expr[len("system.messages."):]
+        msg_key = rest.split(".")[0]
+        if system_messages and msg_key in system_messages:
+            val = str(system_messages[msg_key]).strip()
+            replace_m = re.search(r'\.replace\(\s*"([^"]*?)"\s*,\s*(.+?)\s*\)', rest)
+            if replace_m:
+                old_str = replace_m.group(1)
+                new_expr = replace_m.group(2).strip().strip('"').strip("'")
+                new_val = str(local_vars.get(new_expr, variables.get(new_expr, new_expr))) if local_vars else str(variables.get(new_expr, new_expr))
+                val = val.replace(old_str, new_val)
+            return val
+        return ""
+    if local_vars and expr in local_vars:
+        return str(local_vars[expr])
+    if expr in variables:
+        return str(variables[expr])
+    return f"{{!{expr}}}"
 
 
-def _eval_condition(condition: str, variables: dict[str, Any]) -> bool:
+_resolve_var_ref = _resolve_template
+
+
+_SAFE_BUILTINS = {
+    "True": True, "False": False, "None": None, "true": True, "false": False,
+    "len": len, "str": str, "int": int, "float": float, "bool": bool,
+    "abs": abs, "min": min, "max": max, "isinstance": isinstance,
+}
+
+
+def _eval_condition(condition: str, variables: dict[str, Any],
+                    local_vars: dict[str, Any] | None = None) -> bool:
     cond = condition.strip()
 
     cond = re.sub(r'@variables\.(\w+)', lambda m: f'__vars__.get("{m.group(1)}", "")', cond)
 
-    cond = cond.replace(" is not None", ' is not None')
-    cond = cond.replace(" is None", ' is None')
-    cond = re.sub(r'\b(True)\b', 'True', cond)
-    cond = re.sub(r'\b(False)\b', 'False', cond)
+    env: dict[str, Any] = {"__builtins__": {}, "__vars__": variables, **_SAFE_BUILTINS}
+    if local_vars:
+        env.update(local_vars)
 
     try:
-        result = eval(cond, {"__builtins__": {}, "__vars__": variables,
-                             "True": True, "False": False, "None": None})
+        result = eval(cond, env)
         return bool(result)
     except Exception as e:
         logger.debug(f"[ScriptRuntime] Condition eval failed: {cond!r} -> {e}")
         return True
+
+
+def _eval_expression(expr: str, variables: dict[str, Any],
+                     local_vars: dict[str, Any] | None = None) -> Any:
+    resolved = expr.strip()
+
+    resolved = re.sub(r'@variables\.(\w+)', lambda m: f'__vars__.get("{m.group(1)}", "")', resolved)
+
+    env: dict[str, Any] = {"__builtins__": {}, "__vars__": variables, **_SAFE_BUILTINS}
+    if local_vars:
+        env.update(local_vars)
+
+    try:
+        return eval(resolved, env)
+    except Exception:
+        resolved2 = _resolve_template(expr, variables, local_vars)
+        return resolved2
 
 
 @dataclass
@@ -124,10 +196,13 @@ class ReasoningResult:
     transitions: list[str] = field(default_factory=list)
     actions_to_run: list[dict] = field(default_factory=list)
     is_procedural: bool = False
+    stopped: bool = False
+    local_vars: dict[str, Any] = field(default_factory=dict)
 
 
 def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
-                       topic_actions: dict[str, 'ScriptAction'] | None = None) -> ReasoningResult:
+                       topic_actions: dict[str, 'ScriptAction'] | None = None,
+                       system_messages: dict[str, Any] | None = None) -> ReasoningResult:
     result = ReasoningResult()
     if not reasoning_text or not reasoning_text.strip():
         return result
@@ -135,6 +210,7 @@ def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
     lines = reasoning_text.split("\n")
 
     is_procedural = False
+    has_procedural_constructs = False
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("instructions:->"):
@@ -144,15 +220,24 @@ def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
             is_procedural = False
             break
 
-    result.is_procedural = is_procedural
-
     if not is_procedural:
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(("if ", "let ", "stop", "try:", "except")):
+                has_procedural_constructs = True
+                break
+
+    result.is_procedural = is_procedural or has_procedural_constructs
+    local_vars: dict[str, Any] = {}
+    result.local_vars = local_vars
+
+    if not is_procedural and not has_procedural_constructs:
         for line in lines:
             stripped = line.strip()
             if stripped.startswith("instructions:|"):
                 prompt = stripped[len("instructions:|"):].strip()
                 if prompt:
-                    result.prompts.append(_resolve_var_ref(prompt, variables))
+                    result.prompts.append(_resolve_template(prompt, variables, local_vars, system_messages))
                 continue
             if stripped.startswith("instructions:"):
                 continue
@@ -161,7 +246,7 @@ def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
             if stripped.startswith("|"):
                 prompt = stripped[1:].strip()
                 if prompt:
-                    result.prompts.append(_resolve_var_ref(prompt, variables))
+                    result.prompts.append(_resolve_template(prompt, variables, local_vars, system_messages))
                 continue
             m_run = re.match(r'run @actions\.(\w+)', stripped)
             if m_run:
@@ -175,6 +260,10 @@ def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
             if m_trans:
                 result.transitions.append(m_trans.group(1))
                 continue
+            m_goto = re.match(r'go_to @topic\.(\w+)', stripped)
+            if m_goto:
+                result.transitions.append(m_goto.group(1))
+                continue
             if not stripped.startswith(("description:", "available when")):
                 m = re.match(r'^(\w+):\s*@(utils\.transition|actions\.\w+)', stripped)
                 if m:
@@ -182,12 +271,13 @@ def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
         return result
 
     if_stack: list[dict] = []
+    except_skip_indent: int | None = None
 
     for line in lines:
         stripped = line.strip()
-        if not stripped:
+        if not stripped or stripped.startswith("#"):
             continue
-        if stripped.startswith("instructions:->") or stripped.startswith("instructions:|"):
+        if stripped.startswith("instructions:->") or stripped.startswith("instructions:|") or stripped.startswith("instructions: |"):
             continue
         if stripped.startswith("actions:") and not stripped.startswith("actions."):
             continue
@@ -197,16 +287,51 @@ def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
         while if_stack and indent <= if_stack[-1]["indent"]:
             if_stack.pop()
 
+        if except_skip_indent is not None and indent <= except_skip_indent:
+            except_skip_indent = None
+
         def _is_active() -> bool:
+            if except_skip_indent is not None:
+                return False
             return all(frame["active"] for frame in if_stack)
+
+        if result.stopped:
+            break
+
+        if stripped == "stop" or stripped == "return":
+            if _is_active():
+                result.stopped = True
+            continue
+
+        if stripped == "try:":
+            continue
+
+        m_except = re.match(r'except(\s+[\w,\s]+)?(\s+as\s+\w+)?:', stripped)
+        if m_except:
+            except_skip_indent = indent
+            continue
 
         if stripped.startswith("if "):
             condition_expr = stripped[3:].rstrip(":")
             if _is_active():
-                is_true = _eval_condition(condition_expr, variables)
+                is_true = _eval_condition(condition_expr, variables, local_vars)
                 if_stack.append({"indent": indent, "active": is_true, "branch_taken": is_true})
             else:
                 if_stack.append({"indent": indent, "active": False, "branch_taken": False})
+            continue
+
+        m_elif = re.match(r'elif\s+(.+?):', stripped)
+        if m_elif:
+            if if_stack:
+                frame = if_stack[-1]
+                if all(f["active"] for f in if_stack[:-1]):
+                    if not frame["branch_taken"]:
+                        is_true = _eval_condition(m_elif.group(1), variables, local_vars)
+                        frame["active"] = is_true
+                        if is_true:
+                            frame["branch_taken"] = True
+                    else:
+                        frame["active"] = False
             continue
 
         if stripped == "else:":
@@ -222,35 +347,58 @@ def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
         if stripped.startswith("| ") or stripped.startswith("|"):
             prompt = stripped[1:].strip() if stripped.startswith("|") else stripped[2:]
             if prompt:
-                result.prompts.append(_resolve_var_ref(prompt, variables))
+                result.prompts.append(_resolve_template(prompt, variables, local_vars, system_messages))
             continue
 
-        m = re.match(r'transition to @topic\.(\w+)', stripped)
-        if m:
-            result.transitions.append(m.group(1))
+        m_let = re.match(r'let\s+(\w+)\s*=\s*(.+)', stripped)
+        if m_let:
+            var_name_local = m_let.group(1)
+            val_expr = m_let.group(2).strip()
+            local_vars[var_name_local] = _eval_expression(val_expr, variables, local_vars)
             continue
 
-        m = re.match(r'run @actions\.(\w+)', stripped)
-        if m:
-            action_name = m.group(1)
-            action_info: dict[str, Any] = {"name": action_name}
+        m_assign = re.match(r'^(\w+)\s*=\s*(.+)', stripped)
+        if m_assign:
+            lhs = m_assign.group(1)
+            if lhs in local_vars:
+                local_vars[lhs] = _eval_expression(m_assign.group(2).strip(), variables, local_vars)
+                continue
+
+        m_trans = re.match(r'transition to @topic\.(\w+)', stripped)
+        if m_trans:
+            result.transitions.append(m_trans.group(1))
+            continue
+
+        m_goto = re.match(r'go_to @topic\.(\w+)', stripped)
+        if m_goto:
+            result.transitions.append(m_goto.group(1))
+            continue
+
+        m_run = re.match(r'run @actions\.(\w+)', stripped)
+        if m_run:
+            action_name = m_run.group(1)
+            action_info: dict[str, Any] = {"name": action_name, "params": {}}
             if topic_actions and action_name in topic_actions:
                 action_info["target"] = topic_actions[action_name].target
             result.actions_to_run.append(action_info)
             continue
 
-        m = re.match(r'set @variables\.(\w+)\s*=\s*(.+)', stripped)
-        if m:
-            var_name, val_expr = m.group(1), m.group(2).strip()
+        m_with = re.match(r'with\s+(\w+)\s*=\s*(.+)', stripped)
+        if m_with and result.actions_to_run:
+            param_name = m_with.group(1)
+            param_val = _eval_expression(m_with.group(2).strip(), variables, local_vars)
+            result.actions_to_run[-1].setdefault("params", {})[param_name] = param_val
+            continue
+
+        m_set = re.match(r'set @variables\.(\w+)\s*=\s*(.+)', stripped)
+        if m_set:
+            var_name, val_expr = m_set.group(1), m_set.group(2).strip()
             out_m = re.match(r'@outputs\.(\w+)', val_expr)
             if out_m:
-                pass
+                if result.actions_to_run:
+                    result.actions_to_run[-1].setdefault("output_mappings", {})[var_name] = out_m.group(1)
             else:
-                resolved = _resolve_var_ref(val_expr, variables)
-                try:
-                    variables[var_name] = eval(resolved, {"__builtins__": {}, "True": True, "False": False, "None": None})
-                except Exception:
-                    variables[var_name] = resolved
+                variables[var_name] = _eval_expression(val_expr, variables, local_vars)
             continue
 
     return result
@@ -318,6 +466,11 @@ def parse_script(script_text: str) -> ParsedScript:
             topic_name = m.group(1)
             block, i = _collect_block(i + 1, _current_indent(line))
             result.topics[topic_name] = _parse_topic(topic_name, block)
+            continue
+
+        if stripped.startswith("user_input_handler:"):
+            block, i = _collect_block(i + 1, _current_indent(line))
+            result.user_input_handler = "\n".join(block)
             continue
 
         if re.match(r'^(TOOLBOX|SKILLS|ROLE)\s*\{', stripped) or stripped in ("TOOLBOX {", "SKILLS {", "ROLE {"):
@@ -435,7 +588,7 @@ def _parse_variables(block_lines: list[str]) -> dict[str, ScriptVariable]:
             var_type = m.group(3)
             default_str = m.group(4).strip().strip('"').strip("'")
             default: Any = default_str
-            if var_type == "boolean":
+            if var_type in ("boolean", "bool"):
                 default = default_str.lower() in ("true", "1", "yes")
             elif var_type == "number":
                 try:
@@ -685,7 +838,8 @@ def execute_script_logic(
             break
 
         reasoning = evaluate_reasoning(
-            topic.reasoning_text, state.variables, topic.actions
+            topic.reasoning_text, state.variables, topic.actions,
+            system_messages=parsed.system_messages,
         )
 
         for var_name, new_val in state.variables.items():
@@ -711,6 +865,13 @@ def execute_script_logic(
                 ))
                 continue
 
+        if reasoning.local_vars:
+            for lk, lv in reasoning.local_vars.items():
+                result.steps.append(ExecutionStep(
+                    topic=topic.name, action="set",
+                    detail=f"let {lk} = {json.dumps(lv, ensure_ascii=False, default=str)}"
+                ))
+
         if reasoning.prompts:
             result.llm_instructions.extend(reasoning.prompts)
             result.needs_llm = True
@@ -722,10 +883,19 @@ def execute_script_logic(
         if reasoning.actions_to_run:
             result.actions_to_run.extend(reasoning.actions_to_run)
             for act in reasoning.actions_to_run:
+                params_str = ""
+                if act.get("params"):
+                    params_str = f" with {', '.join(f'{k}={v}' for k, v in act['params'].items())}"
                 result.steps.append(ExecutionStep(
                     topic=topic.name, action="run_action",
-                    detail=f"@actions.{act['name']} → {act.get('target', '')}"
+                    detail=f"@actions.{act['name']} → {act.get('target', '')}{params_str}"
                 ))
+
+        if reasoning.stopped:
+            result.steps.append(ExecutionStep(
+                topic=topic.name, action="stop",
+                detail="Script execution halted (stop)"
+            ))
 
         if not reasoning.is_procedural and not reasoning.prompts and not reasoning.transitions:
             result.needs_llm = True
@@ -794,14 +964,22 @@ def build_execution_prompt(
         has_tool_target = False
         for act in exec_result.actions_to_run:
             target = act.get("target", "")
+            params = act.get("params", {})
+            params_desc = ""
+            if params:
+                params_desc = f" with parameters: {', '.join(f'{k}={json.dumps(v, ensure_ascii=False, default=str)}' for k, v in params.items())}"
+            output_mappings = act.get("output_mappings", {})
+            out_desc = ""
+            if output_mappings:
+                out_desc = f" → store outputs: {', '.join(f'@variables.{vn} = @outputs.{on}' for vn, on in output_mappings.items())}"
             if target:
-                parts.append(f"- Call `{act['name']}` (target: `{target}`)")
+                parts.append(f"- Call `{act['name']}` (target: `{target}`){params_desc}{out_desc}")
                 if target.startswith("skill://"):
                     has_skill_target = True
                 elif target.startswith("tool://"):
                     has_tool_target = True
             else:
-                parts.append(f"- Execute `{act['name']}`")
+                parts.append(f"- Execute `{act['name']}`{params_desc}{out_desc}")
         if has_skill_target:
             parts.append("\n**Skill Execution**: For `skill://` targets, you MUST use `read_file` to load the skill file first (e.g., `skills/<skill-name>/SKILL.md`), then follow the skill's instructions to complete the action. Do NOT use generic tools like `web_search` as a substitute — the skill contains the specific logic and tools to use.")
         if has_tool_target:
@@ -861,7 +1039,7 @@ def process_response_v2(
         val_str = m.group(2).strip().strip('"').strip("'")
         if var_name in parsed.variables:
             var = parsed.variables[var_name]
-            if var.var_type == "boolean":
+            if var.var_type in ("boolean", "bool"):
                 state.variables[var_name] = val_str.lower() in ("true", "1", "yes")
             elif var.var_type == "number":
                 try:
@@ -1025,7 +1203,7 @@ def process_response(response_text: str, state: ScriptState, parsed: ParsedScrip
         val_str = m.group(2).strip().strip('"').strip("'")
         if var_name in parsed.variables:
             var = parsed.variables[var_name]
-            if var.var_type == "boolean":
+            if var.var_type in ("boolean", "bool"):
                 state.variables[var_name] = val_str.lower() in ("true", "1", "yes")
             elif var.var_type == "number":
                 try:

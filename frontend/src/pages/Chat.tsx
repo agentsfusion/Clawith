@@ -1167,6 +1167,7 @@ export default function Chat() {
                                                                             transition: 'rgba(249, 115, 22, 0.8)',
                                                                             llm_prompt: 'rgba(34, 197, 94, 0.8)',
                                                                             run_action: 'rgba(239, 68, 68, 0.8)',
+                                                                            stop: 'rgba(239, 68, 68, 0.6)',
                                                                         };
                                                                         const icons: Record<string, string> = {
                                                                             enter: '\u25B6',
@@ -1174,6 +1175,7 @@ export default function Chat() {
                                                                             transition: '\u2192',
                                                                             llm_prompt: '\u2728',
                                                                             run_action: '\u2699',
+                                                                            stop: '\u23F9',
                                                                         };
                                                                         return (
                                                                             <div key={esi} style={{
