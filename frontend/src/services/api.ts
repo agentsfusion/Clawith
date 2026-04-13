@@ -310,6 +310,12 @@ export const fileApi = {
             body: JSON.stringify({ skill_id: skillId }),
         }),
 
+    importSkillsBatch: (agentId: string, skillIds: string[]) =>
+        request<any>(`/agents/${agentId}/files/import-skills-batch`, {
+            method: 'POST',
+            body: JSON.stringify({ skill_ids: skillIds }),
+        }),
+
     downloadUrl: (agentId: string, path: string) => {
         const token = localStorage.getItem('token');
         return `${API_BASE}/agents/${agentId}/files/download?path=${encodeURIComponent(path)}&token=${token}`;

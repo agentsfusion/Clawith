@@ -2837,6 +2837,8 @@ function AgentDetailInner() {
     // Import skill from presets
     const [showImportSkillModal, setShowImportSkillModal] = useState(false);
     const [importingSkillId, setImportingSkillId] = useState<string | null>(null);
+    const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set());
+    const [batchImporting, setBatchImporting] = useState(false);
     const { data: globalSkillsForImport } = useQuery({
         queryKey: ['global-skills-for-import'],
         queryFn: () => skillApi.list(),
@@ -4313,36 +4315,71 @@ function AgentDetailInner() {
 
                                 {/* Import from Presets Modal */}
                                 {showImportSkillModal && (
-                                    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillModal(false)}>
+                                    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => { setShowImportSkillModal(false); setSelectedSkillIds(new Set()); }}>
                                         <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                                                 <h3>{t('agent.skills.importPreset', 'Import from Presets')}</h3>
-                                                <button onClick={() => setShowImportSkillModal(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
+                                                <button onClick={() => { setShowImportSkillModal(false); setSelectedSkillIds(new Set()); }} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
                                             </div>
-                                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px' }}>
-                                                {t('agent.skills.importDesc', 'Select a preset skill to import into this agent. All skill files will be copied to the agent\'s skills folder.')}
+                                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 12px' }}>
+                                                {t('agent.skills.importDesc', 'Select preset skills to import into this agent.')}
                                             </p>
+                                            {globalSkillsForImport && globalSkillsForImport.length > 0 && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                                    <button
+                                                        className="btn btn-ghost"
+                                                        style={{ fontSize: '12px', padding: '4px 8px', color: 'var(--accent-primary)' }}
+                                                        onClick={() => {
+                                                            if (selectedSkillIds.size === globalSkillsForImport.length) {
+                                                                setSelectedSkillIds(new Set());
+                                                            } else {
+                                                                setSelectedSkillIds(new Set(globalSkillsForImport.map((s: any) => s.id)));
+                                                            }
+                                                        }}
+                                                    >
+                                                        {selectedSkillIds.size === globalSkillsForImport.length
+                                                            ? t('agent.skills.deselectAll', 'Deselect All')
+                                                            : t('agent.skills.selectAll', 'Select All')}
+                                                    </button>
+                                                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                        {selectedSkillIds.size} / {globalSkillsForImport.length}
+                                                    </span>
+                                                </div>
+                                            )}
                                             <div style={{ flex: 1, overflowY: 'auto' }}>
                                                 {!globalSkillsForImport ? (
                                                     <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)' }}>Loading...</div>
                                                 ) : globalSkillsForImport.length === 0 ? (
                                                     <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)' }}>No preset skills available</div>
                                                 ) : (
-                                                    globalSkillsForImport.map((skill: any) => (
-                                                        <div
-                                                            key={skill.id}
-                                                            style={{
-                                                                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                                                                padding: '12px 14px', borderRadius: '8px', marginBottom: '8px',
-                                                                border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)',
-                                                                transition: 'border-color 0.15s',
-                                                            }}
-                                                            onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--accent-primary)')}
-                                                            onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border-subtle)')}
-                                                        >
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
+                                                    globalSkillsForImport.map((skill: any) => {
+                                                        const isChecked = selectedSkillIds.has(skill.id);
+                                                        return (
+                                                            <label
+                                                                key={skill.id}
+                                                                style={{
+                                                                    display: 'flex', alignItems: 'center', gap: '10px',
+                                                                    padding: '12px 14px', borderRadius: '8px', marginBottom: '8px',
+                                                                    border: `1px solid ${isChecked ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+                                                                    background: isChecked ? 'var(--accent-subtle)' : 'var(--bg-secondary)',
+                                                                    cursor: 'pointer',
+                                                                    transition: 'border-color 0.15s, background 0.15s',
+                                                                }}
+                                                            >
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={isChecked}
+                                                                    onChange={() => {
+                                                                        setSelectedSkillIds(prev => {
+                                                                            const next = new Set(prev);
+                                                                            if (next.has(skill.id)) next.delete(skill.id);
+                                                                            else next.add(skill.id);
+                                                                            return next;
+                                                                        });
+                                                                    }}
+                                                                />
                                                                 <span style={{ fontSize: '20px' }}>{skill.icon || '📋'}</span>
-                                                                <div>
+                                                                <div style={{ flex: 1 }}>
                                                                     <div style={{ fontWeight: 600, fontSize: '14px' }}>{skill.name}</div>
                                                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                                                                         {skill.description?.substring(0, 100)}{skill.description?.length > 100 ? '...' : ''}
@@ -4352,30 +4389,52 @@ function AgentDetailInner() {
                                                                         {skill.is_default && <span style={{ marginLeft: '8px', color: 'var(--accent-primary)', fontWeight: 600 }}>✓ Default</span>}
                                                                     </div>
                                                                 </div>
-                                                            </div>
-                                                            <button
-                                                                className="btn btn-secondary"
-                                                                style={{ whiteSpace: 'nowrap', fontSize: '12px', padding: '6px 14px' }}
-                                                                disabled={importingSkillId === skill.id}
-                                                                onClick={async () => {
-                                                                    setImportingSkillId(skill.id);
-                                                                    try {
-                                                                        const res = await fileApi.importSkill(id!, skill.id);
-                                                                        alert(`✅ Imported "${skill.name}" (${res.files_written} files)`);
-                                                                        queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
-                                                                        setShowImportSkillModal(false);
-                                                                    } catch (err: any) {
-                                                                        alert(`❌ Import failed: ${err?.message || err}`);
-                                                                    } finally {
-                                                                        setImportingSkillId(null);
-                                                                    }
-                                                                }}
-                                                            >
-                                                                {importingSkillId === skill.id ? '⏳ ...' : '⬇️ Import'}
-                                                            </button>
-                                                        </div>
-                                                    ))
+                                                            </label>
+                                                        );
+                                                    })
                                                 )}
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px', gap: '8px' }}>
+                                                <button
+                                                    className="btn btn-secondary"
+                                                    onClick={() => { setShowImportSkillModal(false); setSelectedSkillIds(new Set()); }}
+                                                >
+                                                    {t('agent.skills.cancel', 'Cancel')}
+                                                </button>
+                                                <button
+                                                    className="btn btn-primary"
+                                                    disabled={selectedSkillIds.size === 0 || batchImporting}
+                                                    onClick={async () => {
+                                                        setBatchImporting(true);
+                                                        try {
+                                                            const res = await fileApi.importSkillsBatch(id!, Array.from(selectedSkillIds));
+                                                            const okCount = res.results?.filter((r: any) => r.status === 'ok').length || 0;
+                                                            const failCount = res.results?.filter((r: any) => r.status === 'error').length || 0;
+                                                            if (failCount > 0) {
+                                                                const failedNames = res.results
+                                                                    ?.filter((r: any) => r.status === 'error')
+                                                                    ?.map((r: any) => r.skill_name || r.skill_id)
+                                                                    ?.join(', ');
+                                                                alert(t('agent.skills.batchImportPartial', '{{success}} imported, {{failed}} failed', { success: okCount, failed: failCount }) + '\n' + `Failed: ${failedNames}`);
+                                                            } else {
+                                                                queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
+                                                                setSelectedSkillIds(new Set());
+                                                                setShowImportSkillModal(false);
+                                                                alert(t('agent.skills.batchImportSuccess', '{{count}} skills imported successfully', { count: okCount }));
+                                                            }
+                                                        } catch (err: any) {
+                                                            alert(t('agent.skills.batchImportFailed', 'Batch import failed') + `: ${err?.message || err}`);
+                                                        } finally {
+                                                            setBatchImporting(false);
+                                                        }
+                                                    }}
+                                                >
+                                                    {batchImporting
+                                                        ? t('agent.skills.importing', 'Importing...')
+                                                        : selectedSkillIds.size > 0
+                                                            ? t('agent.skills.importNSelected', 'Import {{count}} Selected', { count: selectedSkillIds.size })
+                                                            : t('agent.skills.importSelected', 'Import')}
+                                                </button>
                                             </div>
                                         </div>
                                     </div>
