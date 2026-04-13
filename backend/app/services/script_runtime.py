@@ -305,18 +305,58 @@ def _parse_yaml_like(block_lines: list[str]) -> dict:
     current_key = None
     current_sub: dict | None = None
     sub_indent: int | None = None
+    multiline_key: str | None = None
+    multiline_target: dict | None = None
+    multiline_indent: int | None = None
+    multiline_lines: list[str] = []
+
+    def _flush_multiline():
+        nonlocal multiline_key, multiline_target, multiline_indent, multiline_lines
+        if multiline_key and multiline_target is not None:
+            multiline_target[multiline_key] = "\n".join(multiline_lines).strip()
+        elif multiline_key:
+            result[multiline_key] = "\n".join(multiline_lines).strip()
+        multiline_key = None
+        multiline_target = None
+        multiline_indent = None
+        multiline_lines = []
 
     for line in block_lines:
         stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+
+        if multiline_key is not None:
+            if not stripped:
+                multiline_lines.append("")
+                continue
+            if multiline_indent is None:
+                multiline_indent = indent
+            if indent >= multiline_indent:
+                multiline_lines.append(stripped)
+                continue
+            else:
+                _flush_multiline()
+
         if not stripped:
             continue
-
-        indent = len(line) - len(line.lstrip())
 
         if sub_indent is not None and indent <= sub_indent and current_sub is not None:
             current_key = None
             current_sub = None
             sub_indent = None
+
+        m = re.match(r'^(\w[\w_-]*)\s*:\s*[|>]\s*$', stripped)
+        if m:
+            key = m.group(1)
+            if current_sub is not None and sub_indent is not None and indent > sub_indent:
+                multiline_key = key
+                multiline_target = current_sub
+            else:
+                multiline_key = key
+                multiline_target = None
+            multiline_indent = None
+            multiline_lines = []
+            continue
 
         m = re.match(r'^(\w[\w_-]*)\s*:\s*$', stripped)
         if m:
@@ -338,6 +378,7 @@ def _parse_yaml_like(block_lines: list[str]) -> dict:
                 result[key] = val
             continue
 
+    _flush_multiline()
     return result
 
 
