@@ -46,7 +46,7 @@ interface ToolCall {
 }
 
 interface ScriptTraceEntry {
-    phase: 'input' | 'output' | 'init';
+    phase: 'input' | 'output' | 'init' | 'execution';
     current_topic?: string;
     topic_description?: string;
     variables?: Record<string, any>;
@@ -61,6 +61,12 @@ interface ScriptTraceEntry {
     new_topic?: string;
     new_variables?: Record<string, any>;
     welcome_source?: 'script' | 'agent';
+    execution_steps?: { topic: string; action: string; detail: string }[];
+    topic_path?: string[];
+    engine_changes?: string[];
+    llm_instructions?: string[];
+    actions_to_run?: string[];
+    mem?: Record<string, string>;
 }
 
 interface Message {
@@ -921,10 +927,10 @@ export default function Chat() {
                                                 }}>
                                                     <div style={{
                                                         fontWeight: 600, fontSize: '11px', textTransform: 'uppercase',
-                                                        color: trace.phase === 'init' ? 'rgba(34, 197, 94, 0.85)' : trace.phase === 'input' ? 'rgba(59, 130, 246, 0.85)' : 'rgba(234, 179, 8, 0.85)',
+                                                        color: trace.phase === 'init' ? 'rgba(34, 197, 94, 0.85)' : trace.phase === 'execution' ? 'rgba(249, 115, 22, 0.85)' : trace.phase === 'input' ? 'rgba(59, 130, 246, 0.85)' : 'rgba(234, 179, 8, 0.85)',
                                                         marginBottom: '4px', letterSpacing: '0.5px',
                                                     }}>
-                                                        {trace.phase === 'init' ? '\u2726 Session Init' : trace.phase === 'input' ? '\u25B6 Input State' : '\u25C0 Output State'}
+                                                        {trace.phase === 'init' ? '\u2726 Session Init' : trace.phase === 'execution' ? '\u2699 Script Engine' : trace.phase === 'input' ? '\u25B6 Input State' : '\u25C0 Output State'}
                                                     </div>
 
                                                     {trace.phase === 'init' && (
@@ -1100,6 +1106,110 @@ export default function Chat() {
                                                         </div>
                                                     )}
 
+                                                    {trace.phase === 'execution' && (
+                                                        <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
+                                                            {trace.topic_path && trace.topic_path.length > 1 && (
+                                                                <div style={{ display: 'flex', gap: '4px', marginBottom: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Path:</span>
+                                                                    {trace.topic_path.map((tp, tpi) => (
+                                                                        <span key={tpi} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                                            {tpi > 0 && <span style={{ color: 'rgba(249, 115, 22, 0.6)', fontSize: '10px' }}>{'\u2192'}</span>}
+                                                                            <span style={{
+                                                                                display: 'inline-block', background: tpi === trace.topic_path!.length - 1 ? 'rgba(34, 197, 94, 0.15)' : 'rgba(147, 130, 220, 0.1)',
+                                                                                border: `1px solid ${tpi === trace.topic_path!.length - 1 ? 'rgba(34, 197, 94, 0.3)' : 'rgba(147, 130, 220, 0.2)'}`,
+                                                                                borderRadius: '4px', padding: '1px 6px', fontSize: '10px', fontWeight: 600,
+                                                                                color: tpi === trace.topic_path!.length - 1 ? 'rgba(34, 197, 94, 0.85)' : 'rgba(147, 130, 220, 0.85)',
+                                                                            }}>{tp === '__start__' ? 'start_agent' : tp}</span>
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.execution_steps && trace.execution_steps.length > 0 && (
+                                                                <div style={{ marginBottom: '6px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Engine Steps:</span>
+                                                                    {trace.execution_steps.map((es, esi) => {
+                                                                        const actionColors: Record<string, string> = {
+                                                                            enter: 'rgba(59, 130, 246, 0.7)',
+                                                                            set: 'rgba(234, 179, 8, 0.8)',
+                                                                            transition: 'rgba(249, 115, 22, 0.8)',
+                                                                            llm_prompt: 'rgba(34, 197, 94, 0.8)',
+                                                                            run_action: 'rgba(239, 68, 68, 0.8)',
+                                                                        };
+                                                                        const icons: Record<string, string> = {
+                                                                            enter: '\u25B6',
+                                                                            set: '\u270E',
+                                                                            transition: '\u2192',
+                                                                            llm_prompt: '\u2728',
+                                                                            run_action: '\u2699',
+                                                                        };
+                                                                        return (
+                                                                            <div key={esi} style={{
+                                                                                marginLeft: '8px', marginTop: '2px', display: 'flex', alignItems: 'flex-start', gap: '6px',
+                                                                            }}>
+                                                                                <span style={{
+                                                                                    color: actionColors[es.action] || 'var(--text-tertiary)',
+                                                                                    fontSize: '10px', minWidth: '12px', textAlign: 'center',
+                                                                                }}>{icons[es.action] || '\u2022'}</span>
+                                                                                <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>
+                                                                                    {es.detail}
+                                                                                </span>
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                            {trace.llm_instructions && trace.llm_instructions.length > 0 && (
+                                                                <div style={{ marginBottom: '6px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>LLM Instructions:</span>
+                                                                    {trace.llm_instructions.map((inst, ii) => (
+                                                                        <div key={ii} style={{
+                                                                            marginLeft: '8px', marginTop: '2px', padding: '3px 8px',
+                                                                            background: 'rgba(34, 197, 94, 0.06)', borderLeft: '2px solid rgba(34, 197, 94, 0.4)',
+                                                                            fontSize: '10px', color: 'var(--text-primary)', lineHeight: '1.5',
+                                                                        }}>{inst}</div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.engine_changes && trace.engine_changes.length > 0 && (
+                                                                <div style={{ marginBottom: '4px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Engine Changes:</span>
+                                                                    {trace.engine_changes.map((ec, eci) => (
+                                                                        <div key={eci} style={{ marginLeft: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                                            <code style={{
+                                                                                background: 'rgba(249, 115, 22, 0.08)', border: '1px solid rgba(249, 115, 22, 0.15)',
+                                                                                borderRadius: '3px', padding: '1px 5px', fontSize: '10px',
+                                                                            }}>{ec}</code>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.variables && Object.keys(trace.variables).length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Variables:</span>
+                                                                    {Object.entries(trace.variables).map(([k, v]) => (
+                                                                        <div key={k} style={{ marginLeft: '8px' }}>
+                                                                            <code style={{ background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                            {' = '}
+                                                                            <span style={{ color: typeof v === 'string' && v ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>{JSON.stringify(v)}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.mem && Object.keys(trace.mem).length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Memory:</span>
+                                                                    {Object.entries(trace.mem).map(([k, v]) => (
+                                                                        <div key={k} style={{ marginLeft: '8px' }}>
+                                                                            <code style={{ background: 'rgba(147, 130, 220, 0.1)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                            {' = '}
+                                                                            <span style={{ color: 'var(--text-primary)' }}>{v}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
                                                     {trace.phase === 'output' && (
                                                         <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
                                                             {trace.changes && trace.changes.length > 0 ? (
@@ -1129,6 +1239,18 @@ export default function Chat() {
                                                                 <div>
                                                                     <span style={{ color: 'var(--text-tertiary)' }}>Current Topic: </span>
                                                                     <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{trace.new_topic}</span>
+                                                                </div>
+                                                            )}
+                                                            {trace.mem && Object.keys(trace.mem).length > 0 && (
+                                                                <div style={{ marginTop: '4px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Memory:</span>
+                                                                    {Object.entries(trace.mem).map(([k, v]) => (
+                                                                        <div key={k} style={{ marginLeft: '8px' }}>
+                                                                            <code style={{ background: 'rgba(147, 130, 220, 0.1)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                            {' = '}
+                                                                            <span style={{ color: 'var(--text-primary)', fontSize: '10px' }}>{v}</span>
+                                                                        </div>
+                                                                    ))}
                                                                 </div>
                                                             )}
                                                         </div>

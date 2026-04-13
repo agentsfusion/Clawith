@@ -64,6 +64,30 @@ class ScriptState:
     script_version_id: str = ""
     pending_transitions: list[str] = field(default_factory=list)
     pending_actions: list[dict] = field(default_factory=list)
+    mem: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ExecutionStep:
+    topic: str = ""
+    action: str = ""
+    detail: str = ""
+
+    def to_dict(self) -> dict:
+        return {"topic": self.topic, "action": self.action, "detail": self.detail}
+
+
+@dataclass
+class ScriptExecutionResult:
+    response: str = ""
+    changes: list[str] = field(default_factory=list)
+    llm_instructions: list[str] = field(default_factory=list)
+    actions_to_run: list[dict] = field(default_factory=list)
+    needs_llm: bool = False
+    final_topic: str = ""
+    final_variables: dict[str, Any] = field(default_factory=dict)
+    steps: list[ExecutionStep] = field(default_factory=list)
+    topic_path: list[str] = field(default_factory=list)
 
 
 def _resolve_var_ref(text: str, variables: dict[str, Any]) -> str:
@@ -547,6 +571,7 @@ async def load_state(agent_id: uuid.UUID, session_id: str = "") -> ScriptState |
             current_topic=data.get("current_topic", ""),
             variables=data.get("variables", {}),
             script_version_id=data.get("script_version_id", ""),
+            mem=data.get("mem", {}),
         )
     except Exception as e:
         logger.warning(f"[ScriptRuntime] Failed to load state for {agent_id}/{session_id}: {e}")
@@ -562,6 +587,7 @@ async def save_state(agent_id: uuid.UUID, state: ScriptState, session_id: str = 
         "current_topic": state.current_topic,
         "variables": state.variables,
         "script_version_id": state.script_version_id,
+        "mem": state.mem,
     }
     await storage.write(key, json.dumps(data, ensure_ascii=False, indent=2))
 
@@ -609,6 +635,237 @@ def _render_topics_nav(parsed: ParsedScript, current: str) -> str:
         marker = " ← (current)" if name == current else ""
         lines.append(f"- `{name}`: {topic.description}{marker}")
     return "\n".join(lines)
+
+
+def _get_active_topic(parsed: ParsedScript, state: ScriptState) -> ScriptTopic | None:
+    if state.current_topic == "__start__" and parsed.start_agent:
+        return parsed.start_agent
+    elif state.current_topic in parsed.topics:
+        return parsed.topics[state.current_topic]
+    elif parsed.start_agent:
+        state.current_topic = "__start__"
+        return parsed.start_agent
+    return None
+
+
+def execute_script_logic(
+    parsed: ParsedScript,
+    state: ScriptState,
+    max_steps: int = 10,
+) -> ScriptExecutionResult:
+    result = ScriptExecutionResult(final_topic=state.current_topic)
+    result.topic_path.append(state.current_topic)
+    vars_snapshot = dict(state.variables)
+
+    for step_idx in range(max_steps):
+        topic = _get_active_topic(parsed, state)
+        if not topic:
+            break
+
+        result.steps.append(ExecutionStep(
+            topic=topic.name, action="enter",
+            detail=f"Evaluating topic '{topic.name}'"
+        ))
+
+        if not topic.reasoning_text:
+            result.needs_llm = True
+            break
+
+        reasoning = evaluate_reasoning(
+            topic.reasoning_text, state.variables, topic.actions
+        )
+
+        for var_name, new_val in state.variables.items():
+            old_val = vars_snapshot.get(var_name)
+            if old_val != new_val:
+                result.changes.append(f"SET {var_name} = {new_val}")
+                result.steps.append(ExecutionStep(
+                    topic=topic.name, action="set",
+                    detail=f"{var_name} = {json.dumps(new_val, ensure_ascii=False)}"
+                ))
+        vars_snapshot = dict(state.variables)
+
+        if reasoning.transitions:
+            target = reasoning.transitions[0]
+            if target in parsed.topics:
+                old_t = state.current_topic
+                state.current_topic = target
+                result.changes.append(f"TRANSITION {old_t} → {target}")
+                result.topic_path.append(target)
+                result.steps.append(ExecutionStep(
+                    topic=old_t, action="transition",
+                    detail=f"{old_t} → {target}"
+                ))
+                continue
+
+        if reasoning.prompts:
+            result.llm_instructions.extend(reasoning.prompts)
+            result.needs_llm = True
+            result.steps.append(ExecutionStep(
+                topic=topic.name, action="llm_prompt",
+                detail=f"Collected {len(reasoning.prompts)} instruction(s) for LLM"
+            ))
+
+        if reasoning.actions_to_run:
+            result.actions_to_run.extend(reasoning.actions_to_run)
+            for act in reasoning.actions_to_run:
+                result.steps.append(ExecutionStep(
+                    topic=topic.name, action="run_action",
+                    detail=f"@actions.{act['name']} → {act.get('target', '')}"
+                ))
+
+        if not reasoning.is_procedural and not reasoning.prompts and not reasoning.transitions:
+            result.needs_llm = True
+
+        break
+
+    result.final_topic = state.current_topic
+    result.final_variables = dict(state.variables)
+    return result
+
+
+def build_execution_prompt(
+    parsed: ParsedScript,
+    state: ScriptState,
+    exec_result: ScriptExecutionResult,
+) -> str:
+    parts = []
+
+    agent_name = parsed.config.get("agent_name", parsed.config.get("agent_label", "Agent"))
+    description = parsed.config.get("description", "")
+    parts.append(f"You are **{agent_name}**.")
+    if description:
+        parts.append(f"**Role**: {description}")
+    if parsed.system_instructions:
+        parts.append(f"\n## Core Instructions\n{parsed.system_instructions}")
+
+    vars_section = _render_variables_section(parsed, state)
+    if vars_section:
+        parts.append(f"\n{vars_section}")
+
+    if state.mem:
+        parts.append("\n## Conversation Memory")
+        for mk, mv in state.mem.items():
+            parts.append(f"- **{mk}**: {mv}")
+
+    topic = _get_active_topic(parsed, state)
+    if topic:
+        parts.append(f"\n## Current Topic: `{topic.name}`")
+        if topic.description:
+            parts.append(f"*{topic.description}*")
+
+        filtered_actions = {}
+        if topic.actions:
+            for aname, action in topic.actions.items():
+                if action.available_when:
+                    if _eval_condition(action.available_when, state.variables):
+                        filtered_actions[aname] = action
+                else:
+                    filtered_actions[aname] = action
+        if filtered_actions:
+            temp = ScriptTopic(name=topic.name, actions=filtered_actions)
+            asec = _render_actions_section(temp, state)
+            if asec:
+                parts.append(f"\n{asec}")
+
+    if exec_result.llm_instructions:
+        parts.append("\n## Your Task for This Turn")
+        parts.append("The script engine has determined the following instructions for you:")
+        for inst in exec_result.llm_instructions:
+            parts.append(f"- {inst}")
+
+    if exec_result.actions_to_run:
+        parts.append("\n## Actions To Execute")
+        for act in exec_result.actions_to_run:
+            target = act.get("target", "")
+            if target:
+                parts.append(f"- Call `{act['name']}` (target: `{target}`)")
+            else:
+                parts.append(f"- Execute `{act['name']}`")
+
+    if exec_result.topic_path and len(exec_result.topic_path) > 1:
+        parts.append(f"\n## Execution Path")
+        parts.append(f"Script engine routed: {' → '.join(exec_result.topic_path)}")
+
+    extractable = [n for n, v in parsed.variables.items() if v.mutable]
+    if extractable:
+        parts.append("\n## Variable Extraction")
+        parts.append("If the user's message reveals a value for any variable, output `[SET variable = value]` at the END of your response:")
+        for name in extractable:
+            var = parsed.variables[name]
+            cv = state.variables.get(name, var.default)
+            parts.append(f"- `{name}` ({var.var_type}): current=`{json.dumps(cv, ensure_ascii=False)}`{f' — {var.description}' if var.description else ''}")
+
+    if parsed.topics:
+        tnav = _render_topics_nav(parsed, state.current_topic)
+        if tnav:
+            parts.append(f"\n{tnav}")
+        parts.append("\nTo switch topics, output `[TRANSITION topic_name]` at the END of your response.")
+
+    parts.append("\n## Memory Updates")
+    parts.append("To remember important facts from this conversation, output `[MEM key = value]` at the END of your response.")
+    parts.append("Use this for user preferences, context, or anything that should persist across turns.")
+
+    parts.append("\n## Response Rules")
+    parts.append("1. **ALWAYS include a natural language response** to the user — never respond with ONLY directives.")
+    parts.append("2. Place all `[SET]`, `[TRANSITION]`, `[MEM]` directives at the END, after your user-facing message.")
+    parts.append("3. Stay in character as defined by the script.")
+
+    welcome = parsed.system_messages.get("welcome", "")
+    error_msg = parsed.system_messages.get("error", "")
+    if welcome or error_msg:
+        parts.append(f"\n## System Messages")
+        if welcome:
+            parts.append(f"- Welcome: \"{welcome}\"")
+        if error_msg:
+            parts.append(f"- Error fallback: \"{error_msg}\"")
+
+    return "\n".join(parts)
+
+
+def process_response_v2(
+    response_text: str,
+    state: ScriptState,
+    parsed: ParsedScript,
+) -> tuple[str, list[str]]:
+    changes = []
+    clean_text = response_text
+
+    for m in re.finditer(r'\[SET\s+(\w+)\s*=\s*(.+?)\]', response_text):
+        var_name = m.group(1)
+        val_str = m.group(2).strip().strip('"').strip("'")
+        if var_name in parsed.variables:
+            var = parsed.variables[var_name]
+            if var.var_type == "boolean":
+                state.variables[var_name] = val_str.lower() in ("true", "1", "yes")
+            elif var.var_type == "number":
+                try:
+                    state.variables[var_name] = float(val_str) if "." in val_str else int(val_str)
+                except ValueError:
+                    pass
+            else:
+                state.variables[var_name] = val_str
+            changes.append(f"SET {var_name} = {val_str}")
+        clean_text = clean_text.replace(m.group(0), "").strip()
+
+    for m in re.finditer(r'\[TRANSITION\s+(\w+)\]', response_text):
+        topic_name = m.group(1)
+        if topic_name in parsed.topics:
+            state.current_topic = topic_name
+            changes.append(f"TRANSITION → {topic_name}")
+        elif topic_name in ("topic_selector", "__start__"):
+            state.current_topic = "__start__"
+            changes.append(f"TRANSITION → __start__")
+        clean_text = clean_text.replace(m.group(0), "").strip()
+
+    for m in re.finditer(r'\[MEM\s+(\w+)\s*=\s*(.+?)\]', response_text):
+        mem_key = m.group(1)
+        mem_val = m.group(2).strip().strip('"').strip("'")
+        state.mem[mem_key] = mem_val
+        changes.append(f"MEM {mem_key} = {mem_val}")
+        clean_text = clean_text.replace(m.group(0), "").strip()
+
+    return clean_text, changes
 
 
 def build_system_prompt(parsed: ParsedScript, state: ScriptState) -> str:
