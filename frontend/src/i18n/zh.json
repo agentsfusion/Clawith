@@ -354,11 +354,19 @@
       "importFromGithub": "从 GitHub URL 导入",
       "githubUrlDesc": "粘贴指向技能目录的 GitHub URL（必须包含 SKILL.md）。",
       "importPreset": "从预设导入",
-      "importDesc": "选择一个预设技能导入到此数字员工。所有技能文件将被复制到数字员工的技能文件夹。",
+      "importDesc": "选择预设技能导入到此数字员工。所有技能文件将被复制到数字员工的技能文件夹。",
       "importedSuccess": "已导入 \"{{name}}\" ({{count}} 个文件)",
       "importFailed": "导入失败",
       "importing": "导入中...",
-      "importBtn": "导入"
+      "importBtn": "导入",
+      "selectAll": "全选",
+      "deselectAll": "取消全选",
+      "importSelected": "导入",
+      "importNSelected": "导入 {{count}} 个已选",
+      "batchImportSuccess": "{{count}} 个技能导入成功",
+      "batchImportPartial": "{{success}} 个成功，{{failed}} 个失败",
+      "batchImportFailed": "批量导入失败",
+      "noSkillsSelected": "未选择技能"
     },
     "toolMgmt": {
       "title": "工具管理",
