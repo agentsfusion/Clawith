@@ -108,7 +108,7 @@ async def list_feedbacks(
     feedbacks = result.scalars().all()
     return [
         FeedbackOut(
-            id=str(f.id), agent_id=f.agent_id, category=f.category,
+            id=str(f.id), agent_id=str(f.agent_id), category=f.category,
             content=f.content, status=f.status, created_at=f.created_at,
         )
         for f in feedbacks
@@ -134,7 +134,7 @@ async def create_feedback(
     await db.commit()
     await db.refresh(fb)
     return FeedbackOut(
-        id=str(fb.id), agent_id=fb.agent_id, category=fb.category,
+        id=str(fb.id), agent_id=str(fb.agent_id), category=fb.category,
         content=fb.content, status=fb.status, created_at=fb.created_at,
     )
 
@@ -163,7 +163,7 @@ async def update_feedback(
     await db.commit()
     await db.refresh(fb)
     return FeedbackOut(
-        id=str(fb.id), agent_id=fb.agent_id, category=fb.category,
+        id=str(fb.id), agent_id=str(fb.agent_id), category=fb.category,
         content=fb.content, status=fb.status, created_at=fb.created_at,
     )
 
@@ -204,7 +204,7 @@ async def list_health_checks(
     checks = result.scalars().all()
     return [
         HealthCheckOut(
-            id=str(c.id), agent_id=c.agent_id, overall_score=c.overall_score,
+            id=str(c.id), agent_id=str(c.agent_id), overall_score=c.overall_score,
             dimensions=c.dimensions, strengths=c.strengths,
             suggestions=c.suggestions, script_version=c.script_version,
             created_at=c.created_at,
@@ -272,7 +272,7 @@ async def trigger_health_check(
     await db.refresh(check)
 
     return HealthCheckOut(
-        id=str(check.id), agent_id=check.agent_id,
+        id=str(check.id), agent_id=str(check.agent_id),
         overall_score=check.overall_score, dimensions=check.dimensions,
         strengths=check.strengths, suggestions=check.suggestions,
         script_version=check.script_version, created_at=check.created_at,
@@ -360,7 +360,7 @@ async def create_script_version(
             logger.warning(f"[Evolver] Failed to sync soul.md for {agent_id}: {e}")
 
     return ScriptVersionOut(
-        id=str(sv.id), agent_id=sv.agent_id, version=sv.version,
+        id=str(sv.id), agent_id=str(sv.agent_id), version=sv.version,
         folder=sv.folder, content=sv.content, source=sv.source,
         created_at=sv.created_at,
     )
