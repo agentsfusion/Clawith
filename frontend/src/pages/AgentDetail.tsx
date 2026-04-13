@@ -2337,6 +2337,10 @@ function AgentDetailInner() {
                 return;
             }
 
+            if (d.type === 'script_trace' || d.type === 'info' || d.type === 'agentbay_live') {
+                return;
+            }
+
             if (d.type === 'thinking') {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
