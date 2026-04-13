@@ -87,6 +87,7 @@ export default function AgentFactory() {
 
     const [dialogOpen, setDialogOpen] = useState(false);
     const [agentDesc, setAgentDesc] = useState('');
+    const [creating, setCreating] = useState(false);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     useEffect(() => {
@@ -94,10 +95,10 @@ export default function AgentFactory() {
     }, [dialogOpen]);
 
     const findFactoryAgent = () => {
-        const factoryNames = ['Agent Factory', 'ClawEvolver Factory', 'ClawEvolver Agent Factory'];
+        const factoryNames = ['agent factory', 'clawevolver factory', 'clawevolver agent factory'];
         return agents.find((a: any) =>
-            factoryNames.some(n => (a.name || '').toLowerCase() === n.toLowerCase())
-            || a.role_description?.toLowerCase().includes('agent factory')
+            factoryNames.includes((a.name || '').toLowerCase())
+            || (a.role_description || '').toLowerCase().includes('agent factory')
         );
     };
 
@@ -106,15 +107,40 @@ export default function AgentFactory() {
         setDialogOpen(true);
     };
 
-    const handleDialogConfirm = () => {
+    const handleDialogConfirm = async () => {
         const desc = agentDesc.trim();
-        if (!desc) return;
-        setDialogOpen(false);
-        const factoryAgent = findFactoryAgent();
-        if (factoryAgent) {
-            navigate(`/agents/${factoryAgent.id}/chat`, { state: { initialMessage: desc } });
-        } else {
-            navigate('/agents/new', { state: { initialMessage: desc } });
+        if (!desc || creating) return;
+        setCreating(true);
+
+        try {
+            let factoryAgent = findFactoryAgent();
+
+            if (!factoryAgent) {
+                const templates = await agentApi.templates();
+                const factoryTmpl = templates.find((t: any) =>
+                    (t.name || '').toLowerCase() === 'agent factory'
+                );
+
+                const createData: any = {
+                    name: 'Agent Factory',
+                    role_description: 'Agent Factory — Creates Agent Script-powered digital employees through natural conversation',
+                    personality: '',
+                    boundaries: '',
+                    tenant_id: currentTenant || undefined,
+                };
+                if (factoryTmpl) {
+                    createData.template_id = factoryTmpl.id;
+                }
+
+                factoryAgent = await agentApi.create(createData);
+            }
+
+            setDialogOpen(false);
+            navigate(`/agents/${factoryAgent!.id}/chat`, { state: { initialMessage: desc } });
+        } catch (err) {
+            console.error('Failed to create Factory Agent:', err);
+        } finally {
+            setCreating(false);
         }
     };
 
@@ -455,15 +481,17 @@ export default function AgentFactory() {
                                 <button
                                     className="btn btn-primary"
                                     onClick={handleDialogConfirm}
-                                    disabled={!agentDesc.trim()}
+                                    disabled={!agentDesc.trim() || creating}
                                     style={{
                                         padding: '8px 20px', fontSize: '13px', fontWeight: 600,
                                         display: 'flex', alignItems: 'center', gap: '6px',
-                                        opacity: agentDesc.trim() ? 1 : 0.5,
+                                        opacity: (agentDesc.trim() && !creating) ? 1 : 0.5,
                                     }}
                                 >
                                     {FactoryIcons.sparkle}
-                                    {isChinese ? '开始设计' : 'Start Designing'}
+                                    {creating
+                                        ? (isChinese ? '正在准备...' : 'Preparing...')
+                                        : (isChinese ? '开始设计' : 'Start Designing')}
                                 </button>
                             </div>
                         </div>

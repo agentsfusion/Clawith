@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useParams } from 'react-router-dom';
+import { useParams, useLocation } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
@@ -263,10 +263,12 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
 export default function Chat() {
     const { t } = useTranslation();
     const { id } = useParams<{ id: string }>();
+    const location = useLocation();
     const token = useAuthStore((s) => s.token);
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [connected, setConnected] = useState(false);
+    const initialMessageSent = useRef(false);
     const [uploadProgress, setUploadProgress] = useState<{
         name: string;
         percent: number;
@@ -419,6 +421,27 @@ export default function Chat() {
                 }
                 setConnected(true);
                 wsRef.current = ws;
+
+                const initMsg = (location.state as any)?.initialMessage;
+                if (initMsg && !initialMessageSent.current) {
+                    initialMessageSent.current = true;
+                    window.history.replaceState({}, '');
+                    setTimeout(() => {
+                        if (ws.readyState === WebSocket.OPEN) {
+                            pendingToolCalls.current = [];
+                            streamContent.current = '';
+                            thinkingContent.current = '';
+                            setIsWaiting(true);
+                            setStreaming(true);
+                            setMessages((prev) => [...prev, {
+                                role: 'user',
+                                content: initMsg,
+                                timestamp: new Date().toISOString(),
+                            }]);
+                            ws.send(JSON.stringify({ content: initMsg, display_content: initMsg, file_name: '' }));
+                        }
+                    }, 300);
+                }
             };
             ws.onclose = () => {
                 if (!cancelled) {
