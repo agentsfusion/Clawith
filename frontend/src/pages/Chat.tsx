@@ -45,12 +45,26 @@ interface ToolCall {
     result?: string;
 }
 
+interface ScriptTraceEntry {
+    phase: 'input' | 'output';
+    current_topic?: string;
+    topic_description?: string;
+    variables?: Record<string, any>;
+    available_actions?: { name: string; description: string; target: string }[];
+    reasoning?: string;
+    available_topics?: { name: string; description: string }[];
+    changes?: string[];
+    new_topic?: string;
+    new_variables?: Record<string, any>;
+}
+
 interface Message {
     role: 'user' | 'assistant';
     content: string;
     fileName?: string;
     toolCalls?: ToolCall[];
     thinking?: string;
+    scriptTrace?: ScriptTraceEntry[];
     imageUrl?: string;
     timestamp?: string;
     _isToolGroup?: boolean;
@@ -488,6 +502,21 @@ export default function Chat() {
                     return;
                 }
 
+                if (data.type === 'script_trace') {
+                    const traceEntry: ScriptTraceEntry = data;
+                    setMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        if (last && last.role === 'assistant') {
+                            const updated = [...prev];
+                            const existing = last.scriptTrace || [];
+                            updated[updated.length - 1] = { ...last, scriptTrace: [...existing, traceEntry] };
+                            return updated;
+                        }
+                        return [...prev, { role: 'assistant', content: '', scriptTrace: [traceEntry], timestamp: new Date().toISOString() }];
+                    });
+                    return;
+                }
+
                 if (data.type === 'thinking') {
                     // Accumulate thinking content
                     thinkingContent.current += data.content;
@@ -860,6 +889,151 @@ export default function Chat() {
                                     const fi = fe === 'pdf' ? '\uD83D\uDCC4' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '\uD83D\uDCCA' : (fe === 'docx' || fe === 'doc') ? '\uD83D\uDCDD' : '\uD83D\uDCCE';
                                     return (<div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}><span>{fi}</span><span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span></div>);
                                 })()}
+                                {msg.scriptTrace && msg.scriptTrace.length > 0 && (
+                                    <details style={{
+                                        marginBottom: '8px', fontSize: '12px',
+                                        background: 'rgba(34, 197, 94, 0.06)', borderRadius: '8px',
+                                        border: '1px solid rgba(34, 197, 94, 0.2)',
+                                    }}>
+                                        <summary style={{
+                                            padding: '8px 12px', cursor: 'pointer',
+                                            color: 'rgba(34, 197, 94, 0.9)', fontWeight: 600,
+                                            userSelect: 'none', display: 'flex', alignItems: 'center', gap: '6px',
+                                            fontSize: '12px',
+                                        }}>
+                                            <span style={{ fontSize: '14px' }}>&#x26A1;</span> Script Execution Trace
+                                        </summary>
+                                        <div style={{ padding: '4px 12px 10px' }}>
+                                            {msg.scriptTrace.map((trace, ti) => (
+                                                <div key={ti} style={{
+                                                    marginBottom: ti < msg.scriptTrace!.length - 1 ? '8px' : 0,
+                                                    paddingBottom: ti < msg.scriptTrace!.length - 1 ? '8px' : 0,
+                                                    borderBottom: ti < msg.scriptTrace!.length - 1 ? '1px solid rgba(34, 197, 94, 0.12)' : 'none',
+                                                }}>
+                                                    <div style={{
+                                                        fontWeight: 600, fontSize: '11px', textTransform: 'uppercase',
+                                                        color: trace.phase === 'input' ? 'rgba(59, 130, 246, 0.85)' : 'rgba(234, 179, 8, 0.85)',
+                                                        marginBottom: '4px', letterSpacing: '0.5px',
+                                                    }}>
+                                                        {trace.phase === 'input' ? '\u25B6 Input State' : '\u25C0 Output State'}
+                                                    </div>
+
+                                                    {trace.phase === 'input' && (
+                                                        <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
+                                                            <div style={{ display: 'flex', gap: '4px', marginBottom: '3px' }}>
+                                                                <span style={{ color: 'var(--text-tertiary)', minWidth: '70px' }}>Topic:</span>
+                                                                <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                                                                    {trace.current_topic || '(none)'}
+                                                                    {trace.topic_description ? ` \u2014 ${trace.topic_description}` : ''}
+                                                                </span>
+                                                            </div>
+                                                            {trace.variables && Object.keys(trace.variables).length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', minWidth: '70px', display: 'inline-block' }}>Variables:</span>
+                                                                    <div style={{ marginLeft: '74px', marginTop: '-18px' }}>
+                                                                        {Object.entries(trace.variables).map(([k, v]) => (
+                                                                            <div key={k}>
+                                                                                <code style={{ background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                                {' = '}
+                                                                                <span style={{ color: typeof v === 'string' && v ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
+                                                                                    {JSON.stringify(v)}
+                                                                                </span>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            {trace.available_actions && trace.available_actions.length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>Actions: </span>
+                                                                    {trace.available_actions.map((a, ai) => (
+                                                                        <span key={ai} style={{
+                                                                            display: 'inline-block', background: 'rgba(59, 130, 246, 0.1)',
+                                                                            border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '4px',
+                                                                            padding: '1px 6px', margin: '1px 3px 1px 0', fontSize: '10px',
+                                                                            color: 'rgba(59, 130, 246, 0.85)',
+                                                                        }}>
+                                                                            {a.name}{a.target ? ` \u2192 ${a.target}` : ''}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.reasoning && (
+                                                                <details style={{ marginTop: '4px' }}>
+                                                                    <summary style={{
+                                                                        cursor: 'pointer', color: 'var(--text-tertiary)',
+                                                                        fontSize: '10px', userSelect: 'none',
+                                                                    }}>
+                                                                        Reasoning Instructions
+                                                                    </summary>
+                                                                    <pre style={{
+                                                                        fontSize: '10px', lineHeight: '1.5',
+                                                                        background: 'rgba(0,0,0,0.04)', borderRadius: '4px',
+                                                                        padding: '6px 8px', marginTop: '2px',
+                                                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                                                        maxHeight: '150px', overflow: 'auto',
+                                                                        color: 'var(--text-secondary)',
+                                                                    }}>
+                                                                        {trace.reasoning}
+                                                                    </pre>
+                                                                </details>
+                                                            )}
+                                                            {trace.available_topics && trace.available_topics.length > 0 && (
+                                                                <div>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>Topics: </span>
+                                                                    {trace.available_topics.map((t, ti2) => (
+                                                                        <span key={ti2} style={{
+                                                                            display: 'inline-block', background: 'rgba(147, 130, 220, 0.1)',
+                                                                            border: '1px solid rgba(147, 130, 220, 0.2)', borderRadius: '4px',
+                                                                            padding: '1px 6px', margin: '1px 3px 1px 0', fontSize: '10px',
+                                                                            color: 'rgba(147, 130, 220, 0.85)',
+                                                                        }}>
+                                                                            {t.name}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
+                                                    {trace.phase === 'output' && (
+                                                        <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
+                                                            {trace.changes && trace.changes.length > 0 ? (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>Changes: </span>
+                                                                    {trace.changes.map((c, ci) => (
+                                                                        <div key={ci} style={{
+                                                                            marginLeft: '8px', display: 'flex', alignItems: 'center', gap: '4px',
+                                                                        }}>
+                                                                            <span style={{ color: 'rgba(234, 179, 8, 0.7)', fontSize: '10px' }}>{'\u2192'}</span>
+                                                                            <code style={{
+                                                                                background: 'rgba(234, 179, 8, 0.08)',
+                                                                                border: '1px solid rgba(234, 179, 8, 0.15)',
+                                                                                borderRadius: '3px', padding: '1px 5px', fontSize: '10px',
+                                                                            }}>
+                                                                                {c}
+                                                                            </code>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            ) : (
+                                                                <div style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                                                                    No state changes
+                                                                </div>
+                                                            )}
+                                                            {trace.new_topic && (
+                                                                <div>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>Current Topic: </span>
+                                                                    <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{trace.new_topic}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </details>
+                                )}
                                 {msg.thinking && (
                                     <details style={{
                                         marginBottom: '8px', fontSize: '12px',
