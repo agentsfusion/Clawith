@@ -361,7 +361,13 @@ export const fileApi = {
             body: JSON.stringify({ skill_id: skillId }),
         }),
 
-    downloadUrl: (agentId: string, path: string, options?: { inline?: boolean }) => {
+    importSkillsBatch: (agentId: string, skillIds: string[]) =>
+        request<any>(`/agents/${agentId}/files/import-skills-batch`, {
+            method: 'POST',
+            body: JSON.stringify({ skill_ids: skillIds }),
+        }),
+
+    downloadUrl: (agentId: string, path: string) => {
         const token = localStorage.getItem('token');
         const params = new URLSearchParams({ path, token: token || '' });
         if (options?.inline) params.set('inline', '1');
