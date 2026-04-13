@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams, useLocation } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
-import { IconPaperclip, IconSend } from '@tabler/icons-react';
+import { IconPaperclip, IconSend, IconCode, IconCopy, IconCheck } from '@tabler/icons-react';
 import { formatFileSize } from '../utils/formatFileSize';
 import { useAuthStore } from '../stores';
 import { useDropZone } from '../hooks/useDropZone';
@@ -260,6 +260,76 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
     );
 }
 
+function extractAscriptBlocks(text: string): string[] {
+    const blocks: string[] = [];
+    const re = /```ascript\s*\r?\n([\s\S]*?)```/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        blocks.push(m[1].trim());
+    }
+    return blocks;
+}
+
+function extractPartialAscript(text: string): string | null {
+    const full = extractAscriptBlocks(text);
+    if (full.length > 0) return full[full.length - 1];
+    const partial = text.match(/```ascript\s*\r?\n([\s\S]*)$/);
+    if (partial) return partial[1];
+    return null;
+}
+
+function AscriptCodePanel({ code, version, agentName }: { code: string; version?: number; agentName?: string }) {
+    const [copied, setCopied] = useState(false);
+    const codeRef = useRef<HTMLPreElement>(null);
+
+    const handleCopy = useCallback(() => {
+        navigator.clipboard.writeText(code).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        });
+    }, [code]);
+
+    useEffect(() => {
+        if (codeRef.current) {
+            codeRef.current.scrollTop = codeRef.current.scrollHeight;
+        }
+    }, [code]);
+
+    return (
+        <div className="ascript-panel">
+            <div className="ascript-panel-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <IconCode size={16} stroke={1.5} />
+                    <span style={{ fontWeight: 600, fontSize: '13px' }}>Agent Script</span>
+                    {agentName && (
+                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: '4px' }}>
+                            {agentName}
+                        </span>
+                    )}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {version && (
+                        <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', background: 'rgba(99,102,241,0.1)', padding: '2px 6px', borderRadius: '4px' }}>
+                            v{version}
+                        </span>
+                    )}
+                    <button
+                        type="button"
+                        className="ascript-panel-copy"
+                        onClick={handleCopy}
+                        title="Copy"
+                    >
+                        {copied ? <IconCheck size={14} stroke={1.75} /> : <IconCopy size={14} stroke={1.75} />}
+                    </button>
+                </div>
+            </div>
+            <pre ref={codeRef} className="ascript-panel-code">
+                <code>{code}</code>
+            </pre>
+        </div>
+    );
+}
+
 export default function Chat() {
     const { t } = useTranslation();
     const { id } = useParams<{ id: string }>();
@@ -290,6 +360,9 @@ export default function Chat() {
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
+    const [ascriptCode, setAscriptCode] = useState<string | null>(null);
+    const [ascriptMeta, setAscriptMeta] = useState<{ version?: number; agent_name?: string } | null>(null);
+    const isFactoryRef = useRef(false);
 
     const { data: agent } = useQuery({
         queryKey: ['agent', id],
@@ -306,6 +379,15 @@ export default function Chat() {
     const supportsVision = !!agent?.primary_model_id && llmModels.some(
         (m: any) => m.id === agent.primary_model_id && m.supports_vision
     );
+
+    const isFactoryAgent = useMemo(() => {
+        if (!agent) return false;
+        const n = (agent.name || '').toLowerCase();
+        const r = (agent.role_description || '').toLowerCase();
+        return n.includes('agent factory') || r.includes('agent factory');
+    }, [agent]);
+
+    useEffect(() => { isFactoryRef.current = isFactoryAgent; }, [isFactoryAgent]);
 
     const parseMessage = (msg: Message): Message => {
         if (msg.role !== 'user') return msg;
@@ -398,10 +480,18 @@ export default function Chat() {
                         }
                     }
                     setMessages(processed);
+                    if (isFactoryAgent) {
+                        for (let j = processed.length - 1; j >= 0; j--) {
+                            if (processed[j].role === 'assistant') {
+                                const code = extractPartialAscript(processed[j].content);
+                                if (code) { setAscriptCode(code); break; }
+                            }
+                        }
+                    }
                 }
             })
             .catch(() => { /* ignore */ });
-    }, [id, token]);
+    }, [id, token, isFactoryAgent]);
 
     useEffect(() => {
         if (!id || !token) return;
@@ -502,12 +592,14 @@ export default function Chat() {
                         return [...prev, { role: 'assistant', content: '', thinking: thinkingContent.current, timestamp: new Date().toISOString() }];
                     });
                 } else if (data.type === 'chunk') {
-                    // Streaming text chunk — accumulate and update live preview
                     streamContent.current += data.content;
+                    if (isFactoryRef.current) {
+                        const extracted = extractPartialAscript(streamContent.current);
+                        if (extracted) setAscriptCode(extracted);
+                    }
                     setMessages(prev => {
                         const last = prev[prev.length - 1];
                         if (last && last.role === 'assistant') {
-                            // Update the streaming message in-place
                             const updated = [...prev];
                             updated[updated.length - 1] = { ...last, content: streamContent.current };
                             return updated;
@@ -597,16 +689,24 @@ export default function Chat() {
                         }
                     }
                 } else if (data.type === 'done') {
-                    // Final response — replace streaming message with final + tool calls
                     const toolCalls = pendingToolCalls.current.length > 0 ? [...pendingToolCalls.current] : undefined;
                     const thinking = thinkingContent.current || undefined;
                     pendingToolCalls.current = [];
                     streamContent.current = '';
                     thinkingContent.current = '';
                     setStreaming(false);
+                    if (isFactoryRef.current) {
+                        const finalCode = extractPartialAscript(data.content);
+                        if (finalCode) setAscriptCode(finalCode);
+                        if (data.ascript_saved) {
+                            setAscriptMeta({
+                                version: data.ascript_saved.version,
+                                agent_name: data.ascript_saved.agent_name,
+                            });
+                        }
+                    }
                     setMessages(prev => {
                         const updated = [...prev];
-                        // Replace the last streaming assistant message
                         if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
                             updated[updated.length - 1] = { role: 'assistant', content: data.content, toolCalls, thinking };
                         } else {
@@ -759,6 +859,7 @@ export default function Chat() {
     };
 
     const hasLiveData = !!(liveState.desktop || liveState.browser || liveState.code);
+    const hasCodePanel = isFactoryAgent && !!ascriptCode;
 
     // ── Drag-and-drop file upload ──
     const handleDroppedFiles = useCallback(async (files: File[]) => {
@@ -818,7 +919,7 @@ export default function Chat() {
                 </div>
             </div>
 
-            <div className={`chat-container ${hasLiveData ? 'chat-with-live-panel' : ''}`} {...chatDropProps} style={{ position: 'relative' }}>
+            <div className={`chat-container ${hasLiveData || hasCodePanel ? 'chat-with-live-panel' : ''}`} {...chatDropProps} style={{ position: 'relative' }}>
                 {/* Drop overlay */}
                 {isChatDragging && (
                     <div className="drop-zone-overlay">
@@ -1044,7 +1145,14 @@ export default function Chat() {
                 </div>
                 </div>
 
-                {/* AgentBay Live Preview Panel */}
+                {hasCodePanel && (
+                    <AscriptCodePanel
+                        code={ascriptCode!}
+                        version={ascriptMeta?.version}
+                        agentName={ascriptMeta?.agent_name}
+                    />
+                )}
+
                 {hasLiveData && (
                     <AgentBayLivePanel
                         liveState={liveState}

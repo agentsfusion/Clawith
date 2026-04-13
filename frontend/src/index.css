@@ -1752,6 +1752,60 @@ select:focus {
   position: relative;
 }
 
+/* ─── Agent Script Code Panel ───────────────── */
+.ascript-panel {
+  width: 420px;
+  min-width: 300px;
+  max-width: 50vw;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-subtle);
+  background: #1a1b26;
+  animation: livePanelSlideIn 250ms ease;
+}
+
+.ascript-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  color: #c0caf5;
+  flex-shrink: 0;
+}
+
+.ascript-panel-copy {
+  background: none;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px;
+  color: #7aa2f7;
+  cursor: pointer;
+  padding: 3px 6px;
+  display: flex;
+  align-items: center;
+  transition: background 150ms;
+}
+.ascript-panel-copy:hover {
+  background: rgba(122,162,247,0.15);
+}
+
+.ascript-panel-code {
+  flex: 1;
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #c0caf5;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.ascript-panel-code code {
+  font-family: inherit;
+}
+
 /* ─── AgentBay Live Preview Panel ───────────────── */
 .live-panel {
   /* Width is now controlled via inline style from the component (resizable). */
