@@ -3173,6 +3173,13 @@ function AgentDetailInner() {
                                         letterSpacing: '0.5px',
                                     }}>AgentsFusion · Lab</span>
                                 )}
+                                {(agent as any).agent_type === 'evolver' && (
+                                    <span style={{
+                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                        background: 'linear-gradient(135deg, #f59e0b, #ef4444)', color: '#fff', fontWeight: 600,
+                                        letterSpacing: '0.5px',
+                                    }}>Evolver</span>
+                                )}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                         Expires: {new Date((agent as any).expires_at).toLocaleString()}

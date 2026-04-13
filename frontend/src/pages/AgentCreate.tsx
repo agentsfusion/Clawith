@@ -65,7 +65,7 @@ export default function AgentCreate() {
     const [step, setStep] = useState(0);
     const [error, setError] = useState('');
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-    const [agentType, setAgentType] = useState<'native' | 'openclaw'>('native');
+    const [agentType, setAgentType] = useState<'native' | 'openclaw' | 'evolver'>('native');
     // Clear field error when user edits a field
     const clearFieldError = (field: string) => setFieldErrors(prev => { const n = { ...prev }; delete n[field]; return n; });
     const [createdApiKey, setCreatedApiKey] = useState('');
@@ -232,7 +232,7 @@ export default function AgentCreate() {
             errors.max_tokens_per_month = t('wizard.errors.tokenLimitInvalid', '请输入有效的正整数');
         }
         const enabledModels = (models as any[]).filter((m: any) => m.enabled);
-        if (agentType === 'native' && enabledModels.length > 0 && !form.primary_model_id) {
+        if ((agentType === 'native' || agentType === 'evolver') && enabledModels.length > 0 && !form.primary_model_id) {
             errors.primary_model_id = t('wizard.errors.modelRequired', '请选择一个主模型');
         }
         setFieldErrors(errors);
@@ -250,19 +250,20 @@ export default function AgentCreate() {
         if (step === 0 || agentType === 'openclaw') {
             if (!validateStep0()) return;
         }
+        const isHosted = agentType === 'native' || agentType === 'evolver';
         createMutation.mutate({
             name: form.name,
             agent_type: agentType,
             role_description: form.role_description,
-            personality: agentType === 'native' ? form.personality : undefined,
-            boundaries: agentType === 'native' ? form.boundaries : undefined,
-            primary_model_id: agentType === 'native' ? (form.primary_model_id || undefined) : undefined,
-            fallback_model_id: agentType === 'native' ? (form.fallback_model_id || undefined) : undefined,
+            personality: isHosted ? form.personality : undefined,
+            boundaries: isHosted ? form.boundaries : undefined,
+            primary_model_id: isHosted ? (form.primary_model_id || undefined) : undefined,
+            fallback_model_id: isHosted ? (form.fallback_model_id || undefined) : undefined,
             template_id: form.template_id || undefined,
             permission_scope_type: form.permission_scope_type,
             max_tokens_per_day: form.max_tokens_per_day ? Number(form.max_tokens_per_day) : undefined,
             max_tokens_per_month: form.max_tokens_per_month ? Number(form.max_tokens_per_month) : undefined,
-            skill_ids: agentType === 'native' ? form.skill_ids : [],
+            skill_ids: isHosted ? form.skill_ids : [],
             permission_access_level: form.permission_access_level,
             tenant_id: currentTenant || undefined,
         });
@@ -400,7 +401,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
 
     // ── Type Selector (shared between both modes) ──
     const typeSelector = (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', maxWidth: '640px', marginBottom: '24px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', maxWidth: '780px', marginBottom: '24px' }}>
             <div
                 onClick={() => { setAgentType('native'); setStep(0); }}
                 style={{
@@ -411,6 +412,23 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
             >
                 <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{t('openclaw.nativeTitle', 'Platform Hosted')}</div>
                 <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('openclaw.nativeDesc', 'Full agent running on AgentsFusion platform')}</div>
+            </div>
+            <div
+                onClick={() => { setAgentType('evolver'); setStep(0); }}
+                style={{
+                    padding: '16px', borderRadius: '8px', cursor: 'pointer', position: 'relative',
+                    border: `1.5px solid ${agentType === 'evolver' ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                    background: agentType === 'evolver' ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+                }}
+            >
+                <span style={{
+                    position: 'absolute', top: '8px', right: '8px',
+                    fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                    background: 'linear-gradient(135deg, #f59e0b, #ef4444)', color: '#fff', fontWeight: 600,
+                    letterSpacing: '0.5px',
+                }}>Evolver</span>
+                <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{t('openclaw.evolverTitle', 'Evolver Agent')}</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('openclaw.evolverDesc', 'Self-evolving agent with Agent Script')}</div>
             </div>
             <div
                 onClick={() => { setAgentType('openclaw'); setStep(0); }}
