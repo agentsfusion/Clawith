@@ -162,7 +162,20 @@ def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
                 prompt = stripped[1:].strip()
                 if prompt:
                     result.prompts.append(_resolve_var_ref(prompt, variables))
-            elif not stripped.startswith(("description:", "available when")):
+                continue
+            m_run = re.match(r'run @actions\.(\w+)', stripped)
+            if m_run:
+                action_name = m_run.group(1)
+                action_info_nl: dict[str, Any] = {"name": action_name}
+                if topic_actions and action_name in topic_actions:
+                    action_info_nl["target"] = topic_actions[action_name].target
+                result.actions_to_run.append(action_info_nl)
+                continue
+            m_trans = re.match(r'transition to @topic\.(\w+)', stripped)
+            if m_trans:
+                result.transitions.append(m_trans.group(1))
+                continue
+            if not stripped.startswith(("description:", "available when")):
                 m = re.match(r'^(\w+):\s*@(utils\.transition|actions\.\w+)', stripped)
                 if m:
                     continue
@@ -776,12 +789,23 @@ def build_execution_prompt(
 
     if exec_result.actions_to_run:
         parts.append("\n## Actions To Execute")
+        parts.append("The script requires you to execute these actions NOW:")
+        has_skill_target = False
+        has_tool_target = False
         for act in exec_result.actions_to_run:
             target = act.get("target", "")
             if target:
                 parts.append(f"- Call `{act['name']}` (target: `{target}`)")
+                if target.startswith("skill://"):
+                    has_skill_target = True
+                elif target.startswith("tool://"):
+                    has_tool_target = True
             else:
                 parts.append(f"- Execute `{act['name']}`")
+        if has_skill_target:
+            parts.append("\n**Skill Execution**: For `skill://` targets, you MUST use `read_file` to load the skill file first (e.g., `skills/<skill-name>/SKILL.md`), then follow the skill's instructions to complete the action. Do NOT use generic tools like `web_search` as a substitute — the skill contains the specific logic and tools to use.")
+        if has_tool_target:
+            parts.append("\n**Tool Execution**: For `tool://` targets, call the tool directly using the standard tool-calling mechanism.")
 
     if exec_result.topic_path and len(exec_result.topic_path) > 1:
         parts.append(f"\n## Execution Path")
@@ -810,6 +834,7 @@ def build_execution_prompt(
     parts.append("1. **ALWAYS include a natural language response** to the user — never respond with ONLY directives.")
     parts.append("2. Place all `[SET]`, `[TRANSITION]`, `[MEM]` directives at the END, after your user-facing message.")
     parts.append("3. Stay in character as defined by the script.")
+    parts.append("4. **Action Execution**: When an action maps to a tool (`tool://`), call it using the standard tool-calling mechanism. When it maps to a skill (`skill://`), use `read_file` to load the skill first (path: `skills/<skill-name>/SKILL.md`), then follow its instructions. Do NOT substitute with generic tools.")
 
     welcome = parsed.system_messages.get("welcome", "")
     error_msg = parsed.system_messages.get("error", "")
