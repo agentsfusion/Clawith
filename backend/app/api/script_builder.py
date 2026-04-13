@@ -406,7 +406,9 @@ async def apply_as_agent(
     db: AsyncSession = Depends(get_db),
 ):
     meta = _parse_script_metadata(body.script)
-    agent_name = body.name or meta["name"]
+    raw_name = body.name or meta["name"]
+    parts = re.split(r'[\s_\-]+', raw_name) if raw_name else []
+    agent_name = "".join(p[0].upper() + p[1:] for p in parts if p) if parts else "EvolverAgent"
     agent_desc = meta["description"]
 
     llm_model = await _get_llm_model(db, current_user)
