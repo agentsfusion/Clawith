@@ -167,7 +167,8 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
         finally:
             await client.close()
 
-        script_match = re.search(r'```ascript\s*\r?\n([\s\S]*?)```', full_response)
+        response_text = full_response.content if hasattr(full_response, 'content') else str(full_response)
+        script_match = re.search(r'```ascript\s*\r?\n([\s\S]*?)```', response_text)
         evolved_script = script_match.group(1).strip() if script_match else None
 
         if not evolved_script:
@@ -190,7 +191,7 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
             source=f"evolution-{direction[:50]}",
         ))
 
-        knowledge_text = re.sub(r'```ascript[\s\S]*?```', '', full_response).strip()
+        knowledge_text = re.sub(r'```ascript[\s\S]*?```', '', response_text).strip()
         if len(knowledge_text) > 20:
             max_knowledge_ver = await db.execute(
                 select(func.coalesce(func.max(AgentScriptVersion.version), 0))

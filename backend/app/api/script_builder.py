@@ -473,6 +473,14 @@ async def apply_as_agent(
             db.add(AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True, source="system"))
             installed_tools.append(tool.name)
 
+    from app.services.agent_manager import agent_manager
+    meta = _parse_script_metadata(body.script)
+    await agent_manager.initialize_agent_files(
+        db, agent,
+        personality=meta["description"] or agent_desc,
+        boundaries="",
+    )
+
     installed_skills = []
     if skill_names:
         s_result = await db.execute(
@@ -484,7 +492,6 @@ async def apply_as_agent(
         for skill in s_result.scalars().all():
             installed_skills.append(skill.folder_name)
             try:
-                from app.services.agent_manager import agent_manager
                 agent_dir = agent_manager._agent_dir(agent.id)
                 skills_dir = agent_dir / "skills"
                 skills_dir.mkdir(parents=True, exist_ok=True)
@@ -497,7 +504,38 @@ async def apply_as_agent(
             except Exception as e:
                 logger.warning(f"[ApplyAsAgent] Failed to copy skill {skill.folder_name}: {e}")
 
-    await db.commit()
+    default_result = await db.execute(
+        select(Skill).where(
+            Skill.is_default == True,
+            (Skill.tenant_id == target_tenant_id) | (Skill.tenant_id.is_(None)),
+        ).options(selectinload(Skill.files))
+    )
+    for skill in default_result.scalars().all():
+        if skill.folder_name not in installed_skills:
+            try:
+                agent_dir = agent_manager._agent_dir(agent.id)
+                skills_dir = agent_dir / "skills"
+                skills_dir.mkdir(parents=True, exist_ok=True)
+                skill_folder = skills_dir / skill.folder_name
+                skill_folder.mkdir(parents=True, exist_ok=True)
+                for sf in skill.files:
+                    fp = skill_folder / sf.path
+                    fp.parent.mkdir(parents=True, exist_ok=True)
+                    fp.write_text(sf.content, encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[ApplyAsAgent] Failed to copy default skill {skill.folder_name}: {e}")
+
+    try:
+        await db.commit()
+    except Exception:
+        import shutil
+        try:
+            agent_dir = agent_manager._agent_dir(agent.id)
+            if agent_dir.exists():
+                shutil.rmtree(agent_dir)
+        except Exception as cleanup_err:
+            logger.warning(f"[ApplyAsAgent] Failed to cleanup agent files after DB error: {cleanup_err}")
+        raise
     await db.refresh(agent)
 
     logger.info(f"[ApplyAsAgent] Created evolver agent {agent.id} from script builder")
