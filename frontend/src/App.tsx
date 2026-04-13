@@ -17,7 +17,6 @@ import EnterpriseSettings from './pages/EnterpriseSettings';
 import InvitationCodes from './pages/InvitationCodes';
 import AdminCompanies from './pages/AdminCompanies';
 import SSOEntry from './pages/SSOEntry';
-import AgentFactory from './pages/AgentFactory';
 import ScriptBuilder from './pages/ScriptBuilder';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -187,7 +186,6 @@ export default function App() {
                     <Route index element={<Navigate to="/plaza" replace />} />
                     <Route path="dashboard" element={<Dashboard />} />
                     <Route path="plaza" element={<Plaza />} />
-                    <Route path="factory" element={<AgentFactory />} />
                     <Route path="script-builder" element={<ScriptBuilder />} />
                     <Route path="agents/new" element={<AgentCreate />} />
                     <Route path="agents/:id" element={<AgentDetail />} />
