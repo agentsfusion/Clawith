@@ -25,6 +25,7 @@ import re
 
 from loguru import logger
 from sqlalchemy import select, or_
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models.task import Task
@@ -2252,9 +2253,9 @@ async def execute_tool(
                 return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
             if content is None:
                 return "❌ Missing required argument 'content' for write_file"
-            result = _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            result = await _write_file(ws, path, content, tenant_id=_agent_tenant_id)
         elif tool_name == "delete_file":
-            result = _delete_file(ws, arguments.get("path", ""))
+            result = await _delete_file(ws, arguments.get("path", ""))
         # --- Enhanced file management tools ---
         elif tool_name == "edit_file":
             path = arguments.get("path")
@@ -2267,7 +2268,7 @@ async def execute_tool(
             if new_string is None:
                 return "❌ Missing required argument 'new_string' for edit_file"
             replace_all = arguments.get("replace_all", False)
-            result = _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id)
+            result = await _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id)
         elif tool_name == "search_files":
             pattern = arguments.get("pattern")
             if not pattern:
@@ -3202,7 +3203,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
         # 1. Per-agent tool config (api_key / atlassian_api_key)
         # 2. Agent's Atlassian channel config (for atlassian_* tools)
         direct_api_key = merged_config.get("api_key") or merged_config.get("atlassian_api_key")
-        if not direct_api_key and tool.mcp_server_name == "Atlassian Rovo":
+        if not direct_api_key and tool.mcp_server_name == "Atlassian Rovo" and agent_id is not None:
             try:
                 from app.api.atlassian import get_atlassian_api_key_for_agent
                 direct_api_key = await get_atlassian_api_key_for_agent(agent_id)
@@ -3625,11 +3626,12 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
             data = await storage.read_bytes(key)
             prs = Presentation(io.BytesIO(data))
             slides = []
-            for i, slide in enumerate(prs.slides[:50]):
+            for i, slide in enumerate(list(prs.slides)[:50]):
                 texts = []
                 for shape in slide.shapes:
-                    if hasattr(shape, "text") and shape.text.strip():
-                        texts.append(shape.text)
+                    shape_text = getattr(shape, "text", None)
+                    if shape_text and shape_text.strip():
+                        texts.append(shape_text)
                 if texts:
                     slides.append(f"--- Slide {i+1} ---\n" + "\n".join(texts))
             content = "\n\n".join(slides) if slides else "(PPT is empty)"
@@ -3954,6 +3956,60 @@ async def _manage_tasks(
         return f"Unknown action: {action}"
 
 
+async def _save_outgoing_to_feishu_session(
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    open_id: str,
+    message_text: str,
+    member_name: str | None = None,
+) -> None:
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+
+        member: OrgMember | None = None
+        if open_id:
+            r = await db.execute(select(OrgMember).where(OrgMember.open_id == open_id))
+            member = r.scalars().first()
+        if not member:
+            r = await db.execute(select(OrgMember).where(OrgMember.external_id == open_id))
+            member = r.scalars().first()
+        if not member:
+            logger.warning(f"[Feishu] No OrgMember found for open_id/user_id={open_id}, skipping session save")
+            return
+
+        agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+        agent_obj = agent_r.scalar_one_or_none()
+
+        platform_user = await get_platform_user_by_org_member(
+            db=db,
+            org_member=member,
+            agent_tenant_id=agent_obj.tenant_id if agent_obj else None,
+        )
+        user_id = platform_user.id
+
+        ext_conv_id = f"feishu_p2p_{open_id}"
+        sess = await find_or_create_channel_session(
+            db=db,
+            agent_id=agent_id,
+            user_id=user_id,
+            external_conv_id=ext_conv_id,
+            source_channel="feishu",
+            first_message_title=f"[Agent → {member_name or open_id}]",
+        )
+        db.add(ChatMessage(
+            agent_id=agent_id,
+            user_id=user_id,
+            role="assistant",
+            content=message_text,
+            conversation_id=str(sess.id),
+        ))
+        sess.last_message_at = _dt.now(_tz.utc)
+        await db.commit()
+        logger.info(f"[Feishu] Saved outgoing message to session {sess.id} (ID: {open_id})")
+    except Exception as e:
+        logger.error(f"[Feishu] Failed to save outgoing message to history: {e}")
+
+
 async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
     """Send a Feishu message to a person in the agent's relationship list."""
     member_name = (args.get("member_name") or "").strip()
@@ -3978,22 +4034,47 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
             config = config_result.scalar_one_or_none()
             if not config:
                 return "❌ This agent has no Feishu channel configured"
-            if direct_user_id and not member_name:
-                try:
+            if not config.app_id or not config.app_secret:
+                return "❌ Feishu channel is not fully configured (missing app_id or app_secret)"
+            feishu_app_id: str = config.app_id
+            feishu_app_secret: str = config.app_secret
+            if (direct_user_id or direct_open_id) and not member_name:
+                import json as _j
+                # Prefer user_id over open_id
+                if direct_user_id:
                     resp = await feishu_service.send_message(
-                        config.app_id, config.app_secret,
+                        feishu_app_id, feishu_app_secret,
                         receive_id=direct_user_id, msg_type="text",
-                        content=json.dumps({"text": message_text}, ensure_ascii=False),
+                        content=_j.dumps({"text": message_text}, ensure_ascii=False),
                         receive_id_type="user_id",
                     )
                     if resp.get("code") == 0:
-                        # Save to history session
-                        await _save_outgoing_to_feishu_session(direct_user_id)
+                        await _save_outgoing_to_feishu_session(db, agent_id, direct_user_id or direct_open_id, message_text)
                         return f"✅ 消息已发送（user_id: {direct_user_id}）"
+                    # Fallback to open_id if user_id fails
+                    logger.info(f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})")
+                    if direct_open_id:
+                        resp = await feishu_service.send_message(
+                            feishu_app_id, feishu_app_secret,
+                            receive_id=direct_open_id, msg_type="text",
+                            content=_j.dumps({"text": message_text}, ensure_ascii=False),
+                            receive_id_type="open_id",
+                        )
+                        if resp.get("code") == 0:
+                            await _save_outgoing_to_feishu_session(db, agent_id, direct_open_id, message_text)
+                            return f"✅ 消息已发送（open_id: {direct_open_id}）"
                     return f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})"
-                except FeishuAPIError as user_id_err:
-                    logger.info(f"❌ 发送失败(user_id): {user_id_err.msg}")
-                    return f"❌ 飞书发送失败：{user_id_err.user_message}"
+                else:
+                    resp = await feishu_service.send_message(
+                        feishu_app_id, feishu_app_secret,
+                        receive_id=direct_open_id, msg_type="text",
+                        content=_j.dumps({"text": message_text}, ensure_ascii=False),
+                        receive_id_type="open_id",
+                    )
+                    if resp.get("code") == 0:
+                        await _save_outgoing_to_feishu_session(db, agent_id, direct_open_id, message_text)
+                        return f"✅ 消息已发送（open_id: {direct_open_id}）"
+                    return f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})"
 
             # Find the relationship member by name
             result = await db.execute(
@@ -4014,9 +4095,9 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 return f"❌ {member_name} 不是我的关系"
                 
             logger.info(f"target_member={target_member.external_id}, {target_member.open_id}, {target_member.email}, {target_member.phone}")
-            if not target_member.external_id:
-                logger.error(f"❌ {member_name} has no linked Feishu user_id")
-                return f"❌ {member_name} 没有关联可用的飞书 user_id"
+            if not target_member.external_id and not target_member.open_id and not target_member.email and not target_member.phone:
+                logger.error(f"❌ {member_name} has no linked Feishu account (no user_id, open_id, email, or phone)")
+                return f"❌ {member_name} has no linked Feishu account (no user_id, open_id, email, or phone)"
 
             content = json.dumps({"text": message_text}, ensure_ascii=False)
 
@@ -4027,56 +4108,33 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     content=content, receive_id_type=id_type,
                 )
 
-            async def _save_outgoing_to_feishu_session(feishu_user_id: str):
-                """Save the outgoing message to the Feishu P2P chat session."""
-                try:
-                    from datetime import datetime as _dt, timezone as _tz
-
-
-                    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-                    agent_obj = agent_r.scalar_one_or_none()
-                    creator_id = agent_obj.creator_id if agent_obj else agent_id
-
-                    # Get or create platform user from OrgMember (unified logic)
-                    platform_user = await get_platform_user_by_org_member(
-                        db=db,
-                        org_member=target_member,
-                        agent_tenant_id=agent_obj.tenant_id if agent_obj else None,
-                    )
-                    user_id = platform_user.id
-
-                    ext_conv_id = f"feishu_p2p_{feishu_user_id}"
-                    sess = await find_or_create_channel_session(
-                        db=db,
-                        agent_id=agent_id,
-                        user_id=user_id,
-                        external_conv_id=ext_conv_id,
-                        source_channel="feishu",
-                        first_message_title=f"[Agent → {member_name or feishu_user_id}]",
-                    )
-                    db.add(ChatMessage(
-                        agent_id=agent_id,
-                        user_id=user_id,
-                        role="assistant",
-                        content=message_text,
-                        conversation_id=str(sess.id),
-                    ))
-                    sess.last_message_at = _dt.now(_tz.utc)
-                    await db.commit()
-                    logger.info(f"[Feishu] Saved outgoing message to session {sess.id} (user_id: {feishu_user_id})")
-                except Exception as e:
-                    logger.error(f"[Feishu] Failed to save outgoing message to history: {e}")
-
-            try:
-                resp = await _try_send(config.app_id, config.app_secret, target_member.external_id, "user_id")
+            # Step 1: Try using feishu_user_id (tenant-stable, works across apps)
+            if target_member.external_id:
+                resp = await _try_send(feishu_app_id, feishu_app_secret, target_member.external_id, "user_id")
                 if resp.get("code") == 0:
-                    await _save_outgoing_to_feishu_session(target_member.external_id)
+                    await _save_outgoing_to_feishu_session(db, agent_id, target_member.external_id, message_text, member_name)
                     return f"✅ Successfully sent message to {member_name}"
                 logger.info(f"❌ Failed to send message to {target_member.external_id} via Feishu (user_id): {resp}")
-                return f"发送失败: {resp.get('msg')} (code {resp.get('code')})"
-            except FeishuAPIError as user_id_err:
-                logger.info(f"❌ Failed to send message to {target_member.external_id} via Feishu (user_id): {user_id_err}")
-                return f"❌ 飞书发送失败：{user_id_err.user_message}"
+                
+                # Fallback to open_id if user_id fails (e.g., due to missing employee_id:readonly permission)
+                if target_member.open_id:
+                    resp_open = await _try_send(feishu_app_id, feishu_app_secret, target_member.open_id, "open_id")
+                    if resp_open.get("code") == 0:
+                        await _save_outgoing_to_feishu_session(db, agent_id, target_member.open_id, message_text, member_name)
+                        return f"✅ Successfully sent message to {member_name}"
+                    logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp_open}")
+                    return f"发送失败 (user_id: {resp.get('code')}, open_id: {resp_open.get('code')}): {resp_open.get('msg')}"
+                return f"发送失败 {resp}"
+            
+            # Step 2: If no external_id, try open_id directly
+            elif target_member.open_id:
+                resp = await _try_send(feishu_app_id, feishu_app_secret, target_member.open_id, "open_id")
+                if resp.get("code") == 0:
+                    await _save_outgoing_to_feishu_session(db, agent_id, target_member.open_id, message_text, member_name)
+                    return f"✅ Successfully sent message to {member_name}"
+                logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp}")
+                return f"发送失败 {resp}"
+            return "❌ No usable Feishu ID found for target member"
     except Exception as e:
         return f"❌ Message send error: {str(e)[:200]}"
 
@@ -4203,6 +4261,8 @@ async def _send_dingtalk_message(
 
             # Get agent_id from extra_config (required for DingTalk API)
             agent_id_dingtalk = config.extra_config.get("agent_id") if config.extra_config else None
+            if not config.app_id or not config.app_secret:
+                return "❌ DingTalk channel is not fully configured (missing app_id or app_secret)"
 
             # 3. Send message via DingTalk service
             result = await send_dingtalk_message(
@@ -4210,7 +4270,7 @@ async def _send_dingtalk_message(
                 app_secret=config.app_secret,
                 user_id=user_id,
                 message=message_text,
-                agent_id=agent_id_dingtalk,
+                agent_id=agent_id_dingtalk or "",
             )
 
             if result.get("errcode") == 0:
@@ -4295,6 +4355,9 @@ async def _send_wecom_message(
                     return f"❌ {member_name} has no WeCom user_id"
 
             logger.info(f"[WeCom] Sending to user_id: {user_id}")
+
+            if not config.app_id or not config.app_secret:
+                return "❌ WeCom channel is not fully configured (missing corp_id or secret)"
 
             # 3. Send message via WeCom service
             result = await send_wecom_message(
@@ -5269,7 +5332,8 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     target_reply = response.content or ""
                     break
             finally:
-                await llm_client.close()
+                if hasattr(llm_client, 'close'):
+                    await llm_client.close()  # type: ignore[union-attr]
 
             # Record accumulated A2A tokens for the target agent
             if _a2a_accumulated_tokens > 0:
@@ -5663,6 +5727,8 @@ async def _execute_code(
     # the user explicitly chose cloud execution.
     is_e2b_tool = (tool_name == "execute_code_e2b")
 
+    extra_env: dict[str, str] = {}
+
     try:
         # Import here to avoid circular imports
         from app.config import get_sandbox_config
@@ -5683,7 +5749,6 @@ async def _execute_code(
         backend = get_sandbox_backend(sandbox_config)
         logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name})")
 
-        extra_env: dict[str, str] = {}
         cred_errors: list[str] = []
         if user_id and agent_id:
             try:
@@ -5713,7 +5778,7 @@ async def _execute_code(
         )
 
         # Format result for user display
-        return backend._format_result(result)
+        return backend._format_result(result)  # type: ignore[attr-defined]
 
     except ValueError as e:
         # Sandbox disabled or misconfigured
@@ -8316,7 +8381,7 @@ async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
 
     from app.services.feishu_service import feishu_service
     try:
-        resp = await feishu_service.query_approval_instances(app_id, app_secret, approval_code, status)
+        resp = await feishu_service.query_approval_instances(app_id, app_secret, approval_code, status or "")
         err = _check_feishu_err(resp)
         if err: return err
 
@@ -9666,10 +9731,12 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
             local_path, err = resolve_workspace(from_path)
             if err:
                 return err
+            assert local_path is not None
             import os
             if not os.path.exists(local_path):
                 return f"File not found in workspace: {from_path}"
             client = await get_agentbay_client_for_agent(agent_id, to_type, session_id=session_id)
+            assert client._session is not None
             result = await asyncio.to_thread(
                 client._session.file_system.upload_file,
                 local_path, to_path
@@ -9684,6 +9751,7 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
                 desktop_dir = "/home/wuying/桌面"
                 if to_type == "computer" and to_path.startswith(desktop_dir):
                     try:
+                        assert client._session is not None
                         await asyncio.to_thread(
                             client._session.command.exec,
                             f"DISPLAY=:0 gio info '{to_path}' 2>/dev/null || true"
@@ -9698,9 +9766,11 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
             local_path, err = resolve_workspace(to_path)
             if err:
                 return err
+            assert local_path is not None
             import os
             os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
             client = await get_agentbay_client_for_agent(agent_id, from_type, session_id=session_id)
+            assert client._session is not None
             result = await asyncio.to_thread(
                 client._session.file_system.download_file,
                 from_path, local_path
@@ -9721,6 +9791,7 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
             try:
                 # Step 1: download from source env to backend /tmp/
                 src_client = await get_agentbay_client_for_agent(agent_id, from_type, session_id=session_id)
+                assert src_client._session is not None
                 dl_result = await asyncio.to_thread(
                     src_client._session.file_system.download_file,
                     from_path, tmp_path
@@ -9730,6 +9801,7 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
 
                 # Step 2: upload from backend /tmp/ to destination env
                 dst_client = await get_agentbay_client_for_agent(agent_id, to_type, session_id=session_id)
+                assert dst_client._session is not None
                 ul_result = await asyncio.to_thread(
                     dst_client._session.file_system.upload_file,
                     tmp_path, to_path
