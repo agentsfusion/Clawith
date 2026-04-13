@@ -15,6 +15,7 @@ import AgentCredentials from '../components/AgentCredentials';
 import FeedbackTab from '../components/evolver/FeedbackTab';
 import HealthTab from '../components/evolver/HealthTab';
 import ScriptTab from '../components/evolver/ScriptTab';
+import EvolverMindTab from '../components/evolver/EvolverMindTab';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, gwsApi, larkApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
@@ -3227,7 +3228,7 @@ function AgentDetailInner() {
                         }
                         const isEvolver = (agent as any)?.agent_type === 'evolver';
                         if (['feedback', 'health', 'script'].includes(tab)) return isEvolver;
-                        if (isEvolver && ['aware', 'mind', 'workspace'].includes(tab)) return false;
+                        if (isEvolver && ['aware', 'workspace'].includes(tab)) return false;
                         return true;
                     }).map((tab) => (
                         <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
@@ -4095,6 +4096,12 @@ function AgentDetailInner() {
                 {/* ── Mind Tab (Soul + Memory + Heartbeat) ── */}
                 {
                     activeTab === 'mind' && (() => {
+                        const isEvolverAgent = (agent as any)?.agent_type === 'evolver';
+
+                        if (isEvolverAgent) {
+                            return <EvolverMindTab agentId={id!} />;
+                        }
+
                         const adapter: FileBrowserApi = {
                             list: (p) => fileApi.list(id!, p),
                             read: (p) => fileApi.read(id!, p),

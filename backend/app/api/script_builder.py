@@ -4,11 +4,12 @@ import asyncio
 import json
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
+from pydantic import BaseModel, Field
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,9 +17,12 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db, async_session
 from app.models.user import User
 from app.models.llm import LLMModel
+from app.models.agent import Agent, AgentPermission
+from app.models.participant import Participant
 from app.models.script_builder import ScriptConversation, ScriptMessage
-from app.models.tool import Tool
+from app.models.tool import Tool, AgentTool
 from app.models.skill import Skill
+from app.models.evolver import AgentScriptVersion
 from app.api.auth import get_current_user
 from app.schemas.schemas import (
     ScriptConversationCreate,
@@ -350,3 +354,157 @@ async def analyze_script(
         raise HTTPException(status_code=500, detail="Failed to analyze script")
     finally:
         await client.close()
+
+
+def _parse_script_metadata(script: str) -> dict:
+    """Extract agent name and description from Agent Script header."""
+    name = "Evolver Agent"
+    desc = ""
+    name_found = False
+    desc_found = False
+    for line in script.splitlines():
+        stripped = line.strip()
+        low = stripped.lower()
+        if not name_found:
+            for prefix in ("agent_name:", "agent:"):
+                if low.startswith(prefix):
+                    val = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+                    if val:
+                        name = val
+                        name_found = True
+                    break
+        if not desc_found and low.startswith("description:"):
+            val = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+            if val:
+                desc = val
+                desc_found = True
+        if name_found and desc_found:
+            break
+    return {"name": name[:100], "description": desc[:500]}
+
+
+def _extract_referenced_targets(script: str) -> tuple[set[str], set[str]]:
+    """Parse tool:// and skill:// targets referenced in the script."""
+    tool_names: set[str] = set()
+    skill_names: set[str] = set()
+    for m in re.finditer(r'target:\s*["\']?tool://([^"\'}\s]+)', script):
+        tool_names.add(m.group(1).strip())
+    for m in re.finditer(r'target:\s*["\']?skill://([^"\'}\s]+)', script):
+        skill_names.add(m.group(1).strip())
+    return tool_names, skill_names
+
+
+class ApplyAsAgentRequest(BaseModel):
+    script: str = Field(min_length=10)
+    name: str | None = None
+
+
+@router.post("/apply-as-agent")
+async def apply_as_agent(
+    body: ApplyAsAgentRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    meta = _parse_script_metadata(body.script)
+    agent_name = body.name or meta["name"]
+    agent_desc = meta["description"]
+
+    llm_model = await _get_llm_model(db, current_user)
+
+    from app.models.tenant import Tenant
+    target_tenant_id = current_user.tenant_id
+    max_llm_calls = 100
+    default_heartbeat_interval = 240
+    if target_tenant_id:
+        t_res = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
+        tenant = t_res.scalar_one_or_none()
+        if tenant:
+            max_llm_calls = tenant.default_max_llm_calls_per_day or 100
+            if tenant.min_heartbeat_interval_minutes and tenant.min_heartbeat_interval_minutes > default_heartbeat_interval:
+                default_heartbeat_interval = tenant.min_heartbeat_interval_minutes
+
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=current_user.quota_agent_ttl_hours or 48)
+
+    agent = Agent(
+        name=agent_name,
+        role_description=agent_desc,
+        creator_id=current_user.id,
+        tenant_id=target_tenant_id,
+        agent_type="evolver",
+        primary_model_id=llm_model.id,
+        status="idle",
+        expires_at=expires_at,
+        max_llm_calls_per_day=max_llm_calls,
+        heartbeat_interval_minutes=default_heartbeat_interval,
+    )
+    db.add(agent)
+    await db.flush()
+
+    db.add(Participant(
+        type="agent", ref_id=agent.id,
+        display_name=agent.name, avatar_url=agent.avatar_url,
+    ))
+
+    db.add(AgentPermission(
+        agent_id=agent.id, scope_type="company", access_level="use"
+    ))
+    await db.flush()
+
+    db.add(AgentScriptVersion(
+        agent_id=agent.id,
+        version=1,
+        folder="initial",
+        content=body.script,
+        source="script_builder",
+    ))
+
+    tool_names, skill_names = _extract_referenced_targets(body.script)
+
+    installed_tools = []
+    if tool_names:
+        t_result = await db.execute(
+            select(Tool).where(
+                Tool.enabled == True,
+                Tool.name.in_(tool_names),
+                (Tool.tenant_id == target_tenant_id) | (Tool.tenant_id.is_(None)),
+            )
+        )
+        for tool in t_result.scalars().all():
+            db.add(AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True, source="system"))
+            installed_tools.append(tool.name)
+
+    installed_skills = []
+    if skill_names:
+        s_result = await db.execute(
+            select(Skill).where(
+                Skill.folder_name.in_(skill_names),
+                (Skill.tenant_id == target_tenant_id) | (Skill.tenant_id.is_(None)),
+            ).options(selectinload(Skill.files))
+        )
+        for skill in s_result.scalars().all():
+            installed_skills.append(skill.folder_name)
+            try:
+                from app.services.agent_manager import agent_manager
+                agent_dir = agent_manager._agent_dir(agent.id)
+                skills_dir = agent_dir / "skills"
+                skills_dir.mkdir(parents=True, exist_ok=True)
+                skill_folder = skills_dir / skill.folder_name
+                skill_folder.mkdir(parents=True, exist_ok=True)
+                for sf in skill.files:
+                    fp = skill_folder / sf.path
+                    fp.parent.mkdir(parents=True, exist_ok=True)
+                    fp.write_text(sf.content, encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[ApplyAsAgent] Failed to copy skill {skill.folder_name}: {e}")
+
+    await db.commit()
+    await db.refresh(agent)
+
+    logger.info(f"[ApplyAsAgent] Created evolver agent {agent.id} from script builder")
+
+    return {
+        "agent_id": str(agent.id),
+        "agent_name": agent.name,
+        "installed_tools": installed_tools,
+        "installed_skills": installed_skills,
+    }

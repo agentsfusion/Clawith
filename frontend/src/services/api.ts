@@ -708,6 +708,15 @@ export const scriptBuilderApi = {
             method: 'POST',
             body: JSON.stringify({ script }),
         }),
+
+    applyAsAgent: (script: string, name?: string) =>
+        request<{ agent_id: string; agent_name: string; installed_tools: string[]; installed_skills: string[] }>(
+            '/script-builder/apply-as-agent',
+            {
+                method: 'POST',
+                body: JSON.stringify({ script, name: name || undefined }),
+            },
+        ),
 };
 
 export interface EvolverFeedback {

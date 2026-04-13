@@ -3,8 +3,9 @@ import {
   IconPlus, IconTrash, IconMessage, IconChevronRight, IconSend,
   IconPlayerStop, IconRobot, IconUser, IconLoader2, IconCode,
   IconCopy, IconCheck, IconDownload, IconActivity, IconChartBar,
-  IconTool, IconBulb
+  IconTool, IconBulb, IconRocket, IconExternalLink
 } from '@tabler/icons-react';
+import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import { SyntaxHighlighter } from '../components/script-builder/SyntaxHighlighter';
 import { AnalyzeResult } from '../components/script-builder/AnalyzeResult';
@@ -130,17 +131,22 @@ function Sidebar({
 }
 
 function CodePanel({
-  script, onAnalyze, analyzeResult, isAnalyzing, platformContext
+  script, onAnalyze, analyzeResult, isAnalyzing, platformContext, onApplyAsAgent, applyResult, isApplying
 }: {
   script: string | null;
   onAnalyze: () => void;
   analyzeResult: (ScriptAnalysisResult & { error?: string }) | { error: string } | null;
   isAnalyzing: boolean;
   platformContext: ScriptBuilderContext | null;
+  onApplyAsAgent: () => void;
+  applyResult: { agent_id: string; agent_name: string; installed_tools: string[]; installed_skills: string[] } | null;
+  isApplying: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [showAnalyze, setShowAnalyze] = useState(false);
   const [showContext, setShowContext] = useState(false);
+  const [showApplyResult, setShowApplyResult] = useState(false);
+  const navigate = useNavigate();
 
   const handleCopy = async () => {
     if (!script) return;
@@ -200,6 +206,15 @@ function CodePanel({
           <button className="sb-code-action-btn" onClick={handleAnalyze} disabled={isAnalyzing}>
             <IconActivity size={14} />
             {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+          </button>
+          <button
+            className="sb-code-action-btn"
+            onClick={() => { setShowApplyResult(true); onApplyAsAgent(); }}
+            disabled={isApplying}
+            style={{ background: 'rgba(96,165,250,0.15)', color: '#60a5fa' }}
+          >
+            <IconRocket size={14} />
+            {isApplying ? 'Creating...' : 'Apply As Agent'}
           </button>
           <div className="sb-code-divider" />
           <button className="sb-code-icon-btn" onClick={handleCopy} title="Copy">
@@ -291,6 +306,74 @@ function CodePanel({
           </div>
         </div>
       )}
+
+      {showApplyResult && (
+        <div className="sb-modal-overlay" onClick={() => !isApplying && setShowApplyResult(false)}>
+          <div className="sb-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '420px' }}>
+            <div className="sb-modal-header">
+              <h3 style={{ margin: 0, fontSize: '16px' }}>
+                {isApplying ? 'Creating Agent...' : applyResult ? 'Agent Created' : 'Error'}
+              </h3>
+              {!isApplying && (
+                <button className="sb-modal-close" onClick={() => setShowApplyResult(false)}>✕</button>
+              )}
+            </div>
+            <div className="sb-modal-body" style={{ padding: '24px' }}>
+              {isApplying ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '32px 0', gap: '16px' }}>
+                  <div className="sb-spinner" />
+                  <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>Creating EvolverAgent from script...</p>
+                </div>
+              ) : applyResult ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px', borderRadius: '10px', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.2)' }}>
+                    <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: 'rgba(74,222,128,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <IconRocket size={20} style={{ color: '#4ade80' }} />
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '14px' }}>{applyResult.agent_name}</div>
+                      <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>EvolverAgent • Ready</div>
+                    </div>
+                  </div>
+
+                  {(applyResult.installed_tools.length > 0 || applyResult.installed_skills.length > 0) && (
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      {applyResult.installed_tools.length > 0 && (
+                        <div style={{ marginBottom: '6px' }}>
+                          <span style={{ fontWeight: 600 }}>Tools installed:</span>{' '}
+                          {applyResult.installed_tools.join(', ')}
+                        </div>
+                      )}
+                      {applyResult.installed_skills.length > 0 && (
+                        <div>
+                          <span style={{ fontWeight: 600 }}>Skills installed:</span>{' '}
+                          {applyResult.installed_skills.join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={() => navigate(`/agents/${applyResult.agent_id}`)}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                      padding: '10px 16px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+                      background: 'var(--primary, #3b82f6)', color: '#fff', fontWeight: 600, fontSize: '13px',
+                    }}
+                  >
+                    <IconExternalLink size={14} />
+                    Open Agent
+                  </button>
+                </div>
+              ) : (
+                <div style={{ padding: '24px', textAlign: 'center', color: 'var(--danger, #ef4444)' }}>
+                  Failed to create agent. Please try again.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -308,6 +391,8 @@ export default function ScriptBuilder() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [platformContext, setPlatformContext] = useState<ScriptBuilderContext | null>(null);
+  const [applyResult, setApplyResult] = useState<{ agent_id: string; agent_name: string; installed_tools: string[]; installed_skills: string[] } | null>(null);
+  const [isApplying, setIsApplying] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -485,6 +570,20 @@ export default function ScriptBuilder() {
     }
   };
 
+  const handleApplyAsAgent = async () => {
+    if (!currentScript) return;
+    setIsApplying(true);
+    setApplyResult(null);
+    try {
+      const data = await scriptBuilderApi.applyAsAgent(currentScript);
+      setApplyResult(data);
+    } catch (e) {
+      console.error('Apply as agent failed', e);
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
   const examplePrompts = [
     'Build a customer support agent that handles order status and returns',
     'Create an identity verification agent before processing sensitive requests',
@@ -584,6 +683,9 @@ export default function ScriptBuilder() {
           analyzeResult={analyzeResult}
           isAnalyzing={isAnalyzing}
           platformContext={platformContext}
+          onApplyAsAgent={handleApplyAsAgent}
+          applyResult={applyResult}
+          isApplying={isApplying}
         />
       </div>
     </div>
