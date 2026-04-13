@@ -339,16 +339,26 @@ async def create_script_version(
     )
     next_version = max_ver.scalar() + 1
 
+    content = body.get("content", "")
     sv = AgentScriptVersion(
         agent_id=agent_id,
         version=next_version,
         folder=folder,
-        content=body.get("content", ""),
+        content=content,
         source=body.get("source", "manual"),
     )
     db.add(sv)
     await db.commit()
     await db.refresh(sv)
+
+    if folder in ("initial", "evolved"):
+        try:
+            from app.services.storage.factory import get_storage
+            storage = get_storage()
+            await storage.write(f"{agent_id}/soul.md", content)
+        except Exception as e:
+            logger.warning(f"[Evolver] Failed to sync soul.md for {agent_id}: {e}")
+
     return ScriptVersionOut(
         id=str(sv.id), agent_id=sv.agent_id, version=sv.version,
         folder=sv.folder, content=sv.content, source=sv.source,

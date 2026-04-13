@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { evolverApi, type EvolverScriptVersion } from '../../services/api';
+import { evolverApi, fileApi, type EvolverScriptVersion } from '../../services/api';
 
 export default function EvolverMindTab({ agentId }: { agentId: string }) {
     const { t } = useTranslation();
@@ -17,9 +17,13 @@ export default function EvolverMindTab({ agentId }: { agentId: string }) {
     const latestScript = versions.find(v => v.folder === 'evolved') || versions.find(v => v.folder === 'initial');
 
     const saveMutation = useMutation({
-        mutationFn: () => evolverApi.createScriptVersion(agentId, latestScript?.folder || 'initial', editContent, 'manual-edit'),
+        mutationFn: async () => {
+            await evolverApi.createScriptVersion(agentId, latestScript?.folder || 'initial', editContent, 'manual-edit');
+            await fileApi.write(agentId, 'soul.md', editContent);
+        },
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['evolver-scripts', agentId] });
+            qc.invalidateQueries({ queryKey: ['file', agentId, 'soul.md'] });
             setIsEditing(false);
         },
     });

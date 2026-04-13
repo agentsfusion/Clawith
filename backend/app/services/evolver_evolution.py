@@ -220,6 +220,13 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
 
         await db.commit()
 
+        try:
+            from app.services.storage.factory import get_storage
+            storage = get_storage()
+            await storage.write(f"{agent_id}/soul.md", evolved_script)
+        except Exception as e:
+            logger.warning(f"[Evolution] Failed to sync soul.md for {agent_id}: {e}")
+
         logger.info(f"[Evolution] Agent {agent_id} evolved to v{next_evolved_version}")
         return {
             "status": "success",

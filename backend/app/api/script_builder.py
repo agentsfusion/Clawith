@@ -474,12 +474,17 @@ async def apply_as_agent(
             installed_tools.append(tool.name)
 
     from app.services.agent_manager import agent_manager
+    from app.services.storage.factory import get_storage
     meta = _parse_script_metadata(body.script)
     await agent_manager.initialize_agent_files(
         db, agent,
         personality=meta["description"] or agent_desc,
         boundaries="",
     )
+
+    storage = get_storage()
+    soul_key = f"{agent.id}/soul.md"
+    await storage.write(soul_key, body.script)
 
     installed_skills = []
     if skill_names:
