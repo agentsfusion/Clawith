@@ -1512,6 +1512,72 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ── Agent Factory Tools ──────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tenant_tools",
+            "description": "List all installed and available tools for the current company/tenant. Returns tool names, descriptions, and parameter schemas. Use this to discover which tools can be referenced as action targets in an Agent Script.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Optional filter by category (e.g. 'search', 'feishu', 'communication'). Leave empty for all tools.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tenant_skills",
+            "description": "List all available skills for the current company/tenant. Returns skill names, descriptions, categories, and folder names. Use this to discover which skills can be referenced as action targets in an Agent Script.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Optional filter by category (e.g. 'research', 'productivity'). Leave empty for all skills.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_ascript_agent",
+            "description": "Create a new Agent Script-powered digital employee. Provide the complete Agent Script content, agent name, role description, and optionally a model ID. The system will create the agent, write the Agent Script to its workspace, parse action targets to auto-enable referenced tools and install referenced skills, and initialize state variables. Returns the created agent's ID and details.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the new agent (2-100 characters)",
+                    },
+                    "role_description": {
+                        "type": "string",
+                        "description": "Brief role description (max 500 characters)",
+                    },
+                    "agent_script": {
+                        "type": "string",
+                        "description": "The complete Agent Script content in .ascript format",
+                    },
+                    "primary_model_id": {
+                        "type": "string",
+                        "description": "Optional UUID of the LLM model to use. If not provided, uses the same model as the factory agent.",
+                    },
+                    "enable_evolution": {
+                        "type": "boolean",
+                        "description": "Whether to create a daily evolution trigger for this agent (default: true)",
+                    },
+                },
+                "required": ["name", "role_description", "agent_script"],
+            },
+        },
+    },
     # ── AgentBay Tools ────────────────────────────────────────────
     {
         "type": "function",
@@ -2465,6 +2531,13 @@ async def execute_tool(
             result = await _execute_gws(agent_id, user_id, arguments)
         elif tool_name == "lark":
             result = await _execute_lark(agent_id, user_id, arguments)
+        # ── Agent Factory Tools ──
+        elif tool_name == "list_tenant_tools":
+            result = await _list_tenant_tools(agent_id, arguments)
+        elif tool_name == "list_tenant_skills":
+            result = await _list_tenant_skills(agent_id, arguments)
+        elif tool_name == "create_ascript_agent":
+            result = await _create_ascript_agent(agent_id, user_id, arguments)
         else:
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
