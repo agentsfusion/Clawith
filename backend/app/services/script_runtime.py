@@ -874,7 +874,6 @@ def execute_script_logic(
 
         if reasoning.prompts:
             result.llm_instructions.extend(reasoning.prompts)
-            result.needs_llm = True
             result.steps.append(ExecutionStep(
                 topic=topic.name, action="llm_prompt",
                 detail=f"Collected {len(reasoning.prompts)} instruction(s) for LLM"
@@ -896,8 +895,18 @@ def execute_script_logic(
                 topic=topic.name, action="stop",
                 detail="Script execution halted (stop)"
             ))
-
-        if not reasoning.is_procedural and not reasoning.prompts and not reasoning.transitions:
+            if reasoning.prompts and not reasoning.actions_to_run:
+                result.response = "\n\n".join(reasoning.prompts)
+                result.needs_llm = False
+            elif reasoning.actions_to_run:
+                result.needs_llm = True
+            else:
+                result.needs_llm = False
+        elif reasoning.actions_to_run:
+            result.needs_llm = True
+        elif reasoning.prompts:
+            result.needs_llm = True
+        elif not reasoning.is_procedural and not reasoning.transitions:
             result.needs_llm = True
 
         break
@@ -1071,163 +1080,6 @@ def process_response_v2(
     return clean_text, changes
 
 
-def build_system_prompt(parsed: ParsedScript, state: ScriptState) -> str:
-    parts = []
-
-    agent_name = parsed.config.get("agent_name", parsed.config.get("agent_label", "Agent"))
-    description = parsed.config.get("description", "")
-
-    parts.append(f"You are **{agent_name}**.")
-    if description:
-        parts.append(f"**Role**: {description}")
-    if parsed.system_instructions:
-        parts.append(f"\n## Core Instructions\n{parsed.system_instructions}")
-
-    current_topic_name = state.current_topic
-    active_topic: ScriptTopic | None = None
-    if current_topic_name == "__start__" and parsed.start_agent:
-        active_topic = parsed.start_agent
-    elif current_topic_name in parsed.topics:
-        active_topic = parsed.topics[current_topic_name]
-    elif parsed.start_agent:
-        active_topic = parsed.start_agent
-        state.current_topic = "__start__"
-
-    reasoning_result = None
-    if active_topic and active_topic.reasoning_text:
-        reasoning_result = evaluate_reasoning(
-            active_topic.reasoning_text, dict(state.variables),
-            active_topic.actions if active_topic else None
-        )
-
-        if reasoning_result.transitions:
-            target = reasoning_result.transitions[0]
-            if target in parsed.topics:
-                state.current_topic = target
-                state.pending_transitions = reasoning_result.transitions
-                active_topic = parsed.topics[target]
-                current_topic_name = target
-                reasoning_result = evaluate_reasoning(
-                    active_topic.reasoning_text, dict(state.variables),
-                    active_topic.actions
-                )
-
-        if reasoning_result.actions_to_run:
-            state.pending_actions = reasoning_result.actions_to_run
-
-    variables_section = _render_variables_section(parsed, state)
-    if variables_section:
-        parts.append(f"\n{variables_section}")
-
-    if active_topic:
-        parts.append(f"\n## Current Topic: `{active_topic.name}`")
-        if active_topic.description:
-            parts.append(f"*{active_topic.description}*")
-
-        filtered_actions = {}
-        if active_topic.actions:
-            for aname, action in active_topic.actions.items():
-                if action.available_when:
-                    if _eval_condition(action.available_when, state.variables):
-                        filtered_actions[aname] = action
-                else:
-                    filtered_actions[aname] = action
-
-        if filtered_actions:
-            temp_topic = ScriptTopic(name=active_topic.name, actions=filtered_actions)
-            actions_section = _render_actions_section(temp_topic, state)
-            if actions_section:
-                parts.append(f"\n{actions_section}")
-
-        if reasoning_result and reasoning_result.prompts:
-            parts.append("\n## Active Instructions")
-            parts.append("Follow these instructions for the current conversation turn:")
-            for prompt in reasoning_result.prompts:
-                parts.append(f"- {prompt}")
-
-        if reasoning_result and reasoning_result.actions_to_run:
-            parts.append("\n## Actions To Execute")
-            parts.append("The script requires you to execute these actions now:")
-            for act in reasoning_result.actions_to_run:
-                target = act.get("target", "")
-                if target:
-                    parts.append(f"- Call `{act['name']}` (target: `{target}`)")
-                else:
-                    parts.append(f"- Execute `{act['name']}`")
-
-    if active_topic and active_topic.name == "__start__" or (parsed.start_agent and state.current_topic == "__start__"):
-        if parsed.start_agent and parsed.start_agent.actions:
-            routing_actions = parsed.start_agent.actions
-            parts.append("\n## Topic Routing")
-            parts.append("Based on the user's intent, route to one of these topics:")
-            for aname, action in routing_actions.items():
-                m = re.match(r'@utils\.transition to @topic\.(\w+)', action.target or "")
-                if m:
-                    topic_name = m.group(1)
-                    avail = ""
-                    if action.available_when:
-                        avail = f" (available when {action.available_when})"
-                    parts.append(f"- **{topic_name}**: {action.description}{avail}")
-
-    topics_nav = _render_topics_nav(parsed, current_topic_name)
-    if topics_nav:
-        parts.append(f"\n{topics_nav}")
-
-    parts.append("""
-## Execution Rules
-1. **ALWAYS respond to the user with visible text** — never respond with ONLY directives. Every response must contain a human-readable message. Place directives (`[SET]`/`[TRANSITION]`) AFTER your user-facing message.
-2. **Variable Updates**: When you learn a variable value from the user's message, append `[SET variable_name = value]` on its own line at the END of your response.
-3. **Topic Transitions**: To switch topics, append `[TRANSITION topic_name]` on its own line at the END of your response.
-4. **Action Execution**: When an action maps to a tool (tool://), call it using the standard tool-calling mechanism. When it maps to a skill (skill://), use `read_file` to load the skill first.
-5. **Stay in character** as defined by the script configuration.
-6. **Welcome message**: If the conversation has just started and no user message was sent yet, greet the user using the welcome message below.""")
-
-    welcome = parsed.system_messages.get("welcome", "")
-    error_msg = parsed.system_messages.get("error", "")
-    if welcome or error_msg:
-        parts.append(f"\n## System Messages")
-        if welcome:
-            parts.append(f"- Welcome: \"{welcome}\"")
-        if error_msg:
-            parts.append(f"- Error fallback: \"{error_msg}\"")
-
-    return "\n".join(parts)
-
-
-def process_response(response_text: str, state: ScriptState, parsed: ParsedScript) -> tuple[str, list[str]]:
-    changes = []
-    clean_text = response_text
-
-    for m in re.finditer(r'\[SET\s+(\w+)\s*=\s*(.+?)\]', response_text):
-        var_name = m.group(1)
-        val_str = m.group(2).strip().strip('"').strip("'")
-        if var_name in parsed.variables:
-            var = parsed.variables[var_name]
-            if var.var_type in ("boolean", "bool"):
-                state.variables[var_name] = val_str.lower() in ("true", "1", "yes")
-            elif var.var_type == "number":
-                try:
-                    state.variables[var_name] = float(val_str) if "." in val_str else int(val_str)
-                except ValueError:
-                    pass
-            else:
-                state.variables[var_name] = val_str
-            changes.append(f"SET {var_name} = {val_str}")
-        clean_text = clean_text.replace(m.group(0), "").strip()
-
-    for m in re.finditer(r'\[TRANSITION\s+(\w+)\]', response_text):
-        topic_name = m.group(1)
-        if topic_name in parsed.topics:
-            state.current_topic = topic_name
-            changes.append(f"TRANSITION → {topic_name}")
-        elif topic_name == "topic_selector" or topic_name == "__start__":
-            state.current_topic = "__start__"
-            changes.append(f"TRANSITION → __start__")
-        clean_text = clean_text.replace(m.group(0), "").strip()
-
-    return clean_text, changes
-
-
 async def get_script_for_agent(agent_id: str | uuid.UUID) -> str | None:
     from app.database import async_session
     from app.models.evolver import AgentScriptVersion
@@ -1247,32 +1099,6 @@ async def get_script_for_agent(agent_id: str | uuid.UUID) -> str | None:
         if sv:
             return sv.content
     return None
-
-
-async def build_evolver_context(
-    agent_id: uuid.UUID,
-    agent_name: str,
-    session_id: str = "",
-) -> tuple[str, ScriptState | None]:
-    script_text = await get_script_for_agent(agent_id)
-    if not script_text:
-        return "", None
-
-    parsed = parse_script(script_text)
-
-    is_new = False
-    state = await load_state(agent_id, session_id)
-    if state is None:
-        state = init_state(parsed)
-        is_new = True
-
-    topic_before = state.current_topic
-    system_prompt = build_system_prompt(parsed, state)
-
-    if is_new or state.current_topic != topic_before or state.pending_actions:
-        await save_state(agent_id, state, session_id)
-
-    return system_prompt, state
 
 
 async def get_evolver_welcome(agent_id: uuid.UUID) -> str | None:
