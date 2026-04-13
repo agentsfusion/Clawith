@@ -497,15 +497,11 @@ async def apply_as_agent(
         for skill in s_result.scalars().all():
             installed_skills.append(skill.folder_name)
             try:
-                agent_dir = agent_manager._agent_dir(agent.id)
-                skills_dir = agent_dir / "skills"
-                skills_dir.mkdir(parents=True, exist_ok=True)
-                skill_folder = skills_dir / skill.folder_name
-                skill_folder.mkdir(parents=True, exist_ok=True)
                 for sf in skill.files:
-                    fp = skill_folder / sf.path
-                    fp.parent.mkdir(parents=True, exist_ok=True)
-                    fp.write_text(sf.content, encoding="utf-8")
+                    if ".." in sf.path.split("/"):
+                        continue
+                    key = f"{agent.id}/skills/{skill.folder_name}/{sf.path}"
+                    await storage.write(key, sf.content)
             except Exception as e:
                 logger.warning(f"[ApplyAsAgent] Failed to copy skill {skill.folder_name}: {e}")
 
@@ -518,15 +514,11 @@ async def apply_as_agent(
     for skill in default_result.scalars().all():
         if skill.folder_name not in installed_skills:
             try:
-                agent_dir = agent_manager._agent_dir(agent.id)
-                skills_dir = agent_dir / "skills"
-                skills_dir.mkdir(parents=True, exist_ok=True)
-                skill_folder = skills_dir / skill.folder_name
-                skill_folder.mkdir(parents=True, exist_ok=True)
                 for sf in skill.files:
-                    fp = skill_folder / sf.path
-                    fp.parent.mkdir(parents=True, exist_ok=True)
-                    fp.write_text(sf.content, encoding="utf-8")
+                    if ".." in sf.path.split("/"):
+                        continue
+                    key = f"{agent.id}/skills/{skill.folder_name}/{sf.path}"
+                    await storage.write(key, sf.content)
             except Exception as e:
                 logger.warning(f"[ApplyAsAgent] Failed to copy default skill {skill.folder_name}: {e}")
 

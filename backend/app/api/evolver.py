@@ -313,7 +313,7 @@ async def list_script_versions(
     versions = result.scalars().all()
     return [
         ScriptVersionOut(
-            id=str(v.id), agent_id=v.agent_id, version=v.version,
+            id=str(v.id), agent_id=str(v.agent_id), version=v.version,
             folder=v.folder, content=v.content, source=v.source,
             created_at=v.created_at,
         )
