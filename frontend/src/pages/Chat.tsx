@@ -51,6 +51,10 @@ interface ScriptTraceEntry {
     topic_description?: string;
     variables?: Record<string, any>;
     available_actions?: { name: string; description: string; target: string }[];
+    reasoning_mode?: 'procedural' | 'natural_language';
+    active_prompts?: string[];
+    pending_transitions?: string[];
+    pending_actions?: string[];
     reasoning?: string;
     available_topics?: { name: string; description: string }[];
     changes?: string[];
@@ -943,6 +947,64 @@ export default function Chat() {
                                                                     </div>
                                                                 </div>
                                                             )}
+                                                            {trace.reasoning_mode && (
+                                                                <div style={{ display: 'flex', gap: '4px', marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', minWidth: '70px' }}>Mode:</span>
+                                                                    <span style={{
+                                                                        display: 'inline-block',
+                                                                        background: trace.reasoning_mode === 'procedural' ? 'rgba(249, 115, 22, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                                                                        border: `1px solid ${trace.reasoning_mode === 'procedural' ? 'rgba(249, 115, 22, 0.3)' : 'rgba(34, 197, 94, 0.3)'}`,
+                                                                        borderRadius: '4px', padding: '0 6px', fontSize: '10px', fontWeight: 600,
+                                                                        color: trace.reasoning_mode === 'procedural' ? 'rgba(249, 115, 22, 0.85)' : 'rgba(34, 197, 94, 0.85)',
+                                                                    }}>
+                                                                        {trace.reasoning_mode === 'procedural' ? '\u2699 Procedural (-\u003E)' : '\u270D Natural Language (|)'}
+                                                                    </span>
+                                                                </div>
+                                                            )}
+                                                            {trace.active_prompts && trace.active_prompts.length > 0 && (
+                                                                <div style={{ marginBottom: '4px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Active Prompts (evaluated):</span>
+                                                                    {trace.active_prompts.map((p, pi) => (
+                                                                        <div key={pi} style={{
+                                                                            marginLeft: '8px', marginTop: '2px', padding: '3px 8px',
+                                                                            background: 'rgba(34, 197, 94, 0.06)', borderLeft: '2px solid rgba(34, 197, 94, 0.4)',
+                                                                            fontSize: '10px', color: 'var(--text-primary)', lineHeight: '1.5',
+                                                                        }}>
+                                                                            {p}
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.pending_transitions && trace.pending_transitions.length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px' }}>Auto-Transition: </span>
+                                                                    {trace.pending_transitions.map((t, ti3) => (
+                                                                        <span key={ti3} style={{
+                                                                            display: 'inline-block', background: 'rgba(249, 115, 22, 0.1)',
+                                                                            border: '1px solid rgba(249, 115, 22, 0.25)', borderRadius: '4px',
+                                                                            padding: '1px 6px', fontSize: '10px', fontWeight: 600,
+                                                                            color: 'rgba(249, 115, 22, 0.85)',
+                                                                        }}>
+                                                                            {'\u2192'} {t}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.pending_actions && trace.pending_actions.length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px' }}>Actions to Run: </span>
+                                                                    {trace.pending_actions.map((a, ai2) => (
+                                                                        <span key={ai2} style={{
+                                                                            display: 'inline-block', background: 'rgba(239, 68, 68, 0.08)',
+                                                                            border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '4px',
+                                                                            padding: '1px 6px', margin: '1px 3px 1px 0', fontSize: '10px',
+                                                                            color: 'rgba(239, 68, 68, 0.85)', fontWeight: 500,
+                                                                        }}>
+                                                                            {'\u25B6'} {a}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
                                                             {trace.available_actions && trace.available_actions.length > 0 && (
                                                                 <div style={{ marginBottom: '3px' }}>
                                                                     <span style={{ color: 'var(--text-tertiary)' }}>Actions: </span>
@@ -964,7 +1026,7 @@ export default function Chat() {
                                                                         cursor: 'pointer', color: 'var(--text-tertiary)',
                                                                         fontSize: '10px', userSelect: 'none',
                                                                     }}>
-                                                                        Reasoning Instructions
+                                                                        Raw Script (source)
                                                                     </summary>
                                                                     <pre style={{
                                                                         fontSize: '10px', lineHeight: '1.5',

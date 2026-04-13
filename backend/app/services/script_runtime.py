@@ -62,6 +62,161 @@ class ScriptState:
     current_topic: str = ""
     variables: dict[str, Any] = field(default_factory=dict)
     script_version_id: str = ""
+    pending_transitions: list[str] = field(default_factory=list)
+    pending_actions: list[dict] = field(default_factory=list)
+
+
+def _resolve_var_ref(text: str, variables: dict[str, Any]) -> str:
+    def _repl(m):
+        var_name = m.group(1)
+        val = variables.get(var_name, "")
+        return str(val) if val is not None else ""
+    result = re.sub(r'\{!@variables\.(\w+)\}', _repl, text)
+    return result
+
+
+def _eval_condition(condition: str, variables: dict[str, Any]) -> bool:
+    cond = condition.strip()
+
+    cond = re.sub(r'@variables\.(\w+)', lambda m: f'__vars__.get("{m.group(1)}", "")', cond)
+
+    cond = cond.replace(" is not None", ' is not None')
+    cond = cond.replace(" is None", ' is None')
+    cond = re.sub(r'\b(True)\b', 'True', cond)
+    cond = re.sub(r'\b(False)\b', 'False', cond)
+
+    try:
+        result = eval(cond, {"__builtins__": {}, "__vars__": variables,
+                             "True": True, "False": False, "None": None})
+        return bool(result)
+    except Exception as e:
+        logger.debug(f"[ScriptRuntime] Condition eval failed: {cond!r} -> {e}")
+        return True
+
+
+@dataclass
+class ReasoningResult:
+    prompts: list[str] = field(default_factory=list)
+    transitions: list[str] = field(default_factory=list)
+    actions_to_run: list[dict] = field(default_factory=list)
+    is_procedural: bool = False
+
+
+def evaluate_reasoning(reasoning_text: str, variables: dict[str, Any],
+                       topic_actions: dict[str, 'ScriptAction'] | None = None) -> ReasoningResult:
+    result = ReasoningResult()
+    if not reasoning_text or not reasoning_text.strip():
+        return result
+
+    lines = reasoning_text.split("\n")
+
+    is_procedural = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("instructions:->"):
+            is_procedural = True
+            break
+        if stripped.startswith("instructions:|"):
+            is_procedural = False
+            break
+
+    result.is_procedural = is_procedural
+
+    if not is_procedural:
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("instructions:|"):
+                prompt = stripped[len("instructions:|"):].strip()
+                if prompt:
+                    result.prompts.append(_resolve_var_ref(prompt, variables))
+                continue
+            if stripped.startswith("instructions:"):
+                continue
+            if stripped.startswith("actions:"):
+                continue
+            if stripped.startswith("|"):
+                prompt = stripped[1:].strip()
+                if prompt:
+                    result.prompts.append(_resolve_var_ref(prompt, variables))
+            elif not stripped.startswith(("description:", "available when")):
+                m = re.match(r'^(\w+):\s*@(utils\.transition|actions\.\w+)', stripped)
+                if m:
+                    continue
+        return result
+
+    if_stack: list[dict] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("instructions:->") or stripped.startswith("instructions:|"):
+            continue
+        if stripped.startswith("actions:") and not stripped.startswith("actions."):
+            continue
+
+        indent = len(line) - len(line.lstrip())
+
+        while if_stack and indent <= if_stack[-1]["indent"]:
+            if_stack.pop()
+
+        def _is_active() -> bool:
+            return all(frame["active"] for frame in if_stack)
+
+        if stripped.startswith("if "):
+            condition_expr = stripped[3:].rstrip(":")
+            if _is_active():
+                is_true = _eval_condition(condition_expr, variables)
+                if_stack.append({"indent": indent, "active": is_true, "branch_taken": is_true})
+            else:
+                if_stack.append({"indent": indent, "active": False, "branch_taken": False})
+            continue
+
+        if stripped == "else:":
+            if if_stack:
+                frame = if_stack[-1]
+                if all(f["active"] for f in if_stack[:-1]):
+                    frame["active"] = not frame["branch_taken"]
+            continue
+
+        if not _is_active():
+            continue
+
+        if stripped.startswith("| ") or stripped.startswith("|"):
+            prompt = stripped[1:].strip() if stripped.startswith("|") else stripped[2:]
+            if prompt:
+                result.prompts.append(_resolve_var_ref(prompt, variables))
+            continue
+
+        m = re.match(r'transition to @topic\.(\w+)', stripped)
+        if m:
+            result.transitions.append(m.group(1))
+            continue
+
+        m = re.match(r'run @actions\.(\w+)', stripped)
+        if m:
+            action_name = m.group(1)
+            action_info: dict[str, Any] = {"name": action_name}
+            if topic_actions and action_name in topic_actions:
+                action_info["target"] = topic_actions[action_name].target
+            result.actions_to_run.append(action_info)
+            continue
+
+        m = re.match(r'set @variables\.(\w+)\s*=\s*(.+)', stripped)
+        if m:
+            var_name, val_expr = m.group(1), m.group(2).strip()
+            out_m = re.match(r'@outputs\.(\w+)', val_expr)
+            if out_m:
+                pass
+            else:
+                resolved = _resolve_var_ref(val_expr, variables)
+                try:
+                    variables[var_name] = eval(resolved, {"__builtins__": {}, "True": True, "False": False, "None": None})
+                except Exception:
+                    variables[var_name] = resolved
+            continue
+
+    return result
 
 
 def parse_script(script_text: str) -> ParsedScript:
@@ -421,7 +576,7 @@ def build_system_prompt(parsed: ParsedScript, state: ScriptState) -> str:
     agent_name = parsed.config.get("agent_name", parsed.config.get("agent_label", "Agent"))
     description = parsed.config.get("description", "")
 
-    parts.append(f"You are **{agent_name}**, an AI agent operating under a structured Agent Script.")
+    parts.append(f"You are **{agent_name}**.")
     if description:
         parts.append(f"**Role**: {description}")
     if parsed.system_instructions:
@@ -437,6 +592,28 @@ def build_system_prompt(parsed: ParsedScript, state: ScriptState) -> str:
         active_topic = parsed.start_agent
         state.current_topic = "__start__"
 
+    reasoning_result = None
+    if active_topic and active_topic.reasoning_text:
+        reasoning_result = evaluate_reasoning(
+            active_topic.reasoning_text, dict(state.variables),
+            active_topic.actions if active_topic else None
+        )
+
+        if reasoning_result.transitions:
+            target = reasoning_result.transitions[0]
+            if target in parsed.topics:
+                state.current_topic = target
+                state.pending_transitions = reasoning_result.transitions
+                active_topic = parsed.topics[target]
+                current_topic_name = target
+                reasoning_result = evaluate_reasoning(
+                    active_topic.reasoning_text, dict(state.variables),
+                    active_topic.actions
+                )
+
+        if reasoning_result.actions_to_run:
+            state.pending_actions = reasoning_result.actions_to_run
+
     variables_section = _render_variables_section(parsed, state)
     if variables_section:
         parts.append(f"\n{variables_section}")
@@ -446,14 +623,50 @@ def build_system_prompt(parsed: ParsedScript, state: ScriptState) -> str:
         if active_topic.description:
             parts.append(f"*{active_topic.description}*")
 
-        actions_section = _render_actions_section(active_topic, state)
-        if actions_section:
-            parts.append(f"\n{actions_section}")
+        filtered_actions = {}
+        if active_topic.actions:
+            for aname, action in active_topic.actions.items():
+                if action.available_when:
+                    if _eval_condition(action.available_when, state.variables):
+                        filtered_actions[aname] = action
+                else:
+                    filtered_actions[aname] = action
 
-        if active_topic.reasoning_text:
-            cleaned = active_topic.reasoning_text.strip()
-            if cleaned:
-                parts.append(f"\n## Reasoning Instructions\nFollow these instructions to handle the current conversation:\n```\n{cleaned}\n```")
+        if filtered_actions:
+            temp_topic = ScriptTopic(name=active_topic.name, actions=filtered_actions)
+            actions_section = _render_actions_section(temp_topic, state)
+            if actions_section:
+                parts.append(f"\n{actions_section}")
+
+        if reasoning_result and reasoning_result.prompts:
+            parts.append("\n## Active Instructions")
+            parts.append("Follow these instructions for the current conversation turn:")
+            for prompt in reasoning_result.prompts:
+                parts.append(f"- {prompt}")
+
+        if reasoning_result and reasoning_result.actions_to_run:
+            parts.append("\n## Actions To Execute")
+            parts.append("The script requires you to execute these actions now:")
+            for act in reasoning_result.actions_to_run:
+                target = act.get("target", "")
+                if target:
+                    parts.append(f"- Call `{act['name']}` (target: `{target}`)")
+                else:
+                    parts.append(f"- Execute `{act['name']}`")
+
+    if active_topic and active_topic.name == "__start__" or (parsed.start_agent and state.current_topic == "__start__"):
+        if parsed.start_agent and parsed.start_agent.actions:
+            routing_actions = parsed.start_agent.actions
+            parts.append("\n## Topic Routing")
+            parts.append("Based on the user's intent, route to one of these topics:")
+            for aname, action in routing_actions.items():
+                m = re.match(r'@utils\.transition to @topic\.(\w+)', action.target or "")
+                if m:
+                    topic_name = m.group(1)
+                    avail = ""
+                    if action.available_when:
+                        avail = f" (available when {action.available_when})"
+                    parts.append(f"- **{topic_name}**: {action.description}{avail}")
 
     topics_nav = _render_topics_nav(parsed, current_topic_name)
     if topics_nav:
@@ -461,13 +674,11 @@ def build_system_prompt(parsed: ParsedScript, state: ScriptState) -> str:
 
     parts.append("""
 ## Execution Rules
-1. **Variable Updates**: When you determine a variable value from the conversation, respond with `[SET variable_name = value]` on its own line.
+1. **Variable Updates**: When you learn a variable value from the user's message, respond with `[SET variable_name = value]` on its own line. This is critical for the script to track conversation state.
 2. **Topic Transitions**: To switch topics, respond with `[TRANSITION topic_name]` on its own line.
-3. **Action Execution**: When an action maps to a tool (tool://), call it using the standard tool-calling mechanism. When it maps to a skill (skill://), use `read_file` to load the skill first, then follow its instructions.
-4. **Natural Language**: Lines with `|` in the script are prompts — follow them as instructions for what to say.
-5. **Procedural Logic**: Lines with `->` are deterministic — follow them as if/else logic strictly.
-6. **Always stay in character** as defined by the script's system instructions.
-7. **Welcome message**: If this is the start of a conversation, greet with the configured welcome message.""")
+3. **Action Execution**: When an action maps to a tool (tool://), call it using the standard tool-calling mechanism. When it maps to a skill (skill://), use `read_file` to load the skill first.
+4. **Stay in character** as defined by the script configuration.
+5. **Welcome message**: If the conversation has just started and no user message was sent yet, greet the user using the welcome message below.""")
 
     welcome = parsed.system_messages.get("welcome", "")
     error_msg = parsed.system_messages.get("error", "")
