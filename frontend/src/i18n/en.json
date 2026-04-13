@@ -347,11 +347,19 @@
       "importFromGithub": "Import from GitHub URL",
       "githubUrlDesc": "Paste a GitHub URL pointing to a skill directory (must contain SKILL.md).",
       "importPreset": "Import from Presets",
-      "importDesc": "Select a preset skill to import into this agent. All skill files will be copied to the agent's skills folder.",
+      "importDesc": "Select preset skills to import into this agent. All skill files will be copied to the agent's skills folder.",
       "importedSuccess": "Imported \"{{name}}\" ({{count}} files)",
       "importFailed": "Import failed",
       "importing": "Importing...",
-      "importBtn": "Import"
+      "importBtn": "Import",
+      "selectAll": "Select All",
+      "deselectAll": "Deselect All",
+      "importSelected": "Import",
+      "importNSelected": "Import {{count}} Selected",
+      "batchImportSuccess": "{{count}} skills imported successfully",
+      "batchImportPartial": "{{success}} imported, {{failed}} failed",
+      "batchImportFailed": "Batch import failed",
+      "noSkillsSelected": "No skills selected"
     },
     "toolMgmt": {
       "title": "Tool Management",
