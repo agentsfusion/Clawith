@@ -17,6 +17,8 @@ from app.database import get_db, async_session
 from app.models.user import User
 from app.models.llm import LLMModel
 from app.models.script_builder import ScriptConversation, ScriptMessage
+from app.models.tool import Tool
+from app.models.skill import Skill
 from app.api.auth import get_current_user
 from app.schemas.schemas import (
     ScriptConversationCreate,
@@ -29,6 +31,50 @@ from app.services.agent_script_prompt import AGENT_SCRIPT_SYSTEM_PROMPT, ANALYZE
 from app.services.llm_client import create_llm_client, LLMMessage, get_max_tokens
 
 router = APIRouter(prefix="/script-builder", tags=["script-builder"])
+
+
+async def _build_tools_skills_context(db: AsyncSession, tenant_id) -> str:
+    """Build a context string listing available tools and skills for the tenant."""
+    tool_result = await db.execute(
+        select(Tool).where(Tool.enabled == True).order_by(Tool.category, Tool.name)
+    )
+    tools = tool_result.scalars().all()
+
+    skill_result = await db.execute(
+        select(Skill).where(
+            (Skill.tenant_id == tenant_id) | (Skill.tenant_id.is_(None))
+        ).order_by(Skill.name)
+    )
+    skills = skill_result.scalars().all()
+
+    if not tools and not skills:
+        return ""
+
+    lines = ["\n\n# Available Platform Tools & Skills",
+             "When generating Agent Scripts, reference these REAL tools and skills that are installed in this company's platform.",
+             "Use their exact names as action targets in the Agent Script.\n"]
+
+    if tools:
+        lines.append("## Available Tools")
+        for t in tools:
+            desc = f" — {t.description[:120]}" if t.description else ""
+            lines.append(f"- **{t.name}** ({t.category}){desc}")
+        lines.append("")
+
+    if skills:
+        lines.append("## Available Skills")
+        for s in skills:
+            desc = f" — {s.description[:120]}" if s.description else ""
+            lines.append(f"- **{s.folder_name}** ({s.category}){desc}")
+        lines.append("")
+
+    lines.append("## Integration Guidelines")
+    lines.append("- In `actions:` blocks, use `target: \"tool://<tool_name>\"` to reference platform tools")
+    lines.append("- In `actions:` blocks, use `target: \"skill://<skill_folder_name>\"` to reference platform skills")
+    lines.append("- Only reference tools/skills from the lists above — do not invent non-existent ones")
+    lines.append("- If a user's requirement needs a tool that isn't available, mention it and suggest alternatives\n")
+
+    return "\n".join(lines)
 
 
 async def _get_llm_model(db: AsyncSession, user: User) -> LLMModel:
@@ -50,6 +96,38 @@ async def _get_llm_model(db: AsyncSession, user: User) -> LLMModel:
     if not model:
         raise HTTPException(status_code=503, detail="No LLM model available")
     return model
+
+
+@router.get("/context")
+async def get_tools_skills_context(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return available tools and skills for the current tenant."""
+    tool_result = await db.execute(
+        select(Tool).where(Tool.enabled == True).order_by(Tool.category, Tool.name)
+    )
+    tools = tool_result.scalars().all()
+
+    skill_result = await db.execute(
+        select(Skill).where(
+            (Skill.tenant_id == current_user.tenant_id) | (Skill.tenant_id.is_(None))
+        ).order_by(Skill.name)
+    )
+    skills = skill_result.scalars().all()
+
+    return {
+        "tools": [
+            {"name": t.name, "display_name": t.display_name, "category": t.category,
+             "description": t.description[:200] if t.description else "", "icon": t.icon}
+            for t in tools
+        ],
+        "skills": [
+            {"name": s.name, "folder_name": s.folder_name, "category": s.category,
+             "description": s.description[:200] if s.description else "", "icon": s.icon}
+            for s in skills
+        ],
+    }
 
 
 @router.get("/conversations", response_model=list[ScriptConversationOut])
@@ -165,8 +243,11 @@ async def send_message(
 
     llm_model = await _get_llm_model(db, current_user)
 
+    tools_skills_ctx = await _build_tools_skills_context(db, current_user.tenant_id)
+    system_prompt = AGENT_SCRIPT_SYSTEM_PROMPT + tools_skills_ctx
+
     chat_messages = [
-        LLMMessage(role="system", content=AGENT_SCRIPT_SYSTEM_PROMPT),
+        LLMMessage(role="system", content=system_prompt),
     ]
     for m in history:
         chat_messages.append(LLMMessage(role=m.role, content=m.content))

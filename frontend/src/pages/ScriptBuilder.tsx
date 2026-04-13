@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   IconPlus, IconTrash, IconMessage, IconChevronRight, IconSend,
   IconPlayerStop, IconRobot, IconUser, IconLoader2, IconCode,
-  IconCopy, IconCheck, IconDownload, IconActivity, IconChartBar
+  IconCopy, IconCheck, IconDownload, IconActivity, IconChartBar,
+  IconTool, IconBulb
 } from '@tabler/icons-react';
 import ReactMarkdown from 'react-markdown';
 import { SyntaxHighlighter } from '../components/script-builder/SyntaxHighlighter';
@@ -12,6 +13,7 @@ import {
   type ScriptConversation,
   type ScriptMessage,
   type ScriptAnalysisResult,
+  type ScriptBuilderContext,
 } from '../services/api';
 
 function extractScript(text: string): string | null {
@@ -128,15 +130,17 @@ function Sidebar({
 }
 
 function CodePanel({
-  script, onAnalyze, analyzeResult, isAnalyzing
+  script, onAnalyze, analyzeResult, isAnalyzing, platformContext
 }: {
   script: string | null;
   onAnalyze: () => void;
   analyzeResult: (ScriptAnalysisResult & { error?: string }) | { error: string } | null;
   isAnalyzing: boolean;
+  platformContext: ScriptBuilderContext | null;
 }) {
   const [copied, setCopied] = useState(false);
   const [showAnalyze, setShowAnalyze] = useState(false);
+  const [showContext, setShowContext] = useState(false);
 
   const handleCopy = async () => {
     if (!script) return;
@@ -183,6 +187,16 @@ function CodePanel({
           <span style={{ fontWeight: 500, fontSize: '13px' }}>Agent Script</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          {platformContext && (platformContext.tools.length > 0 || platformContext.skills.length > 0) && (
+            <button
+              className="sb-code-action-btn"
+              onClick={() => setShowContext(!showContext)}
+              style={{ color: showContext ? 'var(--primary)' : undefined }}
+            >
+              <IconTool size={14} />
+              {platformContext.tools.length + platformContext.skills.length}
+            </button>
+          )}
           <button className="sb-code-action-btn" onClick={handleAnalyze} disabled={isAnalyzing}>
             <IconActivity size={14} />
             {isAnalyzing ? 'Analyzing...' : 'Analyze'}
@@ -196,6 +210,55 @@ function CodePanel({
           </button>
         </div>
       </div>
+
+      {showContext && platformContext && (
+        <div style={{
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          padding: '10px 14px',
+          maxHeight: '220px',
+          overflowY: 'auto',
+          background: 'rgba(255,255,255,0.02)',
+          fontSize: '12px',
+        }}>
+          {platformContext.tools.length > 0 && (
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <IconTool size={12} /> Available Tools ({platformContext.tools.length})
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {platformContext.tools.map(t => (
+                  <span key={t.name} title={t.description} style={{
+                    padding: '2px 8px', borderRadius: '4px', fontSize: '11px',
+                    background: 'rgba(96,165,250,0.1)', color: '#60a5fa',
+                    border: '1px solid rgba(96,165,250,0.2)',
+                  }}>
+                    {t.icon} {t.display_name || t.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {platformContext.skills.length > 0 && (
+            <div>
+              <div style={{ fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <IconBulb size={12} /> Available Skills ({platformContext.skills.length})
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {platformContext.skills.map(s => (
+                  <span key={s.folder_name} title={s.description} style={{
+                    padding: '2px 8px', borderRadius: '4px', fontSize: '11px',
+                    background: 'rgba(74,222,128,0.1)', color: '#4ade80',
+                    border: '1px solid rgba(74,222,128,0.2)',
+                  }}>
+                    {s.icon} {s.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="sb-code-body">
         <SyntaxHighlighter code={script} />
       </div>
@@ -244,10 +307,15 @@ export default function ScriptBuilder() {
   const [analyzeResult, setAnalyzeResult] = useState<(ScriptAnalysisResult & { error?: string }) | { error: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [platformContext, setPlatformContext] = useState<ScriptBuilderContext | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    scriptBuilderApi.getContext().then(setPlatformContext).catch(() => {});
+  }, []);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -515,6 +583,7 @@ export default function ScriptBuilder() {
           onAnalyze={handleAnalyze}
           analyzeResult={analyzeResult}
           isAnalyzing={isAnalyzing}
+          platformContext={platformContext}
         />
       </div>
     </div>

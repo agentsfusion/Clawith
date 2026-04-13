@@ -657,7 +657,24 @@ export interface ScriptAnalysisResult {
     suggestions: string[];
 }
 
+export interface ScriptBuilderContextItem {
+    name: string;
+    display_name?: string;
+    folder_name?: string;
+    category: string;
+    description: string;
+    icon: string;
+}
+
+export interface ScriptBuilderContext {
+    tools: ScriptBuilderContextItem[];
+    skills: ScriptBuilderContextItem[];
+}
+
 export const scriptBuilderApi = {
+    getContext: () =>
+        request<ScriptBuilderContext>('/script-builder/context'),
+
     listConversations: () =>
         request<ScriptConversation[]>('/script-builder/conversations'),
 
