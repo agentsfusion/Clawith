@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
@@ -85,16 +85,36 @@ export default function AgentFactory() {
 
     const ascriptAgents = agents.filter((a: any) => a.agent_type === 'ascript');
 
-    const handleStartFactory = () => {
+    const [dialogOpen, setDialogOpen] = useState(false);
+    const [agentDesc, setAgentDesc] = useState('');
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    useEffect(() => {
+        if (dialogOpen) setTimeout(() => textareaRef.current?.focus(), 120);
+    }, [dialogOpen]);
+
+    const findFactoryAgent = () => {
         const factoryNames = ['Agent Factory', 'ClawEvolver Factory', 'ClawEvolver Agent Factory'];
-        const factoryAgent = agents.find((a: any) =>
+        return agents.find((a: any) =>
             factoryNames.some(n => (a.name || '').toLowerCase() === n.toLowerCase())
             || a.role_description?.toLowerCase().includes('agent factory')
         );
+    };
+
+    const handleStartFactory = () => {
+        setAgentDesc('');
+        setDialogOpen(true);
+    };
+
+    const handleDialogConfirm = () => {
+        const desc = agentDesc.trim();
+        if (!desc) return;
+        setDialogOpen(false);
+        const factoryAgent = findFactoryAgent();
         if (factoryAgent) {
-            navigate(`/agents/${factoryAgent.id}/chat`);
+            navigate(`/agents/${factoryAgent.id}/chat`, { state: { initialMessage: desc } });
         } else {
-            navigate('/agents/new');
+            navigate('/agents/new', { state: { initialMessage: desc } });
         }
     };
 
@@ -336,6 +356,117 @@ export default function AgentFactory() {
                                 </div>
                             </div>
                         ))}
+                    </div>
+                </div>
+            )}
+
+            {dialogOpen && (
+                <div
+                    style={{
+                        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                        background: 'rgba(0,0,0,0.5)', display: 'flex',
+                        alignItems: 'center', justifyContent: 'center', zIndex: 10000,
+                    }}
+                    onClick={(e) => { if (e.target === e.currentTarget) setDialogOpen(false); }}
+                >
+                    <div style={{
+                        background: 'var(--bg-primary)', borderRadius: '16px',
+                        padding: '28px', width: '480px', maxWidth: '90vw',
+                        border: '1px solid var(--border-subtle)',
+                        boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+                    }}>
+                        <div style={{
+                            display: 'flex', alignItems: 'center', gap: '12px',
+                            marginBottom: '20px',
+                        }}>
+                            <div style={{
+                                width: '40px', height: '40px', borderRadius: '10px',
+                                background: 'linear-gradient(135deg, var(--primary), var(--accent-primary))',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                color: '#fff', flexShrink: 0,
+                            }}>
+                                {FactoryIcons.sparkle}
+                            </div>
+                            <div>
+                                <h3 style={{
+                                    margin: 0, fontSize: '16px', fontWeight: 600,
+                                    color: 'var(--text-primary)',
+                                }}>
+                                    {isChinese ? '创建新智能体' : 'Create New Agent'}
+                                </h3>
+                                <p style={{
+                                    margin: 0, fontSize: '12px', color: 'var(--text-tertiary)',
+                                    marginTop: '2px',
+                                }}>
+                                    {isChinese
+                                        ? '描述你想创建的智能体，Factory 会为你设计 Agent Script'
+                                        : 'Describe the agent you want, Factory will design the Agent Script'}
+                                </p>
+                            </div>
+                        </div>
+
+                        <textarea
+                            ref={textareaRef}
+                            value={agentDesc}
+                            onChange={(e) => setAgentDesc(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                    handleDialogConfirm();
+                                }
+                            }}
+                            placeholder={isChinese
+                                ? '例如：帮我创建一个客服智能体，能处理退款、查询订单状态、解答常见问题，使用飞书通知...'
+                                : 'e.g. Create a customer service agent that handles refunds, checks order status, answers FAQs, sends notifications via Feishu...'}
+                            style={{
+                                width: '100%', minHeight: '120px', padding: '12px 14px',
+                                borderRadius: 'var(--radius-md)',
+                                border: '1px solid var(--border-subtle)',
+                                background: 'var(--bg-secondary)',
+                                color: 'var(--text-primary)', fontSize: '13px',
+                                lineHeight: '1.6', resize: 'vertical',
+                                outline: 'none', fontFamily: 'inherit',
+                                boxSizing: 'border-box',
+                            }}
+                            onFocus={(e) => {
+                                (e.target as HTMLTextAreaElement).style.borderColor = 'var(--primary)';
+                            }}
+                            onBlur={(e) => {
+                                (e.target as HTMLTextAreaElement).style.borderColor = 'var(--border-subtle)';
+                            }}
+                        />
+
+                        <div style={{
+                            display: 'flex', justifyContent: 'space-between',
+                            alignItems: 'center', marginTop: '16px',
+                        }}>
+                            <span style={{
+                                fontSize: '11px', color: 'var(--text-quaternary)',
+                            }}>
+                                {isChinese ? '⌘ + Enter 快速提交' : '⌘ + Enter to submit'}
+                            </span>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                                <button
+                                    className="btn btn-secondary"
+                                    onClick={() => setDialogOpen(false)}
+                                    style={{ padding: '8px 16px', fontSize: '13px' }}
+                                >
+                                    {isChinese ? '取消' : 'Cancel'}
+                                </button>
+                                <button
+                                    className="btn btn-primary"
+                                    onClick={handleDialogConfirm}
+                                    disabled={!agentDesc.trim()}
+                                    style={{
+                                        padding: '8px 20px', fontSize: '13px', fontWeight: 600,
+                                        display: 'flex', alignItems: 'center', gap: '6px',
+                                        opacity: agentDesc.trim() ? 1 : 0.5,
+                                    }}
+                                >
+                                    {FactoryIcons.sparkle}
+                                    {isChinese ? '开始设计' : 'Start Designing'}
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             )}
