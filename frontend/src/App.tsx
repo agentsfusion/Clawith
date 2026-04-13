@@ -17,6 +17,7 @@ import EnterpriseSettings from './pages/EnterpriseSettings';
 import InvitationCodes from './pages/InvitationCodes';
 import AdminCompanies from './pages/AdminCompanies';
 import SSOEntry from './pages/SSOEntry';
+import AgentFactory from './pages/AgentFactory';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const token = useAuthStore((s) => s.token);
@@ -185,6 +186,7 @@ export default function App() {
                     <Route index element={<Navigate to="/plaza" replace />} />
                     <Route path="dashboard" element={<Dashboard />} />
                     <Route path="plaza" element={<Plaza />} />
+                    <Route path="factory" element={<AgentFactory />} />
                     <Route path="agents/new" element={<AgentCreate />} />
                     <Route path="agents/:id" element={<AgentDetail />} />
                     {/* NOTE: Chat is a tab inside AgentDetail (#chat), not a separate route.

@@ -53,7 +53,8 @@
     "newAgent": "New Digital Employee",
     "enterprise": "Company Settings",
     "language": "Language",
-    "plaza": "Plaza"
+    "plaza": "Plaza",
+    "factory": "Agent Factory"
   },
   "auth": {
     "login": "Login",

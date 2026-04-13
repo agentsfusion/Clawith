@@ -29,6 +29,7 @@ import {
     IconSwitchHorizontal,
     IconChevronRight,
     IconCheck,
+    IconBolt,
 } from '@tabler/icons-react';
 import { useAppStore } from '../stores';
 
@@ -558,6 +559,12 @@ export default function Layout() {
                         <NavLink to="/dashboard" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
                             <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.home}</span>
                             <span className="sidebar-item-text">{t('nav.dashboard')}</span>
+                        </NavLink>
+                        <NavLink to="/factory" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                <IconBolt size={14} stroke={1.5} />
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.factory', 'Agent Factory')}</span>
                         </NavLink>
                     </div>
                 </div>
