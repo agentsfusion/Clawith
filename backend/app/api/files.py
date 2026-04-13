@@ -215,6 +215,10 @@ class ImportSkillBody(BaseModel):
     skill_id: str
 
 
+class ImportSkillsBatchBody(BaseModel):
+    skill_ids: list[str]
+
+
 @router.post("/import-skill")
 async def import_skill_to_agent(
     agent_id: uuid.UUID,
@@ -261,6 +265,72 @@ async def import_skill_to_agent(
         "files_written": len(written),
         "files": written,
     }
+
+
+@router.post("/import-skills-batch")
+async def import_skills_batch_to_agent(
+    agent_id: uuid.UUID,
+    body: ImportSkillsBatchBody,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import multiple global skills into this agent's skills/ workspace folder.
+
+    Accepts an array of skill IDs and imports each one sequentially.
+    Returns per-skill results so partial failures are visible to the caller.
+    """
+    await check_agent_access(db, current_user, agent_id)
+
+    from sqlalchemy.orm import selectinload
+    from app.models.skill import Skill
+
+    if not body.skill_ids:
+        return {"results": []}
+
+    storage = get_storage()
+    results = []
+
+    for sid in body.skill_ids:
+        result_row: dict = {"skill_id": sid, "status": "ok"}
+
+        try:
+            db_result = await db.execute(
+                select(Skill).where(Skill.id == sid).options(selectinload(Skill.files))
+            )
+            skill = db_result.scalar_one_or_none()
+
+            if not skill:
+                result_row["status"] = "error"
+                result_row["error"] = "Skill not found"
+                results.append(result_row)
+                continue
+
+            result_row["skill_name"] = skill.name
+            result_row["folder_name"] = skill.folder_name
+
+            if not skill.files:
+                result_row["status"] = "error"
+                result_row["error"] = "Skill has no files"
+                results.append(result_row)
+                continue
+
+            written = []
+            for f in skill.files:
+                if ".." in f.path.split("/"):
+                    continue
+                key = f"{agent_id}/skills/{skill.folder_name}/{f.path}"
+                await storage.write(key, f.content)
+                written.append(f.path)
+
+            result_row["files_written"] = len(written)
+            result_row["files"] = written
+        except Exception as exc:
+            result_row["status"] = "error"
+            result_row["error"] = str(exc)
+
+        results.append(result_row)
+
+    return {"results": results}
 
 
 # Separate router for file uploads (binary) since we need UploadFile
