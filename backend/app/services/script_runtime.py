@@ -747,16 +747,36 @@ async def get_script_for_agent(agent_id: str | uuid.UUID) -> str | None:
     return None
 
 
-async def build_evolver_context(agent_id: uuid.UUID, agent_name: str) -> tuple[str, ScriptState | None]:
+async def build_evolver_context(
+    agent_id: uuid.UUID,
+    agent_name: str,
+    session_id: str = "",
+) -> tuple[str, ScriptState | None]:
     script_text = await get_script_for_agent(agent_id)
     if not script_text:
         return "", None
 
     parsed = parse_script(script_text)
 
-    state = await load_state(agent_id)
+    is_new = False
+    state = await load_state(agent_id, session_id)
     if state is None:
         state = init_state(parsed)
+        is_new = True
 
+    topic_before = state.current_topic
     system_prompt = build_system_prompt(parsed, state)
+
+    if is_new or state.current_topic != topic_before or state.pending_actions:
+        await save_state(agent_id, state, session_id)
+
     return system_prompt, state
+
+
+async def get_evolver_welcome(agent_id: uuid.UUID) -> str | None:
+    script_text = await get_script_for_agent(agent_id)
+    if not script_text:
+        return None
+    parsed = parse_script(script_text)
+    welcome = parsed.system_messages.get("welcome", "")
+    return welcome if welcome else None

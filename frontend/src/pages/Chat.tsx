@@ -46,7 +46,7 @@ interface ToolCall {
 }
 
 interface ScriptTraceEntry {
-    phase: 'input' | 'output';
+    phase: 'input' | 'output' | 'init';
     current_topic?: string;
     topic_description?: string;
     variables?: Record<string, any>;
@@ -60,6 +60,7 @@ interface ScriptTraceEntry {
     changes?: string[];
     new_topic?: string;
     new_variables?: Record<string, any>;
+    welcome_source?: 'script' | 'agent';
 }
 
 interface Message {
@@ -636,7 +637,11 @@ export default function Chat() {
                     setMessages(prev => {
                         const updated = [...prev];
                         if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
-                            updated[updated.length - 1] = { role: 'assistant', content: data.content, toolCalls, thinking };
+                            const existing = updated[updated.length - 1];
+                            updated[updated.length - 1] = {
+                                role: 'assistant', content: data.content, toolCalls, thinking,
+                                ...(existing.scriptTrace ? { scriptTrace: existing.scriptTrace } : {}),
+                            };
                         } else {
                             updated.push({ role: 'assistant', content: data.content, toolCalls, thinking });
                         }
@@ -916,11 +921,48 @@ export default function Chat() {
                                                 }}>
                                                     <div style={{
                                                         fontWeight: 600, fontSize: '11px', textTransform: 'uppercase',
-                                                        color: trace.phase === 'input' ? 'rgba(59, 130, 246, 0.85)' : 'rgba(234, 179, 8, 0.85)',
+                                                        color: trace.phase === 'init' ? 'rgba(34, 197, 94, 0.85)' : trace.phase === 'input' ? 'rgba(59, 130, 246, 0.85)' : 'rgba(234, 179, 8, 0.85)',
                                                         marginBottom: '4px', letterSpacing: '0.5px',
                                                     }}>
-                                                        {trace.phase === 'input' ? '\u25B6 Input State' : '\u25C0 Output State'}
+                                                        {trace.phase === 'init' ? '\u2726 Session Init' : trace.phase === 'input' ? '\u25B6 Input State' : '\u25C0 Output State'}
                                                     </div>
+
+                                                    {trace.phase === 'init' && (
+                                                        <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
+                                                            <div style={{ display: 'flex', gap: '4px', marginBottom: '3px' }}>
+                                                                <span style={{ color: 'var(--text-tertiary)', minWidth: '70px' }}>Topic:</span>
+                                                                <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                                                                    {trace.current_topic || '(none)'}
+                                                                </span>
+                                                            </div>
+                                                            {trace.welcome_source && (
+                                                                <div style={{ display: 'flex', gap: '4px', marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', minWidth: '70px' }}>Welcome:</span>
+                                                                    <span style={{
+                                                                        display: 'inline-block',
+                                                                        background: trace.welcome_source === 'script' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
+                                                                        border: `1px solid ${trace.welcome_source === 'script' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(156, 163, 175, 0.3)'}`,
+                                                                        borderRadius: '4px', padding: '0 6px', fontSize: '10px', fontWeight: 600,
+                                                                        color: trace.welcome_source === 'script' ? 'rgba(34, 197, 94, 0.85)' : 'rgba(156, 163, 175, 0.85)',
+                                                                    }}>
+                                                                        {trace.welcome_source === 'script' ? 'From Agent Script' : 'From Agent Config'}
+                                                                    </span>
+                                                                </div>
+                                                            )}
+                                                            {trace.variables && Object.keys(trace.variables).length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Initial Variables:</span>
+                                                                    {Object.entries(trace.variables).map(([k, v]) => (
+                                                                        <div key={k} style={{ marginLeft: '8px' }}>
+                                                                            <code style={{ background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                            {' = '}
+                                                                            <span style={{ color: 'var(--text-tertiary)' }}>{JSON.stringify(v)}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
 
                                                     {trace.phase === 'input' && (
                                                         <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
