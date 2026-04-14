@@ -1673,7 +1673,7 @@ function SkillsTab() {
     const [batchSkills, setBatchSkills] = useState<any[]>([]);
     const [batchSelected, setBatchSelected] = useState<Set<number>>(new Set());
     const [batchUploading, setBatchUploading] = useState(false);
-    const [batchResult, setBatchResult] = useState<{ok: number; failed: number; errors: {name: string; error: string}[]} | null>(null);
+    const [batchResult, setBatchResult] = useState<{ok: number; failed: number; updated: number; errors: {name: string; error: string}[]} | null>(null);
     const batchDirInputRef = useRef<HTMLInputElement | null>(null);
 
     const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -1768,6 +1768,16 @@ function SkillsTab() {
             candidates.forEach((c, i) => { if (c.valid) validIndices.add(i); });
             setBatchSelected(validIndices);
             setBatchResult(null);
+
+            try {
+                const existing = await skillApi.list();
+                const existingFolders = new Set(existing.map((s: any) => s.folder_name));
+                const updated = candidates.map(c => ({
+                    ...c,
+                    duplicate: c.valid && existingFolders.has(c.folderName),
+                }));
+                setBatchSkills(updated);
+            } catch {}
         };
         input.click();
     };
@@ -1789,16 +1799,21 @@ function SkillsTab() {
         try {
             const res = await skillApi.batchUpload(selected);
             const results = res.results || [];
-            const ok = results.filter((r: any) => r.status === 'ok').length;
-            const failed = results.filter((r: any) => r.status !== 'ok');
+            const ok = results.filter((r: any) => r.status === 'ok' || r.status === 'updated').length;
+            const updated = results.filter((r: any) => r.status === 'updated').length;
+            const failed = results.filter((r: any) => r.status === 'error');
             setBatchResult({
                 ok,
                 failed: failed.length,
+                updated,
                 errors: failed.map((r: any) => ({ name: r.name || r.folder_name || 'Unknown', error: r.error || 'Failed' })),
             });
             setRefreshKey(k => k + 1);
             if (failed.length === 0) {
-                showToast(t('enterprise.tools.batchSuccess', { count: ok }));
+                const msg = updated > 0
+                    ? t('enterprise.tools.batchSuccessWithUpdate', { count: ok, updated })
+                    : t('enterprise.tools.batchSuccess', { count: ok });
+                showToast(msg);
                 setTimeout(() => {
                     setShowBatchModal(false);
                     setBatchSkills([]);
@@ -2338,7 +2353,9 @@ function SkillsTab() {
                                                     {skill.fileCount} files
                                                 </div>
                                             </div>
-                                            {skill.valid ? (
+                                            {skill.valid && skill.duplicate ? (
+                                                <span style={{ fontSize: '12px', color: '#ff9500', fontWeight: 500 }}>↻ Will update</span>
+                                            ) : skill.valid ? (
                                                 <span style={{ fontSize: '12px', color: '#34c759', fontWeight: 500 }}>✓ Valid</span>
                                             ) : (
                                                 <span style={{ fontSize: '12px', color: 'var(--error, #ff3b30)', fontWeight: 500 }}>✗ {skill.error}</span>
