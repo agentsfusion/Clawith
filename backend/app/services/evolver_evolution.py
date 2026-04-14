@@ -14,11 +14,102 @@ from app.services.llm_client import create_llm_client, LLMMessage, get_max_token
 logger = logging.getLogger(__name__)
 
 
+async def _get_agent_available_tools(agent_id: str) -> list[dict]:
+    from app.models.tool import Tool, AgentTool
+    async with async_session() as db:
+        all_tools_r = await db.execute(select(Tool).where(Tool.enabled == True))
+        all_tools = all_tools_r.scalars().all()
+
+        agent_tools_r = await db.execute(
+            select(AgentTool).where(AgentTool.agent_id == agent_id)
+        )
+        assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
+
+        result = []
+        for t in all_tools:
+            tid = str(t.id)
+            at = assignments.get(tid)
+            enabled = at.enabled if at else t.is_default
+            if enabled:
+                result.append({"name": t.name, "category": t.category or "", "description": (t.description or "")[:120]})
+        return result
+
+
+async def _get_agent_available_skills(agent_id: str) -> list[dict]:
+    from app.services.storage.factory import get_storage
+    storage = get_storage()
+    prefix = f"{agent_id}/"
+    skills = []
+    try:
+        entries = await storage.list(f"{prefix}skills")
+    except Exception:
+        return []
+
+    for entry in sorted(entries, key=lambda e: (not e.is_dir, e.name)):
+        if entry.name.startswith("."):
+            continue
+        if entry.is_dir:
+            skill_key = f"{prefix}skills/{entry.name}/SKILL.md"
+            if not await storage.exists(skill_key):
+                skill_key = f"{prefix}skills/{entry.name}/skill.md"
+            if await storage.exists(skill_key):
+                try:
+                    content = (await storage.read(skill_key)).strip()
+                    from app.services.agent_context import _parse_skill_frontmatter
+                    name, desc = _parse_skill_frontmatter(content, entry.name)
+                    skills.append({"name": name, "folder": entry.name, "description": desc})
+                except Exception:
+                    skills.append({"name": entry.name, "folder": entry.name, "description": ""})
+        elif entry.name.endswith(".md"):
+            stem = entry.name[:-3]
+            read_key = f"{prefix}skills/{entry.name}"
+            try:
+                content = (await storage.read(read_key)).strip()
+                from app.services.agent_context import _parse_skill_frontmatter
+                name, desc = _parse_skill_frontmatter(content, stem)
+                skills.append({"name": name, "folder": stem, "description": desc})
+            except Exception:
+                skills.append({"name": stem, "folder": stem, "description": ""})
+    return skills
+
+
+def _build_available_resources_section(tools: list[dict], skills: list[dict]) -> str:
+    if not tools and not skills:
+        return ""
+
+    lines = ["\n## Available Tools & Skills (STRICT CONSTRAINT)"]
+    lines.append("The evolved script MUST ONLY reference tools and skills from the lists below.")
+    lines.append("Do NOT invent, assume, or reference any tool or skill not listed here.")
+    lines.append("If functionality requires a tool/skill that is not available, note it in your explanation but do NOT add it to the script.\n")
+
+    if tools:
+        lines.append("### Installed Tools")
+        for t in tools:
+            desc = f" — {t['description']}" if t['description'] else ""
+            lines.append(f"- `tool://{t['name']}`{desc}")
+        lines.append("")
+
+    if skills:
+        lines.append("### Installed Skills")
+        for s in skills:
+            desc = f" — {s['description']}" if s['description'] else ""
+            lines.append(f"- `skill://{s['folder']}`{desc}")
+        lines.append("")
+
+    if not tools:
+        lines.append("### Installed Tools\n- (none)\n")
+    if not skills:
+        lines.append("### Installed Skills\n- (none)\n")
+
+    return "\n".join(lines)
+
+
 def build_evolution_prompt(
     current_script: str,
     direction: str,
     past_knowledge: list[str],
     open_feedbacks: list[dict],
+    available_resources: str = "",
 ) -> str:
     prompt = f"""You are an expert Salesforce Agentforce Agent Script evolver. Your task is to evolve and improve an existing Agent Script based on a specific evolution direction.
 
@@ -30,6 +121,8 @@ def build_evolution_prompt(
 {current_script}
 ```
 """
+
+    prompt += available_resources
 
     if past_knowledge:
         prompt += "\n## Past Evolution Knowledge & Learnings\n"
@@ -50,7 +143,8 @@ def build_evolution_prompt(
 3. Analyze the current script against the evolution direction: "{direction}"
 4. Make targeted improvements that align with the evolution direction
 5. Preserve all existing functionality unless it conflicts with the direction
-6. Explain your reasoning and what you changed
+6. ONLY use tools and skills listed in "Available Tools & Skills" — never reference unlisted ones
+7. Explain your reasoning and what you changed
 
 ## Output Format
 First, explain what you analyzed from past knowledge and what improvements you're making and why.
@@ -127,7 +221,11 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
         open_feedback_rows = feedback_result2.scalars().all()
         open_feedback_ids = [f.id for f in open_feedback_rows]
 
-        system_prompt = build_evolution_prompt(current_script, direction, past_knowledge, open_feedbacks)
+        available_tools = await _get_agent_available_tools(agent_id)
+        available_skills = await _get_agent_available_skills(agent_id)
+        available_resources = _build_available_resources_section(available_tools, available_skills)
+
+        system_prompt = build_evolution_prompt(current_script, direction, past_knowledge, open_feedbacks, available_resources)
 
         llm_model_result = await db.execute(
             select(LLMModel)
