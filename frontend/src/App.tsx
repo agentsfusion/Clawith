@@ -166,7 +166,7 @@ export default function App() {
     if (loading) {
         return (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-tertiary)' }}>
-                加载中...
+                Loading...
             </div>
         );
     }

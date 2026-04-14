@@ -397,7 +397,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         logger.error(f"[Feishu] Failed to download post image {_ik}: {_dl_err}")
             # Build final text with embedded images
             if not _extracted_text and _image_markers:
-                _extracted_text = "[用户发送了图片，请看图片内容]"
+                _extracted_text = "[User sent an image, please see the image content]"
             _final_content = _extracted_text
             if _image_markers:
                 _final_content += "\n" + "\n".join(_image_markers)
@@ -425,7 +425,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             # Detect task creation intent
             task_match = re.search(
-                r'(?:创建|新建|添加|建一个|帮我建)(?:一个)?(?:任务|待办|todo)[，,：:\s]*(.+)',
+                r'(?:create|add)(?:a)?(?:task|todo)[，,：:\s]*(.+)',
                 user_text, re.IGNORECASE
             )
 
@@ -588,7 +588,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             llm_user_text = user_text
             if sender_name:
                 id_part = f" (ID: {sender_user_id_feishu})" if sender_user_id_feishu else ""
-                llm_user_text = f"[发送者: {sender_name}{id_part}] {user_text}"
+                llm_user_text = f"[Sender: {sender_name}{id_part}] {user_text}"
 
             # ── Inject recent uploaded file context ──────────────────────────
             # Check uploads directory for recently modified files (within 30 min).
@@ -629,9 +629,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     _ws_rel_path = f"workspace/{_recent_file_path}"
                     llm_user_text = (
                         llm_user_text
-                        + f"\n\n[系统提示：用户刚上传了文件，路径为工作区 `{_ws_rel_path}`。"
-                        f"如果用户的指令涉及这篇文章、这个文件、这份文档等，"
-                        f"请立即调用 read_document(path=\"{_ws_rel_path}\") 读取内容，不要先用 list_files 验证，直接读取即可。]"
+                        + f"\n\n[System hint: User just uploaded a file, path is workspace `{_ws_rel_path}`. "
+                        f"If the user's instruction involves this article, file, or document, "
+                        f"please call read_document(path=\"{_ws_rel_path}\") immediately to read the content. Do not verify with list_files first — just read it directly.]"
                     )
                     logger.info(f"[Feishu] Injected recent file hint: {_ws_rel_path}")
             except Exception as _fe:
@@ -672,9 +672,10 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         _dl_url = f"{_base_url}/api/agents/{agent_id}/files/download?path={_rel}"
                         _fallback_parts.append(f"📎 {_fp.name}\n🔗 {_dl_url}")
                     _fallback_parts.append(
-                        f"⚠️ 文件直接发送失败（{_upload_err}）\n"
-                        "如需 Agent 直接发飞书文件，请在飞书开放平台为应用开启 "
-                        "`im:resource`（即 `im:resource:upload`）权限并发布版本。"
+                        f"⚠️ Failed to send file directly ({_upload_err})\n"
+                        "To enable Agent to send Feishu files directly, please enable the "
+                        "`im:resource` (i.e. `im:resource:upload`) permission for the app "
+                        "on the Feishu Open Platform and publish a new version."
                     )
                     await feishu_service.send_message(
                         config.app_id, config.app_secret,
@@ -699,7 +700,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 "config": {
                     "streaming_mode": True,
                     "locales": ["zh_cn", "en_us"],
-                    "summary": {"content": "思考中..."},
+                    "summary": {"content": "Thinking..."},
                 },
                 "body": {
                     "elements": [
@@ -724,7 +725,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 cardkit_card_id = None
                 init_card_fallback = {
                     "config": {"update_multi": True},
-                    "header": {"template": "blue", "title": {"content": "思考中...", "tag": "plain_text"}},
+                    "header": {"template": "blue", "title": {"content": "Thinking...", "tag": "plain_text"}},
                     "elements": [{"tag": "markdown", "content": "..."}],
                 }
                 try:
@@ -741,7 +742,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             _last_flush_time = time.time()
             _FLUSH_INTERVAL_CARDKIT = 0.5
             _FLUSH_INTERVAL_PATCH = 1.0
-            _agent_name = agent_obj.name if agent_obj else "AI 回复"
+            _agent_name = agent_obj.name if agent_obj else "AI Reply"
             _tool_status_running: dict[str, str] = {}
             _tool_status_done: list[str] = []
             _patch_queue = _SerialPatchQueue()
@@ -1047,7 +1048,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             # Log activity
             from app.services.activity_logger import log_activity
-            await log_activity(agent_id, "chat_reply", f"回复了飞书消息: {reply_text[:80]}", detail={"channel": "feishu", "user_text": user_text[:200], "reply": reply_text[:500]})
+            await log_activity(agent_id, "chat_reply", f"Replied to Feishu message: {reply_text[:80]}", detail={"channel": "feishu", "user_text": user_text[:200], "reply": reply_text[:500]})
 
             # If task creation detected, create a real Task record
             if task_match:
@@ -1075,7 +1076,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         await db.commit()
                         await db.refresh(task_obj)
                         _asyncio.create_task(execute_task(task_obj.id, agent_id))
-                        reply_text += f"\n\n📋 已同步创建任务到任务面板：【{task_title}】"
+                        reply_text += f"\n\n📋 Task synced to task panel: [{task_title}]"
                         logger.info(f"[Feishu] Created task: {task_title}")
                     except Exception as e:
                         logger.error(f"[Feishu] Failed to create task: {e}")
@@ -1090,11 +1091,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
 IMPORT_RE = None  # lazy sentinel
 _FILE_ACK_MESSAGES = [
-    "收到你的文件，请问有什么需要帮忙的？",
-    "文件收到了！你想让我怎么处理它？",
-    "好的，我已经收到这份文件，请告诉我你的需求~",
-    "已收到文件，随时准备好为你处理！",
-    "收到！请问希望我对这份文件做什么？",
+    "Received your file, how can I help you with it?",
+    "File received! How would you like me to process it?",
+    "Got the file, please let me know what you need~",
+    "File received, ready to help!",
+    "Received! What would you like me to do with this file?",
 ]
 
 
@@ -1146,7 +1147,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         logger.info(f"[Feishu] Saved {msg_type} to {save_path} ({len(file_bytes)} bytes)")
     except Exception as e:
         logger.error(f"[Feishu] Failed to download {msg_type}: {e}")
-        err_tip = "抱歉，文件下载失败。可能原因：机器人缺少 `im:resource` 权限（文件读取）。\n请在飞书开放平台 → 权限管理 → 批量导入权限 JSON → 重新发布机器人版本后重试。"
+        err_tip = "Sorry, file download failed. Possible cause: the bot is missing the `im:resource` permission (file read).\nPlease go to Feishu Open Platform → Permission Management → Bulk Import Permission JSON → Republish the bot version and try again."
         try:
             import json as _j
             if chat_type == "group" and chat_id:
@@ -1235,7 +1236,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         _sess = await find_or_create_channel_session(
             db=db, agent_id=agent_id, user_id=_file_user_id,
             external_conv_id=conv_id, source_channel="feishu",
-            first_message_title=f"[文件] {filename}",
+            first_message_title=f"[File] {filename}",
             is_group=_is_group_file,
             group_name=f"Feishu Group {chat_id[:8]}" if _is_group_file else None,
         )
@@ -1246,7 +1247,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
             import base64 as _b64_img
             _b64_data = _b64_img.b64encode(file_bytes).decode("ascii")
             _image_marker = f"[image_data:data:image/jpeg;base64,{_b64_data}]"
-            user_msg_content = f"[用户发送了图片]\n{_image_marker}"
+            user_msg_content = f"[User sent an image]\n{_image_marker}"
         else:
             user_msg_content = f"[file:{filename}]"
         db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user",
@@ -1277,7 +1278,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         _agent_name = agent_obj.name if agent_obj else "AI"
         _init_card = {
             "config": {"update_multi": True},
-            "header": {"template": "blue", "title": {"content": "识别图片中...", "tag": "plain_text"}},
+            "header": {"template": "blue", "title": {"content": "Recognizing image...", "tag": "plain_text"}},
             "elements": [{"tag": "markdown", "content": "..."}]
         }
         _patch_msg_id = None
@@ -1408,7 +1409,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
 
         # Log activity
         from app.services.activity_logger import log_activity
-        await log_activity(agent_id, "chat_reply", f"回复了飞书图片消息: {reply_text[:80]}", detail={"channel": "feishu", "type": "image"})
+        await log_activity(agent_id, "chat_reply", f"Replied to Feishu image message: {reply_text[:80]}", detail={"channel": "feishu", "type": "image"})
         return
 
     # For non-image files: send simple ack as before
@@ -1481,7 +1482,7 @@ async def _call_agent_llm(
     agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = agent_result.scalar_one_or_none()
     if not agent:
-        return "⚠️ 数字员工未找到"
+        return "⚠️ Digital employee not found"
 
     if is_agent_expired(agent):
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
@@ -1511,7 +1512,7 @@ async def _call_agent_llm(
         logger.warning(f"[Channel] Primary model unavailable, using fallback: {model.model}")
 
     if not model:
-        return f"⚠️ {agent.name} 未配置 LLM 模型，请在管理后台设置。"
+        return f"⚠️ {agent.name} has no LLM model configured. Please set one in the admin panel."
 
     # Build conversation messages (without system prompt — call_llm adds it)
     messages: list[dict] = []
@@ -1619,4 +1620,4 @@ async def _call_agent_llm(
             except Exception as e2:
                 traceback.print_exc()
                 return f"⚠️ Model error: Primary: {str(e)[:80]} | Fallback: {str(e2)[:80]}"
-        return f"⚠️ 调用模型出错: {error_msg[:150]}"
+        return f"⚠️ Model call error: {error_msg[:150]}"

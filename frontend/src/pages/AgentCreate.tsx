@@ -216,17 +216,17 @@ export default function AgentCreate() {
         const errors: Record<string, string> = {};
         const name = form.name.trim();
         if (!name) {
-            errors.name = t('wizard.errors.nameRequired', '智能体名称不能为空');
+                    errors.name = t('wizard.errors.nameRequired', 'Agent name cannot be empty');
         } else if (name.length < 2) {
             errors.name = t('wizard.errors.nameTooShort', '名称至少需要 2 个字符');
         } else if (name.length > 100) {
             errors.name = t('wizard.errors.nameTooLong', '名称不能超过 100 个字符');
         }
         if (form.role_description.length > 500) {
-            errors.role_description = t('wizard.errors.roleDescTooLong', '角色描述不能超过 500 个字符（当前 {{count}} 字符）').replace('{{count}}', String(form.role_description.length));
+            errors.role_description = t('wizard.errors.roleDescTooLong', 'Role description cannot exceed 500 characters (currently {{count}} characters)').replace('{{count}}', String(form.role_description.length));
         }
         if (form.max_tokens_per_day && (isNaN(Number(form.max_tokens_per_day)) || Number(form.max_tokens_per_day) <= 0)) {
-            errors.max_tokens_per_day = t('wizard.errors.tokenLimitInvalid', '请输入有效的正整数');
+            errors.max_tokens_per_day = t('wizard.errors.tokenLimitInvalid', 'Please enter a valid positive integer');
         }
         if (form.max_tokens_per_month && (isNaN(Number(form.max_tokens_per_month)) || Number(form.max_tokens_per_month) <= 0)) {
             errors.max_tokens_per_month = t('wizard.errors.tokenLimitInvalid', '请输入有效的正整数');
@@ -277,14 +277,14 @@ export default function AgentCreate() {
         return (
             <div>
                 <div className="page-header">
-                    <h1 className="page-title">{t('openclaw.created', 'OpenClaw Agent Created')}</h1>
+                    <h1 className="page-title">{t('openclaw.created', 'Personal Assistant Agent Created')}</h1>
                 </div>
                 <div className="card" style={{ maxWidth: '640px' }}>
                     <div style={{ textAlign: 'center', padding: '20px 0' }}>
                         <div style={{ fontSize: '32px', marginBottom: '12px' }}>&#x2713;</div>
                         <h3 style={{ fontWeight: 600, marginBottom: '8px' }}>{agent.name}</h3>
                         <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '24px' }}>
-                            {t('openclaw.createdDesc2', 'Your OpenClaw agent has been registered. Copy the instruction below and send it to your OpenClaw agent to complete the setup.')}
+                            {t('openclaw.createdDesc2', 'Your Personal Assistant agent has been registered. Copy the instruction below and send it to your Personal Assistant agent to complete the setup.')}
                         </p>
                     </div>
 
@@ -294,24 +294,24 @@ export default function AgentCreate() {
                             {t('openclaw.setupInstruction', 'Setup Instruction')}
                         </label>
                         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
-                            {t('openclaw.setupInstructionDesc', 'Copy and send this to your OpenClaw agent. It will configure itself automatically.')}
+                            {t('openclaw.setupInstructionDesc', 'Copy and send this to your Personal Assistant agent. It will configure itself automatically.')}
                         </p>
                         <div style={{ position: 'relative' }}>
                             <pre style={{
                                 padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px',
                                 fontSize: '11px', lineHeight: 1.6, overflow: 'auto', maxHeight: '280px',
                                 border: '1px solid var(--border-default)', whiteSpace: 'pre-wrap',
-                            }}>{`Please create a skill file at skills/clawith_sync.md with the following content, then add "Check Clawith inbox using the clawith_sync skill and process any pending messages" to your HEARTBEAT.md:
+                            }}>{`Please create a skill file at skills/clawith_sync.md with the following content, then add "Check AgentsFusion inbox using the clawith_sync skill and process any pending messages" to your HEARTBEAT.md:
 
 ---
 name: clawith_sync
-description: Sync with Clawith platform — check inbox, submit results, and send messages.
+description: Sync with AgentsFusion platform — check inbox, submit results, and send messages.
 ---
 
-# Clawith Sync
+# AgentsFusion Sync
 
 ## When to use
-Check for new messages from the Clawith platform during every heartbeat cycle.
+Check for new messages from the AgentsFusion platform during every heartbeat cycle.
 You can also proactively send messages to people and agents in your relationships.
 
 ## Instructions
@@ -324,7 +324,7 @@ Make an HTTP GET request:
 The response contains a \`messages\` array. Each message includes:
 - \`id\` — unique message ID (use this for reporting)
 - \`content\` — the message text
-- \`sender_user_name\` — name of the Clawith user who sent it
+- \`sender_user_name\` — name of the AgentsFusion user who sent it
 - \`sender_user_id\` — unique ID of the sender
 - \`conversation_id\` — the conversation this message belongs to
 - \`history\` — array of previous messages in this conversation for context
@@ -357,7 +357,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                     <LinearCopyButton
                                         className="btn btn-ghost"
                                         style={{ position: 'absolute', top: '4px', right: '4px', fontSize: '11px', minWidth: '60px' }}
-                                        textToCopy={`Please create a skill file at skills/clawith_sync.md with the following content, then add "Check Clawith inbox using the clawith_sync skill and process any pending messages" to your HEARTBEAT.md:\n\n---\nname: clawith_sync\ndescription: Sync with Clawith platform — check inbox, submit results, and send messages.\n---\n\n# Clawith Sync\n\n## When to use\nCheck for new messages from the Clawith platform during every heartbeat cycle.\nYou can also proactively send messages to people and agents in your relationships.\n\n## Instructions\n\n### 1. Check inbox\nMake an HTTP GET request:\n- URL: ${window.location.origin}/api/gateway/poll\n- Header: X-Api-Key: ${createdApiKey}\n\nThe response contains a \`messages\` array. Each message includes:\n- \`id\` — unique message ID (use this for reporting)\n- \`content\` — the message text\n- \`sender_user_name\` — name of the Clawith user who sent it\n- \`sender_user_id\` — unique ID of the sender\n- \`conversation_id\` — the conversation this message belongs to\n- \`history\` — array of previous messages in this conversation for context\n\nThe response also contains a \`relationships\` array describing your colleagues:\n- \`name\` — the person or agent name\n- \`type\` — "human" or "agent"\n- \`role\` — relationship type (e.g. collaborator, supervisor)\n- \`channels\` — available communication channels (e.g. ["feishu"], ["agent"])\n\n**IMPORTANT**: Use the \`history\` array to understand conversation context before replying.\nDifferent \`sender_user_name\` values mean different people — address them accordingly.\n\n### 2. Report results\nFor each completed message, make an HTTP POST request:\n- URL: ${window.location.origin}/api/gateway/report\n- Header: X-Api-Key: ${createdApiKey}\n- Header: Content-Type: application/json\n- Body: {"message_id": "<id from the message>", "result": "<your response>"}\n\n### 3. Send a message to someone\nTo proactively contact a person or agent, make an HTTP POST request:\n- URL: ${window.location.origin}/api/gateway/send-message\n- Header: X-Api-Key: ${createdApiKey}\n- Header: Content-Type: application/json\n- Body: {"target": "<name of person or agent>", "content": "<your message>"}\n\nThe system auto-detects the best channel. For agents, the reply appears in your next poll.\nFor humans, the message is delivered via their available channel (e.g. Feishu).`}
+                                        textToCopy={`Please create a skill file at skills/clawith_sync.md with the following content, then add "Check AgentsFusion inbox using the clawith_sync skill and process any pending messages" to your HEARTBEAT.md:\n\n---\nname: clawith_sync\ndescription: Sync with AgentsFusion platform — check inbox, submit results, and send messages.\n---\n\n# AgentsFusion Sync\n\n## When to use\nCheck for new messages from the AgentsFusion platform during every heartbeat cycle.\nYou can also proactively send messages to people and agents in your relationships.\n\n## Instructions\n\n### 1. Check inbox\nMake an HTTP GET request:\n- URL: ${window.location.origin}/api/gateway/poll\n- Header: X-Api-Key: ${createdApiKey}\n\nThe response contains a \`messages\` array. Each message includes:\n- \`id\` — unique message ID (use this for reporting)\n- \`content\` — the message text\n- \`sender_user_name\` — name of the AgentsFusion user who sent it\n- \`sender_user_id\` — unique ID of the sender\n- \`conversation_id\` — the conversation this message belongs to\n- \`history\` — array of previous messages in this conversation for context\n\nThe response also contains a \`relationships\` array describing your colleagues:\n- \`name\` — the person or agent name\n- \`type\` — "human" or "agent"\n- \`role\` — relationship type (e.g. collaborator, supervisor)\n- \`channels\` — available communication channels (e.g. ["feishu"], ["agent"])\n\n**IMPORTANT**: Use the \`history\` array to understand conversation context before replying.\nDifferent \`sender_user_name\` values mean different people — address them accordingly.\n\n### 2. Report results\nFor each completed message, make an HTTP POST request:\n- URL: ${window.location.origin}/api/gateway/report\n- Header: X-Api-Key: ${createdApiKey}\n- Header: Content-Type: application/json\n- Body: {"message_id": "<id from the message>", "result": "<your response>"}\n\n### 3. Send a message to someone\nTo proactively contact a person or agent, make an HTTP POST request:\n- URL: ${window.location.origin}/api/gateway/send-message\n- Header: X-Api-Key: ${createdApiKey}\n- Header: Content-Type: application/json\n- Body: {"target": "<name of person or agent>", "content": "<your message>"}\n\nThe system auto-detects the best channel. For agents, the reply appears in your next poll.\nFor humans, the message is delivered via their available channel (e.g. Feishu).`}
                                         label={t('common.copy', 'Copy')}
                                         copiedLabel="Copied"
                                     />
@@ -410,7 +410,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                 }}
             >
                 <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{t('openclaw.nativeTitle', 'Platform Hosted')}</div>
-                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('openclaw.nativeDesc', 'Full agent running on Clawith platform')}</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('openclaw.nativeDesc', 'Full agent running on AgentsFusion platform')}</div>
             </div>
             <div
                 onClick={() => { setAgentType('openclaw'); setStep(0); }}
@@ -426,8 +426,8 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                     background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
                     letterSpacing: '0.5px',
                 }}>Lab</span>
-                <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{t('openclaw.openclawTitle', 'Link OpenClaw')}</div>
-                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('openclaw.openclawDesc', 'Connect your existing OpenClaw agent')}</div>
+                <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{t('openclaw.openclawTitle', 'Link Personal Assistant')}</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('openclaw.openclawDesc', 'Connect your existing Personal Assistant agent')}</div>
             </div>
         </div>
     );
@@ -450,21 +450,21 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
 
                 <div className="card" style={{ maxWidth: '640px' }}>
                     <h3 style={{ marginBottom: '6px', fontWeight: 600, fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        {t('openclaw.basicTitle', 'Link OpenClaw Agent')}
+                        {t('openclaw.basicTitle', 'Link Personal Assistant Agent')}
                         <span style={{
                             fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
                             background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
                         }}>Lab</span>
                     </h3>
                     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px' }}>
-                        {t('openclaw.basicDesc', 'Give your OpenClaw agent a name and description. The LLM model, personality, and skills are configured on your OpenClaw instance.')}
+                        {t('openclaw.basicDesc', 'Give your Personal Assistant agent a name and description. The LLM model, personality, and skills are configured on your Personal Assistant instance.')}
                     </p>
 
                     <div className="form-group">
                         <label className="form-label">{t('agent.fields.name')} *</label>
                         <input className={`form-input${fieldErrors.name ? ' input-error' : ''}`} value={form.name}
                             onChange={(e) => { setForm({ ...form, name: e.target.value }); clearFieldError('name'); }}
-                            placeholder={t('openclaw.namePlaceholder', 'e.g. My OpenClaw Bot')} autoFocus />
+                            placeholder={t('openclaw.namePlaceholder', 'e.g. My Assistant Bot')} autoFocus />
                         {fieldErrors.name && <div style={{ color: 'var(--error)', fontSize: '12px', marginTop: '4px' }}>{fieldErrors.name}</div>}
                     </div>
                     <div className="form-group">
