@@ -45,6 +45,49 @@ from app.config import get_settings
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
 
+# ─── User-scoped file isolation ──────────────────────────────────
+# Files matching these prefixes are stored per-user under {agent_id}/users/{user_id}/
+USER_SCOPED_PREFIXES = frozenset({"memory/", "focus.md", "task_history.md"})
+
+
+def _is_user_scoped_path(rel_path: str) -> bool:
+    """Check if a relative path should be stored per-user."""
+    stripped = rel_path.strip("/")
+    for prefix in USER_SCOPED_PREFIXES:
+        if stripped == prefix or stripped.startswith(prefix):
+            return True
+    return False
+
+
+def resolve_storage_key(agent_id: uuid.UUID, user_id: uuid.UUID | None, rel_path: str) -> str:
+    """Resolve the actual storage key for a write operation.
+
+    For user-scoped files (memory/, focus.md, task_history.md), returns
+    {agent_id}/users/{user_id}/{rel_path} when user_id is provided.
+    Otherwise returns {agent_id}/{rel_path} (global shared path).
+    """
+    stripped = rel_path.strip("/")
+    if user_id is not None and _is_user_scoped_path(rel_path):
+        return f"{agent_id}/users/{user_id}/{stripped}"
+    return f"{agent_id}/{stripped}"
+
+
+async def resolve_read_key(agent_id: uuid.UUID, user_id: uuid.UUID | None, rel_path: str) -> str:
+    """Resolve the actual storage key for a read operation.
+
+    For user-scoped files, tries user-specific path first. If it doesn't
+    exist, falls back to the global shared path.
+    Always returns a key (even if file doesn't exist).
+    """
+    stripped = rel_path.strip("/")
+    if user_id is not None and _is_user_scoped_path(rel_path):
+        user_key = f"{agent_id}/users/{user_id}/{stripped}"
+        storage = _storage()
+        if await storage.exists(user_key):
+            return user_key
+        return f"{agent_id}/{stripped}"
+    return f"{agent_id}/{stripped}"
+
 
 def _storage():
     """Get the storage backend singleton."""
@@ -2004,7 +2047,7 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 
 # ─── Workspace initialization ──────────────────────────────────
 
-async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) -> Path:
+async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None, user_id: uuid.UUID | None = None) -> Path:
     """Initialize agent workspace with standard structure."""
     ws = WORKSPACE_ROOT / str(agent_id)
 
@@ -2016,6 +2059,10 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         (ws / "workspace").mkdir(exist_ok=True)
         (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
         (ws / "memory").mkdir(exist_ok=True)
+
+        if user_id is not None:
+            user_mem_dir = ws / "users" / str(user_id) / "memory"
+            user_mem_dir.mkdir(parents=True, exist_ok=True)
 
         if tenant_id:
             enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
@@ -2059,6 +2106,22 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
                     await storage.write(soul_key, "# Personality\n\n_Describe your role and responsibilities._\n")
         except Exception:
             await storage.write(soul_key, "# Personality\n\n_Describe your role and responsibilities._\n")
+
+    if user_id is not None:
+        user_memory_key = f"{agent_id}/users/{user_id}/memory/memory.md"
+        if not await storage.exists(user_memory_key):
+            if await storage.exists(new_memory_key):
+                shared_content = await storage.read(new_memory_key)
+                await storage.write(user_memory_key, shared_content)
+            else:
+                await storage.write(user_memory_key, "# Memory\n\n_Record important information and knowledge here._\n")
+
+        user_focus_key = f"{agent_id}/users/{user_id}/focus.md"
+        if not await storage.exists(user_focus_key):
+            global_focus_key = f"{agent_id}/focus.md"
+            if await storage.exists(global_focus_key):
+                shared_focus = await storage.read(global_focus_key)
+                await storage.write(user_focus_key, shared_focus)
 
     # Always sync tasks from DB
     await _sync_tasks_to_file(agent_id, ws)
@@ -2139,13 +2202,13 @@ async def _execute_tool_direct(
     ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
     try:
         if tool_name == "delete_file":
-            return await _delete_file(ws, arguments.get("path", ""))
+            return await _delete_file(ws, arguments.get("path", ""), user_id=user_id)
         elif tool_name == "write_file":
             path = arguments.get("path")
             content = arguments.get("content", "")
             if not path:
                 return "Missing path"
-            return await _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            return await _write_file(ws, path, content, tenant_id=_agent_tenant_id, user_id=user_id)
         elif tool_name in ("execute_code", "execute_code_e2b"):
             logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
             return await _execute_code(agent_id, ws, arguments, tool_name=tool_name, user_id=user_id)
@@ -2191,7 +2254,7 @@ async def execute_tool(
     """
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
-    ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
+    ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id, user_id=user_id)
 
     # ── Autonomy boundary check ──
     action_type = _TOOL_AUTONOMY_MAP.get(tool_name)
@@ -2236,14 +2299,14 @@ async def execute_tool(
 
     try:
         if tool_name == "list_files":
-            result = await _list_files(ws, arguments.get("path", ""), tenant_id=_agent_tenant_id)
+            result = await _list_files(ws, arguments.get("path", ""), tenant_id=_agent_tenant_id, user_id=user_id)
         elif tool_name == "read_file":
             path = arguments.get("path")
             if not path:
                 return "❌ Missing required argument 'path' for read_file"
             offset = int(arguments.get("offset", 0))
             limit = int(arguments.get("limit", 2000))
-            result = await _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
+            result = await _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit, user_id=user_id)
         elif tool_name == "read_document":
             path = arguments.get("path")
             if not path:
@@ -2257,9 +2320,9 @@ async def execute_tool(
                 return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
             if content is None:
                 return "❌ Missing required argument 'content' for write_file"
-            result = await _write_file(ws, path, content, tenant_id=_agent_tenant_id)
+            result = await _write_file(ws, path, content, tenant_id=_agent_tenant_id, user_id=user_id)
         elif tool_name == "delete_file":
-            result = await _delete_file(ws, arguments.get("path", ""))
+            result = await _delete_file(ws, arguments.get("path", ""), user_id=user_id)
         # --- Enhanced file management tools ---
         elif tool_name == "edit_file":
             path = arguments.get("path")
@@ -2272,7 +2335,7 @@ async def execute_tool(
             if new_string is None:
                 return "❌ Missing required argument 'new_string' for edit_file"
             replace_all = arguments.get("replace_all", False)
-            result = await _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id)
+            result = await _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id, user_id=user_id)
         elif tool_name == "search_files":
             pattern = arguments.get("pattern")
             if not pattern:
@@ -3414,7 +3477,7 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
         return f"❌ Auto-recovery failed: {str(e)[:200]}"
 
 
-async def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
+async def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, user_id: uuid.UUID | None = None) -> str:
     storage = _storage()
 
     if rel_path and rel_path.startswith("enterprise_info"):
@@ -3423,6 +3486,16 @@ async def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> 
             return "Access denied for this path"
         ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
         list_prefix = f"{ent_prefix}{sub}/" if sub else ent_prefix
+    elif user_id is not None and _is_user_scoped_path(rel_path):
+        if rel_path and not _validate_rel_path(rel_path):
+            return "Access denied for this path"
+        agent_id_str = ws.name
+        rel_stripped = rel_path.strip("/")
+        list_prefix = f"{agent_id_str}/users/{user_id}/{rel_stripped}/" if rel_stripped else f"{agent_id_str}/users/{user_id}/"
+        if not await storage.list(list_prefix):
+            agent_id_str = ws.name
+            rel_stripped = rel_path.strip("/")
+            list_prefix = f"{agent_id_str}/{rel_stripped}/" if rel_stripped else f"{agent_id_str}/"
     else:
         if rel_path and not _validate_rel_path(rel_path):
             return "Access denied for this path"
@@ -3474,25 +3547,18 @@ async def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> 
     return header + "\n".join(items)
 
 
-async def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: int = 0, limit: int = 2000) -> str:
-    """Read file contents with optional line range support.
-
-    Args:
-        ws: Workspace root path
-        rel_path: Relative file path
-        tenant_id: Optional tenant ID for enterprise_info
-        offset: Starting line number (0-indexed)
-        limit: Maximum number of lines to read
-
-    Returns:
-        File content with line numbers, or error message
-    """
+async def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: int = 0, limit: int = 2000, user_id: uuid.UUID | None = None) -> str:
     if rel_path and rel_path.startswith("enterprise_info"):
         sub = rel_path[len("enterprise_info"):].lstrip("/")
         if sub and not _validate_rel_path(sub):
             return "Access denied for this path"
         ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
         key = f"{ent_prefix}{sub}" if sub else ent_prefix.rstrip("/")
+    elif user_id is not None and _is_user_scoped_path(rel_path):
+        if not _validate_rel_path(rel_path):
+            return "Access denied for this path"
+        agent_id = uuid.UUID(ws.name)
+        key = await resolve_read_key(agent_id, user_id, rel_path)
     else:
         if not _validate_rel_path(rel_path):
             return "Access denied for this path"
@@ -3656,7 +3722,7 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
         return f"Document read failed: {str(e)[:200]}"
 
 
-async def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = None) -> str:
+async def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = None, user_id: uuid.UUID | None = None) -> str:
     if rel_path.strip("/") == "tasks.json":
         return "tasks.json is read-only. Use manage_tasks tool to manage tasks."
 
@@ -3668,6 +3734,11 @@ async def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | No
             return "Access denied for this path"
         ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
         key = f"{ent_prefix}{sub}"
+    elif user_id is not None and _is_user_scoped_path(rel_path):
+        if not _validate_rel_path(rel_path):
+            return "Access denied for this path"
+        agent_id = uuid.UUID(ws.name)
+        key = resolve_storage_key(agent_id, user_id, rel_path)
     else:
         if not _validate_rel_path(rel_path):
             return "Access denied for this path"
@@ -3680,7 +3751,7 @@ async def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | No
         return f"Write failed: {e}"
 
 
-async def _delete_file(ws: Path, rel_path: str) -> str:
+async def _delete_file(ws: Path, rel_path: str, user_id: uuid.UUID | None = None) -> str:
     protected = {"tasks.json", "soul.md"}
     if rel_path.strip("/") in protected:
         return f"{rel_path} cannot be deleted (protected)"
@@ -3689,7 +3760,11 @@ async def _delete_file(ws: Path, rel_path: str) -> str:
         return "Access denied for this path"
 
     storage = _storage()
-    key = f"{ws.name}/{rel_path.strip('/')}"
+    if user_id is not None and _is_user_scoped_path(rel_path):
+        agent_id = uuid.UUID(ws.name)
+        key = resolve_storage_key(agent_id, user_id, rel_path)
+    else:
+        key = f"{ws.name}/{rel_path.strip('/')}"
 
     file_exists = await storage.exists(key)
     if not file_exists:
@@ -3709,14 +3784,18 @@ async def _delete_file(ws: Path, rel_path: str) -> str:
             return f"Delete failed: {e}"
 
 
-async def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replace_all: bool = False, tenant_id: str | None = None) -> str:
-    """Perform surgical string replacement in a file."""
+async def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replace_all: bool = False, tenant_id: str | None = None, user_id: uuid.UUID | None = None) -> str:
     if rel_path and rel_path.startswith("enterprise_info"):
         sub = rel_path[len("enterprise_info"):].lstrip("/")
         if sub and not _validate_rel_path(sub):
             return "Access denied for this path"
         ent_prefix = f"enterprise_info_{tenant_id}/" if tenant_id else "enterprise_info/"
         key = f"{ent_prefix}{sub}" if sub else ent_prefix.rstrip("/")
+    elif user_id is not None and _is_user_scoped_path(rel_path):
+        if not _validate_rel_path(rel_path):
+            return "Access denied for this path"
+        agent_id = uuid.UUID(ws.name)
+        key = await resolve_read_key(agent_id, user_id, rel_path)
     else:
         if not _validate_rel_path(rel_path):
             return "Access denied for this path"
@@ -3742,7 +3821,10 @@ async def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, 
             new_content = content.replace(old_string, new_string, 1)
             count = 1
 
-        await storage.write(key, new_content)
+        write_key = key
+        if user_id is not None and _is_user_scoped_path(rel_path):
+            write_key = resolve_storage_key(uuid.UUID(ws.name), user_id, rel_path)
+        await storage.write(write_key, new_content)
         return f"✅ Replaced {count} occurrence(s) in {rel_path}"
 
     except Exception as e:
@@ -4841,13 +4923,16 @@ async def _create_on_message_trigger(
         await db.commit()
 
 
-async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: str) -> None:
-    """Append a pending focus item to the agent's focus.md."""
-    focus_path = WORKSPACE_ROOT / str(agent_id) / "focus.md"
+async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: str, user_id: uuid.UUID | None = None) -> None:
+    storage = _storage()
+    if user_id is not None:
+        focus_key = f"{agent_id}/users/{user_id}/focus.md"
+    else:
+        focus_key = f"{agent_id}/focus.md"
     line = f"- [ ] {identifier}: {description}\n"
     try:
-        if focus_path.exists():
-            content = focus_path.read_text(encoding="utf-8")
+        if await storage.exists(focus_key):
+            content = await storage.read(focus_key)
             if identifier in content:
                 return
             if not content.endswith("\n"):
@@ -4855,8 +4940,7 @@ async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: 
             content += line
         else:
             content = f"# Focus\n\n{line}"
-        focus_path.parent.mkdir(parents=True, exist_ok=True)
-        focus_path.write_text(content, encoding="utf-8")
+        await storage.write(focus_key, content)
     except Exception as e:
         logger.warning(f"[A2A] Failed to update focus.md for agent {agent_id}: {e}")
 
@@ -5150,7 +5234,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 return f"⚠️ {target.name} has no LLM model configured"
 
             # Build target system prompt
-            target_static, target_dynamic = await build_agent_context(target.id, target.name, target.role_description or "")
+            target_static, target_dynamic = await build_agent_context(target.id, target.name, target.role_description or "", user_id=target.creator_id)
             target_dynamic += (
                 "\n\n--- Agent-to-Agent Message ---\n"
                 "You are receiving a message from another digital employee. "
