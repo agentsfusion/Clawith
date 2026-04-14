@@ -2692,9 +2692,12 @@ select:focus {
    ═══════════════════════════════════════════════════════════ */
 .sb-root {
     display: flex;
-    height: 100%;
+    height: calc(100vh - var(--space-8) * 2);
+    max-height: calc(100vh - var(--space-8) * 2);
     overflow: hidden;
     background: var(--bg-primary);
+    border-radius: 12px;
+    border: 1px solid var(--border-subtle);
 }
 .sb-sidebar {
     width: 260px;
