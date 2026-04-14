@@ -50,8 +50,15 @@ class AgentManager:
         return Path(settings.AGENT_TEMPLATE_DIR)
 
     async def initialize_agent_files(self, db: AsyncSession, agent: Agent,
-                                      personality: str = "", boundaries: str = "") -> None:
-        """Copy template files and customize for this agent."""
+                                      personality: str = "", boundaries: str = "",
+                                      user_id: uuid.UUID | None = None) -> None:
+        """Copy template files and customize for this agent.
+
+        Args:
+            user_id: Optional user ID to create user-scoped directories.
+                     When provided, creates ``users/{user_id}/memory/`` and
+                     copies the shared memory/focus into the user's space.
+        """
         storage = get_storage()
         aid = str(agent.id)
         agent_dir = self._agent_dir(agent.id)
@@ -157,6 +164,23 @@ class AgentManager:
             state["agent_id"] = str(agent.id)
             state["name"] = agent.name
             await storage.write(state_key, json.dumps(state, ensure_ascii=False, indent=2))
+
+        if user_id is not None:
+            uid_str = str(user_id)
+            user_mem_key = f"{aid}/users/{uid_str}/memory/memory.md"
+            if not await storage.exists(user_mem_key):
+                shared_mem = f"{aid}/memory/memory.md"
+                if await storage.exists(shared_mem):
+                    await storage.write(user_mem_key, await storage.read(shared_mem))
+                else:
+                    await storage.write(user_mem_key, "# Memory\n\n_Record important information and knowledge here._\n")
+
+            user_focus_key = f"{aid}/users/{uid_str}/focus.md"
+            shared_focus = f"{aid}/focus.md"
+            if not await storage.exists(user_focus_key) and await storage.exists(shared_focus):
+                await storage.write(user_focus_key, await storage.read(shared_focus))
+
+            logger.info(f"Created user-scoped directory for user {uid_str} under agent {aid}")
 
         logger.info(f"Initialized agent files at {agent_dir}")
 
