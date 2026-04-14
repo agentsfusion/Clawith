@@ -199,7 +199,7 @@ def require_role(*allowed_roles: str):
         if current_user.role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"需要以下角色之一: {', '.join(allowed_roles)}",
+                detail=f"Requires one of the following roles: {', '.join(allowed_roles)}",
             )
         return current_user
     return _check

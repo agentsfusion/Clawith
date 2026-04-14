@@ -70,7 +70,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
 
             messages = [
                 LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),
-                LLMMessage(role="user", content=f"[自动调度任务] {instruction}"),
+                LLMMessage(role="user", content=f"[Auto-scheduled task] {instruction}"),
             ]
 
             # Load tools dynamically from DB (respects per-agent config and MCP tools)
@@ -101,11 +101,11 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                     )
                 except LLMError as e:
                     logger.error(f"Schedule {schedule_id}: LLM error: {e}")
-                    reply = f"(LLM 错误: {e})"
+                    reply = f"(LLM error: {e})"
                     break
                 except Exception as e:
                     logger.error(f"Schedule {schedule_id}: LLM call error: {e}")
-                    reply = f"(LLM 调用异常: {str(e)[:200]})"
+                    reply = f"(LLM call exception: {str(e)[:200]})"
                     break
 
                 if response.tool_calls:
@@ -160,7 +160,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                     reply = response.content or ""
                     break
             else:
-                reply = "(已达到最大工具调用轮数)"
+                reply = "(Maximum tool call rounds reached)"
 
             await client.close()
 
@@ -168,7 +168,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             from app.services.activity_logger import log_activity
             await log_activity(
                 agent_id, "schedule_run",
-                f"定时任务执行: {instruction[:60]}",
+                f"Scheduled task execution: {instruction[:60]}",
                 detail={"schedule_id": str(schedule_id), "instruction": instruction, "reply": reply[:500]},
             )
 

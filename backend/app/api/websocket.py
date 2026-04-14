@@ -221,7 +221,7 @@ async def call_llm(
                 _n_imgs = len(_re_strip.findall(_img_pattern, msg.content))
                 cleaned = _re_strip.sub(_img_pattern, '', msg.content).strip()
                 if _n_imgs > 0:
-                    cleaned += f"\n[用户发送了 {_n_imgs} 张图片，但当前模型不支持视觉，无法查看图片内容]"
+                    cleaned += f"\n[User sent {_n_imgs} image(s), but the current model does not support vision, unable to view image content]"
                 api_messages[i] = LLMMessage(
                     role=msg.role,
                     content=cleaned,
@@ -259,15 +259,15 @@ async def call_llm(
             api_messages.append(LLMMessage(
                 role="user",
                 content=(
-                    f"⚠️ 你已使用 {round_i}/{_max_tool_rounds} 轮工具调用。"
-                    "如果当前任务尚未完成，请尽快保存进度到 focus.md，"
-                    "并使用 set_trigger 设置续接触发器，在剩余轮次中做好收尾。"
+                    f"⚠️ You have used {round_i}/{_max_tool_rounds} tool call rounds. "
+                    "If the current task is not yet complete, please save your progress to focus.md as soon as possible, "
+                    "and use set_trigger to set a continuation trigger to wrap up within the remaining rounds."
                 ),
             ))
         elif round_i == _warn_threshold_96:
             api_messages.append(LLMMessage(
                 role="user",
-                content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 focus.md 并设置续接触发器。",
+                content=f"🚨 Only 2 tool call rounds remaining. Please save your progress to focus.md immediately and set a continuation trigger.",
             ))
 
         try:
