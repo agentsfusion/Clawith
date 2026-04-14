@@ -84,6 +84,24 @@ class UrlImportIn(BaseModel):
     url: str
 
 
+class BatchSkillFileIn(BaseModel):
+    path: str
+    content: str
+
+
+class BatchSkillIn(BaseModel):
+    folder_name: str
+    name: str
+    description: str = ""
+    category: str = "custom"
+    icon: str = "📋"
+    files: list[BatchSkillFileIn] = []
+
+
+class BatchUploadIn(BaseModel):
+    skills: list[BatchSkillIn]
+
+
 # ─── Helpers ──────────────────────────────────────────
 
 
@@ -643,6 +661,45 @@ async def delete_skill(skill_id: str, current_user: User = Depends(get_current_a
         await db.delete(skill)
         await db.commit()
         return {"ok": True}
+
+
+@router.post("/batch-upload")
+async def batch_upload(body: BatchUploadIn, current_user: User = Depends(get_current_admin)):
+    """Batch create multiple skills. Each skill is processed independently —
+    one failing does not prevent others from being saved."""
+    if not body.skills:
+        raise HTTPException(400, "No skills provided")
+
+    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    results: list[dict] = []
+
+    for skill in body.skills:
+        try:
+            result = await _save_skill_to_db(
+                folder_name=skill.folder_name,
+                name=skill.name,
+                description=skill.description,
+                category=skill.category,
+                icon=skill.icon,
+                files=[{"path": f.path, "content": f.content} for f in skill.files],
+                tenant_id=tenant_id,
+            )
+            results.append({
+                "status": "ok",
+                "id": result["id"],
+                "name": result["name"],
+                "folder_name": result["folder_name"],
+            })
+        except Exception as exc:
+            logger.warning("batch-upload failed for {}: {}", skill.folder_name, exc)
+            results.append({
+                "status": "error",
+                "name": skill.name,
+                "folder_name": skill.folder_name,
+                "error": str(exc),
+            })
+
+    return {"results": results}
 
 
 # ─── Tenant GitHub Token Settings ───────────────────────────
