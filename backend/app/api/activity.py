@@ -71,7 +71,7 @@ async def list_conversations(
     for row in web_users_q.fetchall():
         user_id, last_at, cnt = row
         user_r = await db.execute(select(User.display_name).where(User.id == user_id))
-        name = user_r.scalar_one_or_none() or "未知用户"
+        name = user_r.scalar_one_or_none() or "Unknown User"
         # Get last message
         last_msg_r = await db.execute(
             select(ChatMessage.content)
@@ -125,12 +125,12 @@ async def list_conversations(
                 .order_by(ChatMessage.created_at.asc()).limit(1)
             )
             first_msg = name_r.scalar_one_or_none() or ""
-            # Extract sender name from [发送者: xxx] prefix
+            # Extract sender name from [Sender: xxx] prefix
             import re
-            sender_match = re.search(r'\[发送者:\s*([^\]]+?)(?:\s*\(ID:.*?\))?\]', first_msg)
-            display_name = f"📱 {sender_match.group(1)}" if sender_match else f"📱 飞书用户"
+            sender_match = re.search(r'\[Sender:\s*([^\]]+?)(?:\s*\(ID:.*?\))?\]', first_msg)
+            display_name = f"📱 {sender_match.group(1)}" if sender_match else f"📱 Feishu User"
         else:
-            display_name = "👥 飞书群聊"
+            display_name = "👥 Feishu Group Chat"
 
         conversations.append({
             "conv_id": conv_id,
@@ -186,7 +186,7 @@ async def list_conversations(
         # Determine the partner agent
         partner_id = sess.peer_agent_id if sess.agent_id == agent_id else sess.agent_id
         agent_r = await db.execute(select(Agent.name).where(Agent.id == partner_id))
-        partner_name = agent_r.scalar_one_or_none() or "未知数字员工"
+        partner_name = agent_r.scalar_one_or_none() or "Unknown Digital Employee"
 
         # Count messages in this session
         stats_q = await db.execute(
@@ -243,10 +243,10 @@ async def get_conversation_messages(
         )
         for m in result.scalars().all():
             content = m.content
-            # Strip [发送者: xxx] prefix for display (identity shown in UI)
-            if content.startswith("[发送者:"):
+            # Strip [Sender: xxx] prefix for display (identity shown in UI)
+            if content.startswith("[Sender:"):
                 import re
-                content = re.sub(r'^\[发送者:[^\]]*\]\s*', '', content)
+                content = re.sub(r'^\[Sender:[^\]]*\]\s*', '', content)
             messages.append({
                 "id": str(m.id),
                 "role": m.role,
@@ -268,12 +268,12 @@ async def get_conversation_messages(
         name_cache = {}
         for m in result.scalars().all():
             # Determine sender name from participant_id
-            sender_name = "未知"
+            sender_name = "Unknown"
             if m.participant_id:
                 pid_str = str(m.participant_id)
                 if pid_str not in name_cache:
                     p_r = await db.execute(select(Participant.display_name).where(Participant.id == m.participant_id))
-                    name_cache[pid_str] = p_r.scalar_one_or_none() or "未知"
+                    name_cache[pid_str] = p_r.scalar_one_or_none() or "Unknown"
                 sender_name = name_cache[pid_str]
             messages.append({
                 "id": str(m.id),
