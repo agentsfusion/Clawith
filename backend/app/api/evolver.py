@@ -279,6 +279,26 @@ async def trigger_health_check(
     )
 
 
+@router.delete("/agents/{agent_id}/health-checks/{check_id}", status_code=204)
+async def delete_health_check(
+    agent_id: str,
+    check_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(AgentHealthCheck).where(
+            AgentHealthCheck.id == uuid.UUID(check_id),
+            AgentHealthCheck.agent_id == agent_id,
+        )
+    )
+    check = result.scalar_one_or_none()
+    if not check:
+        raise HTTPException(status_code=404, detail="Health check not found")
+    await db.delete(check)
+    await db.commit()
+
+
 def _parse_analysis(text: str) -> dict:
     json_match = re.search(r'```(?:json)?\s*\n([\s\S]*?)```', text)
     raw = None

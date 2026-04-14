@@ -774,6 +774,9 @@ export const evolverApi = {
     triggerHealthCheck: (agentId: string) =>
         request<EvolverHealthCheck>(`/evolver/agents/${agentId}/health-checks`, { method: 'POST' }),
 
+    deleteHealthCheck: (agentId: string, checkId: string) =>
+        request<void>(`/evolver/agents/${agentId}/health-checks/${checkId}`, { method: 'DELETE' }),
+
     listScriptVersions: (agentId: string, folder?: string) =>
         request<EvolverScriptVersion[]>(`/evolver/agents/${agentId}/script-versions${folder ? `?folder=${folder}` : ''}`),
 
