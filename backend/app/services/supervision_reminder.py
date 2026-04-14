@@ -179,15 +179,15 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
 
         days_since = (datetime.now(timezone.utc) - task.created_at).days
         reminder_msg = (
-            f"📋 督办提醒 — 来自 {agent_name}\n\n"
-            f"事项：{task.title}\n"
+            f"📋 Supervision Reminder — From {agent_name}\n\n"
+            f"Item: {task.title}\n"
         )
         if task.description:
-            reminder_msg += f"说明：{task.description}\n"
-        reminder_msg += f"创建于：{days_since} 天前\n"
+            reminder_msg += f"Description: {task.description}\n"
+        reminder_msg += f"Created: {days_since} days ago\n"
         if task.due_date:
-            reminder_msg += f"截止日期：{task.due_date.strftime('%Y-%m-%d')}\n"
-        reminder_msg += f"\n请及时处理，谢谢！"
+            reminder_msg += f"Due date: {task.due_date.strftime('%Y-%m-%d')}\n"
+        reminder_msg += f"\nPlease handle this promptly, thank you!"
 
         async with async_session() as db:
             sent = False
@@ -257,7 +257,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 await db.flush()
                 chat_session.last_message_at = datetime.now(timezone.utc)
                 sent = True
-                send_method = "agent消息"
+                send_method = "agent message"
 
                 # Trigger target agent's LLM to generate a reply
                 try:
@@ -269,7 +269,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                             conversation_id=session_id,
                             participant_id=tgt_part.id if tgt_part else None,
                         ))
-                        send_method = f"agent消息+回复({reply[:40]})"
+                        send_method = f"agent message+reply({reply[:40]})"
                         logger.info(f"📋 Target agent {target_agent.name} replied: {reply[:80]}")
                 except Exception as e:
                     logger.warning(f"Target agent reply failed: {e}")
@@ -311,24 +311,24 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                                 )
                                 if resp.get("code") == 0:
                                     sent = True
-                                    send_method = "飞书"
+                                    send_method = "Feishu"
                         except Exception:
                             pass
 
             # Log result to TaskLog
             if sent:
-                log = TaskLog(task_id=task.id, content=f"✅ 已向 {target_name} 发送督办提醒（{send_method}）")
+                log = TaskLog(task_id=task.id, content=f"✅ Supervision reminder sent to {target_name} ({send_method})")
             elif target_agent or target_name:
-                log = TaskLog(task_id=task.id, content=f"📋 督办提醒已触发，目标：{target_name}")
+                log = TaskLog(task_id=task.id, content=f"📋 Supervision reminder triggered, target: {target_name}")
             else:
-                log = TaskLog(task_id=task.id, content=f"⚠️ 提醒失败：未找到联系人 '{target_name}'")
+                log = TaskLog(task_id=task.id, content=f"⚠️ Reminder failed: contact '{target_name}' not found")
             db.add(log)
 
             # Log to AgentActivityLog for Activity tab visibility
             activity = AgentActivityLog(
                 agent_id=task.agent_id,
                 action_type="schedule_run",
-                summary=f"📋 督办提醒：{task.title} → {target_name}" + (f"（{send_method}已发送）" if sent else ""),
+                summary=f"📋 Supervision reminder: {task.title} → {target_name}" + (f" ({send_method} sent)" if sent else ""),
                 detail_json={"task_id": str(task.id), "target": target_name, "sent": sent},
                 related_id=task.id,
             )

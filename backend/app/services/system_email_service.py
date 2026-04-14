@@ -68,7 +68,7 @@ async def resolve_email_config_async(db) -> SystemEmailConfig | None:
             if v.get("SYSTEM_EMAIL_FROM_ADDRESS") and v.get("SYSTEM_SMTP_HOST"):
                 return SystemEmailConfig(
                     from_address=str(v.get("SYSTEM_EMAIL_FROM_ADDRESS", "")).strip(),
-                    from_name=str(v.get("SYSTEM_EMAIL_FROM_NAME", "Clawith")).strip() or "Clawith",
+                    from_name=str(v.get("SYSTEM_EMAIL_FROM_NAME", "AgentsFusion")).strip() or "AgentsFusion",
                     smtp_host=str(v.get("SYSTEM_SMTP_HOST", "")).strip(),
                     smtp_port=int(v.get("SYSTEM_SMTP_PORT", 465)),
                     smtp_username=str(v.get("SYSTEM_SMTP_USERNAME", "")).strip() or str(v.get("SYSTEM_EMAIL_FROM_ADDRESS", "")).strip(),
@@ -193,30 +193,30 @@ async def deliver_broadcast_emails(recipients: Iterable[BroadcastEmailRecipient]
 # Each scenario has a fixed set of available variables (using {{variable}} syntax).
 DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
     "email_verification": {
-        "subject": "Verify your Clawith email address",
+        "subject": "Verify your AgentsFusion email address",
         "body": (
             "Hello {{display_name}},\n\n"
-            "Welcome to Clawith! Please use the following 6-digit code to verify your email address:\n\n"
+            "Welcome to AgentsFusion! Please use the following 6-digit code to verify your email address:\n\n"
             "Verification code: {{verification_code}}\n\n"
             "This code expires in {{expiry_minutes}} minutes. "
             "If you did not create an account, you can ignore this email."
         ),
     },
     "password_reset": {
-        "subject": "Reset your Clawith password",
+        "subject": "Reset your AgentsFusion password",
         "body": (
             "Hello {{display_name}},\n\n"
-            "We received a request to reset your Clawith password.\n\n"
+            "We received a request to reset your AgentsFusion password.\n\n"
             "Reset link: {{reset_url}}\n\n"
             "This link expires in {{expiry_minutes}} minutes. "
             "If you did not request this, you can ignore this email."
         ),
     },
     "company_invitation": {
-        "subject": "{{inviter_name}} invited you to join {{company_name}} on Clawith",
+        "subject": "{{inviter_name}} invited you to join {{company_name}} on AgentsFusion",
         "body": (
             "Hello,\n\n"
-            "{{inviter_name}} has invited you to join their team '{{company_name}}' on Clawith.\n\n"
+            "{{inviter_name}} has invited you to join their team '{{company_name}}' on AgentsFusion.\n\n"
             "To accept the invitation and create your account, please click the link below:\n\n"
             "{{invite_url}}\n\n"
             "If you don't want to join this team or didn't expect this invitation, you can ignore this email."
@@ -313,11 +313,11 @@ async def send_test_email(to: str, db=None) -> None:
         to: Recipient email address
         db: Optional database session for resolving config
     """
-    subject = "Clawith Test Email"
+    subject = "AgentsFusion Test Email"
     body = (
-        "This is a test email from your Clawith platform.\n\n"
+        "This is a test email from your AgentsFusion platform.\n\n"
         "If you received this email, your SMTP configuration is working correctly.\n\n"
-        "-- Clawith System"
+        "-- AgentsFusion System"
     )
     await send_system_email(to, subject, body, db=db)
 

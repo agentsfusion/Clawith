@@ -91,7 +91,7 @@ class AgentManager:
         if await storage.exists(soul_key):
             template_content = await storage.read(soul_key)
             soul_content = template_content.replace("{{agent_name}}", agent.name)
-            soul_content = soul_content.replace("{{role_description}}", agent.role_description or "通用助手")
+            soul_content = soul_content.replace("{{role_description}}", agent.role_description or "General Assistant")
             soul_content = soul_content.replace("{{creator_name}}", creator_name)
             soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 

@@ -72,7 +72,7 @@ def _extract_pdf(data: bytes) -> str:
         for i, page in enumerate(pdf.pages):
             text = page.extract_text()
             if text and text.strip():
-                pages.append(f"--- 第{i+1}页 ---\n{text.strip()}")
+                pages.append(f"--- Page {i+1} ---\n{text.strip()}")
             
             # Also extract tables
             tables = page.extract_tables()
@@ -83,7 +83,7 @@ def _extract_pdf(data: bytes) -> str:
                         cells = [str(c or "").strip() for c in row]
                         rows.append(" | ".join(cells))
                     if rows:
-                        pages.append("表格:\n" + "\n".join(rows))
+                        pages.append("Table:\n" + "\n".join(rows))
     
     return "\n\n".join(pages)
 
@@ -116,7 +116,7 @@ def _extract_docx(data: bytes) -> str:
             cells = [cell.text.strip() for cell in row.cells]
             rows.append(" | ".join(cells))
         if rows:
-            parts.append("\n表格:\n" + "\n".join(rows))
+            parts.append("\nTable:\n" + "\n".join(rows))
     
     return "\n\n".join(parts)
 
@@ -137,7 +137,7 @@ def _extract_xlsx(data: bytes) -> str:
                 rows.append(" | ".join(cells))
         
         if rows:
-            parts.append(f"## 工作表: {sheet}\n" + "\n".join(rows))
+            parts.append(f"## Worksheet: {sheet}\n" + "\n".join(rows))
     
     wb.close()
     return "\n\n".join(parts)
@@ -164,6 +164,6 @@ def _extract_pptx(data: bytes) -> str:
                     texts.append(" | ".join(cells))
         
         if texts:
-            parts.append(f"--- 幻灯片 {i+1} ---\n" + "\n".join(texts))
+            parts.append(f"--- Slide {i+1} ---\n" + "\n".join(texts))
     
     return "\n\n".join(parts)

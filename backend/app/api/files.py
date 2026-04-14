@@ -100,7 +100,7 @@ async def read_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     except UnicodeDecodeError:
         raw = await storage.read_bytes(key)
-        return FileContent(path=path, content=f"[二进制文件: {Path(path).name}, {len(raw)} bytes]")
+        return FileContent(path=path, content=f"[Binary file: {Path(path).name}, {len(raw)} bytes]")
     return FileContent(path=path, content=content)
 
 
@@ -353,7 +353,7 @@ async def upload_file_to_workspace(
 
     # Validate path prefix
     if not path.startswith(("workspace/", "skills/")):
-        raise HTTPException(status_code=400, detail="只能上传到 workspace/ 或 skills/ 目录")
+        raise HTTPException(status_code=400, detail="Can only upload to workspace/ or skills/ directories")
 
     _validate_path(path)
     filename = file.filename or "unnamed"
@@ -492,7 +492,7 @@ async def read_enterprise_file(
         raise HTTPException(status_code=404, detail="File not found")
     except UnicodeDecodeError:
         raw = await storage.read_bytes(key)
-        return {"path": path, "content": f"[二进制文件: {Path(path).name}, {len(raw)} bytes]"}
+        return {"path": path, "content": f"[Binary file: {Path(path).name}, {len(raw)} bytes]"}
     return {"path": path, "content": content}
 
 

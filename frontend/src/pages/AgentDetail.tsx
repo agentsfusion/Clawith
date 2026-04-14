@@ -3176,7 +3176,7 @@ function AgentDetailInner() {
                                         fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
                                         background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
                                         letterSpacing: '0.5px',
-                                    }}>OpenClaw · Lab</span>
+                                    }}>AgentsFusion · Lab</span>
                                 )}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
@@ -3364,11 +3364,10 @@ function AgentDetailInner() {
                                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
                                                 <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.type')}</span>
                                                 <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                    <span style={{
+                                                        <span style={{
                                                         fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
                                                         background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
-                                                    }}>OpenClaw</span>
-                                                    Lab
+                                                    }}>AgentsFusion · Lab</span>
                                                 </span>
                                             </div>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>

@@ -488,7 +488,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         logger.error(f"[Feishu] Failed to download post image {_ik}: {_dl_err}")
             # Build final text with embedded images
             if not _extracted_text and _image_markers:
-                _extracted_text = "[用户发送了图片，请看图片内容]"
+                _extracted_text = "[User sent an image, please see the image content]"
             _final_content = _extracted_text
             if _image_markers:
                 _final_content += "\n" + "\n".join(_image_markers)
@@ -527,7 +527,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             # Detect task creation intent
             task_match = re.search(
-                r'(?:创建|新建|添加|建一个|帮我建)(?:一个)?(?:任务|待办|todo)[，,：:\s]*(.+)',
+                r'(?:create|add)(?:a)?(?:task|todo)[，,：:\s]*(.+)',
                 user_text, re.IGNORECASE
             )
 
@@ -712,7 +712,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             llm_user_text = user_text
             if sender_name:
                 id_part = f" (ID: {sender_user_id_feishu})" if sender_user_id_feishu else ""
-                llm_user_text = f"[发送者: {sender_name}{id_part}] {user_text}"
+                llm_user_text = f"[Sender: {sender_name}{id_part}] {user_text}"
 
             # ── Inject recent uploaded file context ──────────────────────────
             # Check uploads directory for recently modified files (within 30 min).
@@ -753,9 +753,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     _ws_rel_path = f"workspace/{_recent_file_path}"
                     llm_user_text = (
                         llm_user_text
-                        + f"\n\n[系统提示：用户刚上传了文件，路径为工作区 `{_ws_rel_path}`。"
-                        f"如果用户的指令涉及这篇文章、这个文件、这份文档等，"
-                        f"请立即调用 read_document(path=\"{_ws_rel_path}\") 读取内容，不要先用 list_files 验证，直接读取即可。]"
+                        + f"\n\n[System hint: User just uploaded a file, path is workspace `{_ws_rel_path}`. "
+                        f"If the user's instruction involves this article, file, or document, "
+                        f"please call read_document(path=\"{_ws_rel_path}\") immediately to read the content. Do not verify with list_files first — just read it directly.]"
                     )
                     logger.info(f"[Feishu] Injected recent file hint: {_ws_rel_path}")
             except Exception as _fe:
@@ -796,9 +796,10 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         _dl_url = f"{_base_url}/api/agents/{agent_id}/files/download?path={_rel}"
                         _fallback_parts.append(f"📎 {_fp.name}\n🔗 {_dl_url}")
                     _fallback_parts.append(
-                        f"⚠️ 文件直接发送失败（{_upload_err}）\n"
-                        "如需 Agent 直接发飞书文件，请在飞书开放平台为应用开启 "
-                        "`im:resource`（即 `im:resource:upload`）权限并发布版本。"
+                        f"⚠️ Failed to send file directly ({_upload_err})\n"
+                        "To enable Agent to send Feishu files directly, please enable the "
+                        "`im:resource` (i.e. `im:resource:upload`) permission for the app "
+                        "on the Feishu Open Platform and publish a new version."
                     )
                     await feishu_service.send_message(
                         config.app_id, config.app_secret,
@@ -811,10 +812,219 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             _reply_target = chat_id if chat_type == "group" and chat_id else sender_open_id
             _rid_type = "chat_id" if chat_type == "group" and chat_id else "open_id"
 
-            _stream_buffer: list[str] = []
-            _thinking_buffer: list[str] = []
-            _agent_name = agent_obj.name if agent_obj else "AI 回复"
-            _tool_errors: list[str] = []
+            init_card = {
+                "schema": "2.0",
+                "config": {
+                    "streaming_mode": True,
+                    "locales": ["zh_cn", "en_us"],
+                    "summary": {"content": "Thinking..."},
+                },
+                "body": {
+                    "elements": [
+                        {"tag": "markdown", "content": "", "text_align": "left", "text_size": "normal_v2", "element_id": "streaming_content"},
+                        {"tag": "markdown", "content": " ", "icon": {"tag": "custom_icon", "img_key": "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg", "size": "16px 16px"}, "element_id": "loading_icon"},
+                    ]
+                },
+            }
+
+            try:
+                cardkit_card_id = await feishu_service.create_card_entity(
+                    config.app_id, config.app_secret, init_card
+                )
+                cardkit_sequence = 1
+                await feishu_service.send_card_by_card_id(
+                    config.app_id, config.app_secret, _reply_target, cardkit_card_id,
+                    receive_id_type=_rid_type,
+                )
+                logger.info(f"[Feishu] CardKit card created and sent: card_id={cardkit_card_id}")
+            except Exception as e:
+                logger.warning(f"[Feishu] CardKit flow failed, falling back to IM patch: {e}")
+                cardkit_card_id = None
+                init_card_fallback = {
+                    "config": {"update_multi": True},
+                    "header": {"template": "blue", "title": {"content": "Thinking...", "tag": "plain_text"}},
+                    "elements": [{"tag": "markdown", "content": "..."}],
+                }
+                try:
+                    init_resp = await feishu_service.send_message(
+                        config.app_id, config.app_secret, _reply_target, "interactive",
+                        _json_card.dumps(init_card_fallback), receive_id_type=_rid_type, stage="stream_init_card",
+                    )
+                    msg_id_for_patch = init_resp.get("data", {}).get("message_id")
+                except Exception as e2:
+                    logger.error(f"[Feishu] Fallback init card also failed: {e2}")
+
+            _stream_buffer = []
+            _thinking_buffer = []
+            _last_flush_time = time.time()
+            _FLUSH_INTERVAL_CARDKIT = 0.5
+            _FLUSH_INTERVAL_PATCH = 1.0
+            _agent_name = agent_obj.name if agent_obj else "AI Reply"
+            _tool_status_running: dict[str, str] = {}
+            _tool_status_done: list[str] = []
+            _patch_queue = _SerialPatchQueue()
+            _heartbeat_task: asyncio.Task | None = None
+            _llm_done = False
+            _last_flushed_hash: int = 0
+            _last_flushed_text: str = ""
+            _flush_lock = asyncio.Lock()
+
+            def _build_card(
+                answer_text: str,
+                thinking_text: str = "",
+                streaming: bool = False,
+                tool_status_lines: list[str] | None = None,
+                agent_name: str | None = None,
+            ) -> dict:
+                """Build a Feishu interactive card for streaming replies.
+
+                Args:
+                    answer_text: Main reply text (may be partial during streaming).
+                    thinking_text: Reasoning/thinking content shown in a collapsed section.
+                    streaming: If True, appends a cursor glyph to indicate in-progress output.
+                    tool_status_lines: Override list for image streaming (which maintains its
+                        own done-list; pass None to use the default text-streaming state).
+                    agent_name: Override the default _agent_name (for image streaming context).
+                """
+                _name = agent_name if agent_name is not None else _agent_name
+
+                elements = []
+
+                # Tool status section.
+                # For the primary text-streaming path we use the split running/done dicts;
+                # callers may pass an explicit list (image path) as override.
+                if tool_status_lines is not None:
+                    # Caller-supplied override (image path): plain list, no split needed.
+                    if tool_status_lines:
+                        elements.append({
+                            "tag": "markdown",
+                            "content": "\n".join(tool_status_lines[-_TOOL_STATUS_KEEP_LINES:]),
+                        })
+                        elements.append({"tag": "hr"})
+                else:
+                    # Primary text-streaming path: show done history + any still-running tools.
+                    # _tool_status_running entries are removed when the tool completes,
+                    # so only genuinely in-flight tools appear here.
+                    done_visible = _tool_status_done[-_TOOL_STATUS_KEEP_LINES:]
+                    running_visible = list(_tool_status_running.values())
+                    all_visible = done_visible + running_visible
+                    if all_visible:
+                        elements.append({
+                            "tag": "markdown",
+                            "content": "\n".join(all_visible),
+                        })
+                        elements.append({"tag": "hr"})
+
+                # Thinking section: collapsed grey block
+                if thinking_text:
+                    think_preview = thinking_text[:200].replace("\n", " ")
+                    elements.append({
+                        "tag": "markdown",
+                        "content": f"<font color='grey'>💭 **Thinking**\n{think_preview}{'...' if len(thinking_text) > 200 else ''}</font>",
+                    })
+                    elements.append({"tag": "hr"})
+
+                body = answer_text + ("▌" if streaming and answer_text else ("..." if streaming else ""))
+                elements.append({"tag": "markdown", "content": body or "..."})
+                return {
+                    "config": {"update_multi": True},
+                    "header": {
+                        "template": "blue",
+                        "title": {"content": _name, "tag": "plain_text"},
+                    },
+                    "elements": elements,
+                }
+
+            def _build_final_cardkit_card(answer_text: str, thinking_text: str = "") -> dict:
+                elements = []
+                if thinking_text:
+                    elements.append({
+                        "tag": "collapsible_panel",
+                        "expanded": False,
+                        "header": {
+                            "title": {"tag": "markdown", "content": f"💭 Thinking... ({len(thinking_text)} chars)"},
+                            "vertical_align": "center",
+                            "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined", "size": "16px 16px"},
+                            "icon_position": "follow_text",
+                            "icon_expanded_angle": -180,
+                        },
+                        "border": {"color": "grey", "corner_radius": "5px"},
+                        "elements": [{"tag": "markdown", "content": thinking_text, "text_size": "notation"}],
+                    })
+                elements.append({"tag": "markdown", "content": answer_text or "..."})
+                return {
+                    "schema": "2.0",
+                    "config": {"wide_screen_mode": True, "update_multi": True},
+                    "body": {"elements": elements},
+                }
+
+            async def _queue_patch_card(card: dict, stage: str) -> None:
+                if not msg_id_for_patch:
+                    return
+                payload = _json_card.dumps(card)
+
+                async def _job():
+                    try:
+                        await feishu_service.patch_message(
+                            config.app_id,
+                            config.app_secret,
+                            msg_id_for_patch,
+                            payload,
+                            stage=stage,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Feishu] Patch failed (stage={stage}, message_id={msg_id_for_patch}): {e}")
+
+                _patch_queue.enqueue(_job)
+
+            async def _flush_stream(reason: str, force: bool = False):
+                nonlocal _last_flush_time, _last_flushed_hash, cardkit_sequence, _last_flushed_text
+                if not cardkit_card_id and not msg_id_for_patch:
+                    return
+                async with _flush_lock:
+                    logger.debug(f"[Feishu] flush({reason}): seq={cardkit_sequence}")
+                    now = time.time()
+                    flush_interval = _FLUSH_INTERVAL_CARDKIT if cardkit_card_id else _FLUSH_INTERVAL_PATCH
+                    if not force and now - _last_flush_time < flush_interval:
+                        return
+                    accumulated = "".join(_stream_buffer)
+                    if cardkit_card_id:
+                        # Build composite content: tool status lines + answer text.
+                        # This mirrors the IM Patch path where _build_card() includes the
+                        # tool status section, so CardKit users also see which tools are
+                        # running or completed during the LLM turn.
+                        done_visible = _tool_status_done[-_TOOL_STATUS_KEEP_LINES:]
+                        running_visible = list(_tool_status_running.values())
+                        all_tool_lines = done_visible + running_visible
+                        if all_tool_lines:
+                            tool_section = "\n".join(all_tool_lines)
+                            cardkit_text = f"{tool_section}\n---\n{accumulated}" if accumulated else tool_section
+                        else:
+                            cardkit_text = accumulated
+                        if cardkit_text != _last_flushed_text:
+                            cardkit_sequence += 1
+                            try:
+                                await asyncio.wait_for(
+                                    feishu_service.stream_card_content(
+                                        config.app_id, config.app_secret,
+                                        cardkit_card_id, "streaming_content",
+                                        cardkit_text, cardkit_sequence,
+                                    ),
+                                    timeout=5.0,
+                                )
+                                _last_flushed_text = cardkit_text
+                            except asyncio.TimeoutError:
+                                logger.warning(f"[Feishu] CardKit stream timed out, seq={cardkit_sequence}")
+                            except Exception as e:
+                                logger.warning(f"[Feishu] CardKit stream failed: {e}")
+                    elif msg_id_for_patch:
+                        card = _build_card(accumulated, "".join(_thinking_buffer), streaming=True)
+                        current_hash = hash(accumulated + "".join(_thinking_buffer) + str(_tool_status_done) + str(list(_tool_status_running.values())))
+                        if reason == "heartbeat" and current_hash == _last_flushed_hash:
+                            return
+                        _last_flushed_hash = current_hash
+                        await _queue_patch_card(card, stage=f"stream_{reason}")
+                    _last_flush_time = now
 
             async def _ws_on_chunk(text: str):
                 _stream_buffer.append(text)
@@ -851,6 +1061,78 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 _cfso.reset(_cfso_token)
             logger.info(f"[Feishu] LLM reply: {reply_text[:100]}")
 
+            # Send final card update or fallback text
+            if cardkit_card_id:
+                try:
+                    cardkit_sequence += 1
+                    await asyncio.wait_for(
+                        feishu_service.set_card_streaming_mode(
+                            config.app_id, config.app_secret,
+                            cardkit_card_id, 0, cardkit_sequence,
+                        ),
+                        timeout=10.0,
+                    )
+                    cardkit_sequence += 1
+                    final_card = _build_final_cardkit_card(reply_text, "".join(_thinking_buffer))
+                    await asyncio.wait_for(
+                        feishu_service.update_cardkit_card(
+                            config.app_id, config.app_secret,
+                            cardkit_card_id, final_card, cardkit_sequence,
+                        ),
+                        timeout=10.0,
+                    )
+                except Exception as e:
+                    logger.error(f"[Feishu] CardKit final update failed: {e}")
+                    try:
+                        await feishu_service.send_message(
+                            config.app_id, config.app_secret, _reply_target, "text",
+                            _json.dumps({"text": reply_text}), receive_id_type=_rid_type,
+                            stage="stream_final_fallback_text",
+                        )
+                    except Exception as e2:
+                        logger.error(f"[Feishu] CardKit fallback text also failed: {e2}")
+            elif msg_id_for_patch:
+                try:
+                    await _patch_queue.drain()
+                except Exception as e:
+                    logger.warning(f"[Feishu] Drain patch queue failed before final patch: {e}")
+                final_card = _build_card(
+                    reply_text,
+                    "".join(_thinking_buffer),
+                    streaming=False,
+                )
+                try:
+                    await feishu_service.patch_message(
+                        config.app_id,
+                        config.app_secret,
+                        msg_id_for_patch,
+                        _json_card.dumps(final_card),
+                        stage="stream_final",
+                    )
+                except Exception as e:
+                    logger.error(f"[Feishu] Final card patch failed: {e}")
+                    try:
+                        await feishu_service.send_message(
+                            config.app_id, config.app_secret, _reply_target, "text",
+                            _json.dumps({"text": reply_text}), receive_id_type=_rid_type,
+                            stage="stream_final_fallback_text",
+                        )
+                    except Exception as e2:
+                        logger.error(f"[Feishu] Fallback text also failed: {e2}")
+            else:
+                try:
+                    await feishu_service.send_message(
+                        config.app_id, config.app_secret, _reply_target, "text",
+                        _json.dumps({"text": reply_text}), receive_id_type=_rid_type,
+                        stage="stream_no_card_fallback_text",
+                    )
+                except Exception as e:
+                    logger.error(f"[Feishu] Failed to send fallback message: {e}")
+
+            # Log activity
+            from app.services.activity_logger import log_activity
+            await log_activity(agent_id, "chat_reply", f"Replied to Feishu message: {reply_text[:80]}", detail={"channel": "feishu", "user_text": user_text[:200], "reply": reply_text[:500]})
+
             # If task creation detected, create a real Task record
             if task_match:
                 task_title = task_match.group(1).strip()
@@ -877,7 +1159,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         await db.commit()
                         await db.refresh(task_obj)
                         _asyncio.create_task(execute_task(task_obj.id, agent_id))
-                        reply_text += f"\n\n📋 已同步创建任务到任务面板：【{task_title}】"
+                        reply_text += f"\n\n📋 Task synced to task panel: [{task_title}]"
                         logger.info(f"[Feishu] Created task: {task_title}")
                     except Exception as e:
                         logger.error(f"[Feishu] Failed to create task: {e}")
@@ -930,11 +1212,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
 IMPORT_RE = None  # lazy sentinel
 _FILE_ACK_MESSAGES = [
-    "收到你的文件，请问有什么需要帮忙的？",
-    "文件收到了！你想让我怎么处理它？",
-    "好的，我已经收到这份文件，请告诉我你的需求~",
-    "已收到文件，随时准备好为你处理！",
-    "收到！请问希望我对这份文件做什么？",
+    "Received your file, how can I help you with it?",
+    "File received! How would you like me to process it?",
+    "Got the file, please let me know what you need~",
+    "File received, ready to help!",
+    "Received! What would you like me to do with this file?",
 ]
 
 
@@ -995,7 +1277,7 @@ async def _handle_feishu_file(
         logger.info(f"[Feishu] Saved {msg_type} to {save_path} ({len(file_bytes)} bytes)")
     except Exception as e:
         logger.error(f"[Feishu] Failed to download {msg_type}: {e}")
-        err_tip = "抱歉，文件下载失败。可能原因：机器人缺少 `im:resource` 权限（文件读取）。\n请在飞书开放平台 → 权限管理 → 批量导入权限 JSON → 重新发布机器人版本后重试。"
+        err_tip = "Sorry, file download failed. Possible cause: the bot is missing the `im:resource` permission (file read).\nPlease go to Feishu Open Platform → Permission Management → Bulk Import Permission JSON → Republish the bot version and try again."
         try:
             import json as _j
             if chat_type == "group" and chat_id:
@@ -1106,7 +1388,7 @@ async def _handle_feishu_file(
         _sess = await find_or_create_channel_session(
             db=db, agent_id=agent_id, user_id=_file_user_id,
             external_conv_id=conv_id, source_channel="feishu",
-            first_message_title=f"[文件] {filename}",
+            first_message_title=f"[File] {filename}",
             is_group=_is_group_file,
             group_name=f"Feishu Group {chat_id[:8]}" if _is_group_file else None,
         )
@@ -1117,7 +1399,7 @@ async def _handle_feishu_file(
             import base64 as _b64_img
             _b64_data = _b64_img.b64encode(file_bytes).decode("ascii")
             _image_marker = f"[image_data:data:image/jpeg;base64,{_b64_data}]"
-            user_msg_content = f"[用户发送了图片]\n{_image_marker}"
+            user_msg_content = f"[User sent an image]\n{_image_marker}"
         else:
             user_msg_content = f"[file:{filename}]"
         db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user",
@@ -1148,7 +1430,7 @@ async def _handle_feishu_file(
         _agent_name = agent_obj.name if agent_obj else "AI"
         _init_card = {
             "config": {"update_multi": True},
-            "header": {"template": "blue", "title": {"content": "识别图片中...", "tag": "plain_text"}},
+            "header": {"template": "blue", "title": {"content": "Recognizing image...", "tag": "plain_text"}},
             "elements": [{"tag": "markdown", "content": "..."}]
         }
         _patch_msg_id = None
@@ -1279,7 +1561,7 @@ async def _handle_feishu_file(
 
         # Log activity
         from app.services.activity_logger import log_activity
-        await log_activity(agent_id, "chat_reply", f"回复了飞书图片消息: {reply_text[:80]}", detail={"channel": "feishu", "type": "image"})
+        await log_activity(agent_id, "chat_reply", f"Replied to Feishu image message: {reply_text[:80]}", detail={"channel": "feishu", "type": "image"})
         return
 
     # For non-image files: send simple ack as before
@@ -1352,7 +1634,7 @@ async def _call_agent_llm(
     agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = agent_result.scalar_one_or_none()
     if not agent:
-        return "⚠️ 数字员工未找到"
+        return "⚠️ Digital employee not found"
 
     if is_agent_expired(agent):
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
@@ -1382,7 +1664,7 @@ async def _call_agent_llm(
         logger.warning(f"[Channel] Primary model unavailable, using fallback: {model.model}")
 
     if not model:
-        return f"⚠️ {agent.name} 未配置 LLM 模型，请在管理后台设置。"
+        return f"⚠️ {agent.name} has no LLM model configured. Please set one in the admin panel."
 
     # Build conversation messages (without system prompt — call_llm adds it)
     messages: list[dict] = []
@@ -1490,4 +1772,4 @@ async def _call_agent_llm(
             except Exception as e2:
                 traceback.print_exc()
                 return f"⚠️ Model error: Primary: {str(e)[:80]} | Fallback: {str(e2)[:80]}"
-        return f"⚠️ 调用模型出错: {error_msg[:150]}"
+        return f"⚠️ Model call error: {error_msg[:150]}"

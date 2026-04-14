@@ -170,7 +170,7 @@ BUILTIN_TOOLS = [
             "properties": {
                 "name": {"type": "string", "description": "Unique name for this trigger"},
                 "type": {"type": "string", "enum": ["cron", "once", "interval", "poll", "on_message"], "description": "Trigger type"},
-                "config": {"type": "object", "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\"}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"张三\"}"},
+                "config": {"type": "object", "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\"}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"John\"}"},
                 "reason": {"type": "string", "description": "What to do when this trigger fires"},
                 "focus_ref": {"type": "string", "description": "Optional: which focus item this relates to"},
             },
@@ -1186,15 +1186,15 @@ BUILTIN_TOOLS = [
     {
         "name": "bitable_create_app",
         "display_name": "Bitable Create",
-        "description": "在飞书云盘中新建一个多维表格（Bitable）应用。创建后返回可直接访问的链接和 App Token，下一步可以通过 bitable_list_tables 查看初始数据表。",
+        "description": "Create a new Bitable (multi-dimensional table) app in Feishu Drive. Returns a direct access link and App Token. Use bitable_list_tables next to view the initial data tables.",
         "category": "feishu",
         "icon": "📊",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "新多维表格的名称，例如「项目追踪表」"},
-                "folder_token": {"type": "string", "description": "可选：父文件夹的 folder_token。不填则创建到「我的空间」根目录。"},
+                "name": {"type": "string", "description": "Name for the new Bitable, e.g. 'Project Tracker'"},
+                "folder_token": {"type": "string", "description": "Optional: parent folder token. If not provided, creates in 'My Space' root."},
             },
             "required": ["name"],
         },
@@ -1204,14 +1204,14 @@ BUILTIN_TOOLS = [
     {
         "name": "bitable_list_tables",
         "display_name": "Bitable List Tables",
-        "description": "列出飞书多维表格内的所有数据表 (Tables)。url 支持表格链接或 Wiki 链接。使用此工具了解请求的多维表格中有哪些表。",
+        "description": "List all data tables (Tables) within a Feishu Bitable. The URL supports both table links and Wiki links. Use this tool to discover which tables exist in a Bitable.",
         "category": "feishu",
         "icon": "📊",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                "url": {"type": "string", "description": "URL of the Bitable."},
             },
             "required": ["url"],
         },
@@ -1221,15 +1221,15 @@ BUILTIN_TOOLS = [
     {
         "name": "bitable_list_fields",
         "display_name": "Bitable List Fields",
-        "description": "列出飞书多维表格指定数据表中的所有字段 (Fields)。url 支持表格链接或 Wiki 链接。在查询或修改数据前，必须先调用此工具了解字段名称和类型。",
+        "description": "List all fields (Fields) in a specified data table within a Feishu Bitable. The URL supports both table links and Wiki links. You must call this tool first to understand field names and types before querying or modifying data.",
         "category": "feishu",
         "icon": "⌨️",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                "url": {"type": "string", "description": "URL of the Bitable."},
+                "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
             },
             "required": ["url"],
         },
@@ -1239,17 +1239,17 @@ BUILTIN_TOOLS = [
     {
         "name": "bitable_query_records",
         "display_name": "Bitable Query Records",
-        "description": "查询飞书多维表格中的数据行。可以提供过滤条件 (filter)。",
+        "description": "Query data rows from a Feishu Bitable. Optionally provide a filter condition.",
         "category": "feishu",
         "icon": "🔍",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
-                "filter_info": {"type": "string", "description": "可选，FQL 语法的过滤条件，例如 'CurrentValue.[Status]=\"Done\"'。如不确定过滤语法，可以不填，由你臺己在本地过滤返回的所有数据。"},
-                "max_results": {"type": "integer", "description": "最大返回条数 (默认 100)"},
+                "url": {"type": "string", "description": "URL of the Bitable."},
+                "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
+                "filter_info": {"type": "string", "description": "Optional FQL filter condition, e.g. 'CurrentValue.[Status]=\"Done\"'. If unsure about filter syntax, leave empty and filter the returned data locally."},
+                "max_results": {"type": "integer", "description": "Max number of records to return (default 100)"},
             },
             "required": ["url"],
         },
@@ -1259,16 +1259,16 @@ BUILTIN_TOOLS = [
     {
         "name": "bitable_create_record",
         "display_name": "Bitable Create Record",
-        "description": "在飞书多维表格中新增一行数据。fields 参数是一个字典，key 是字段名 (需要先通过 bitable_list_fields 获取)，value 是对应的值。",
+        "description": "Add a new data row in a Feishu Bitable. The fields parameter is a dictionary where keys are field names (get them via bitable_list_fields first) and values are the corresponding values.",
         "category": "feishu",
         "icon": "➕",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
-                "fields": {"type": "string", "description": "一个 JSON 字符串，代表要插入的 fields。例如：'{\"Name\": \"张三\", \"Age\": 30}'"},
+                "url": {"type": "string", "description": "URL of the Bitable."},
+                "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
+                "fields": {"type": "string", "description": "A JSON string representing the fields to insert. Example: '{\"Name\": \"John\", \"Age\": 30}'"},
             },
             "required": ["url", "fields"],
         },
@@ -1278,17 +1278,17 @@ BUILTIN_TOOLS = [
     {
         "name": "bitable_update_record",
         "display_name": "Bitable Update Record",
-        "description": "更新飞书多维表格中的指定行数据。",
+        "description": "Update a specific data row in a Feishu Bitable.",
         "category": "feishu",
         "icon": "✏️",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
-                "record_id": {"type": "string", "description": "要更新的 record_id，通过 bitable_query_records 获取。"},
-                "fields": {"type": "string", "description": "一个 JSON 字符串，代表要更新的 fields。例如：'{\"Status\": \"Done\"}'"},
+                "url": {"type": "string", "description": "URL of the Bitable."},
+                "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
+                "record_id": {"type": "string", "description": "The record_id to update. Get it via bitable_query_records."},
+                "fields": {"type": "string", "description": "A JSON string representing the fields to update. Example: '{\"Status\": \"Done\"}'"},
             },
             "required": ["url", "record_id", "fields"],
         },
@@ -1298,16 +1298,16 @@ BUILTIN_TOOLS = [
     {
         "name": "bitable_delete_record",
         "display_name": "Bitable Delete Record",
-        "description": "删除飞书多维表格中的指定行数据。",
+        "description": "Delete a specific data row from a Feishu Bitable.",
         "category": "feishu",
         "icon": "🗑️",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
-                "record_id": {"type": "string", "description": "要删除的 record_id，通过 bitable_query_records 获取。"},
+                "url": {"type": "string", "description": "URL of the Bitable."},
+                "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
+                "record_id": {"type": "string", "description": "The record_id to delete. Get it via bitable_query_records."},
             },
             "required": ["url", "record_id"],
         },
@@ -1490,16 +1490,16 @@ BUILTIN_TOOLS = [
     {
         "name": "feishu_approval_create",
         "display_name": "Feishu Approval Create",
-        "description": "发起一个飞书审批流实例。你需要知道审批定义的 approval_code 和表单对应字段的内容。",
+        "description": "Create a Feishu approval workflow instance. You need the approval_code and the form field contents.",
         "category": "feishu",
         "icon": "📝",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "approval_code": {"type": "string", "description": "审批定义的唯一代码 (approval_code)"},
-                "user_id": {"type": "string", "description": "发起人的 open_id。可以通过 feishu_user_search 获取。"},
-                "form_data": {"type": "string", "description": "表单内容的 JSON 字符串，例如 '[{\"id\":\"widget1\",\"type\":\"input\",\"value\":\"这是内容\"}]'"},
+                "approval_code": {"type": "string", "description": "Unique approval definition code (approval_code)"},
+                "user_id": {"type": "string", "description": "Initiator's open_id. Get it via feishu_user_search."},
+                "form_data": {"type": "string", "description": "JSON string of form content, e.g. '[{\"id\":\"widget1\",\"type\":\"input\",\"value\":\"Sample content\"}]'"},
             },
             "required": ["approval_code", "user_id", "form_data"],
         },
@@ -1509,15 +1509,15 @@ BUILTIN_TOOLS = [
     {
         "name": "feishu_approval_query",
         "display_name": "Feishu Approval Query",
-        "description": "查询指定的飞书审批实例列表。可以支持按状态查询（PENDING, APPROVED, REJECTED, CANCELED, DELETED）。",
+        "description": "Query a list of Feishu approval instances. Supports filtering by status (PENDING, APPROVED, REJECTED, CANCELED, DELETED).",
         "category": "feishu",
         "icon": "📋",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "approval_code": {"type": "string", "description": "审批定义的唯一代码 (approval_code)"},
-                "status": {"type": "string", "description": "可选过滤状态：PENDING, APPROVED, REJECTED, CANCELED, DELETED"},
+                "approval_code": {"type": "string", "description": "Unique approval definition code (approval_code)"},
+                "status": {"type": "string", "description": "Optional filter by status: PENDING, APPROVED, REJECTED, CANCELED, DELETED"},
             },
             "required": ["approval_code"],
         },
@@ -1527,14 +1527,14 @@ BUILTIN_TOOLS = [
     {
         "name": "feishu_approval_get",
         "display_name": "Feishu Approval Get",
-        "description": "获取指定飞书审批实例的详细信息与当前审批状态。",
+        "description": "Get detailed information and current status of a specific Feishu approval instance.",
         "category": "feishu",
         "icon": "📊",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "instance_id": {"type": "string", "description": "审批实例的 instance_id"},
+                "instance_id": {"type": "string", "description": "The approval instance_id"},
             },
             "required": ["instance_id"],
         },
@@ -1649,7 +1649,7 @@ BUILTIN_TOOLS = [
 AGENTBAY_TOOLS = [
     {
         "name": "agentbay_browser_navigate",
-        "display_name": "AgentBay: 浏览器访问",
+        "display_name": "AgentBay: Browser Navigate",
         "description": "[ENV: Browser] Navigate to a URL in the AgentBay HEADLESS BROWSER environment. IMPORTANT: This browser runs in an ISOLATED environment — it does NOT share filesystem, processes, or downloads with the Cloud Desktop (computer_* tools) or Code Sandbox (code_execute/command_exec). Files downloaded here are NOT accessible from other environments. Tip: after navigating, use browser_observe to identify interactive elements, then use browser_type/browser_click to interact.",
         "category": "agentbay",
         "icon": "🌐",
@@ -1657,14 +1657,14 @@ AGENTBAY_TOOLS = [
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "要访问的网址"},
-                "wait_for": {"type": "string", "description": "等待元素选择器（可选）"},
+                "url": {"type": "string", "description": "URL to navigate to"},
+                "wait_for": {"type": "string", "description": "Wait for element selector (optional)"},
                 "save_to_workspace": {
                     "type": "boolean",
                     # Set to True ONLY when the user explicitly asks to SEE or SAVE
-                    # a screenshot (e.g. "截图给我看", "保存截图"). Default False means
+                    # a screenshot (e.g. "show me a screenshot", "save screenshot"). Default False means
                     # the screenshot is held in memory for LLM vision only (invisible to user).
-                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
+                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"show me a screenshot\", \"save a screenshot\", \"take a screenshot\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
                     "default": False,
                 },
             },
@@ -1678,7 +1678,7 @@ AGENTBAY_TOOLS = [
                     "label": "API Key",
                     "type": "password",
                     "default": "",
-                    "placeholder": "从阿里云 AgentBay 控制台获取",
+                    "placeholder": "Get from Alibaba Cloud AgentBay console",
                 },
                 {
                     "key": "os_type",
@@ -1696,7 +1696,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_browser_screenshot",
-        "display_name": "AgentBay: 浏览器截图",
+        "display_name": "AgentBay: Browser Screenshot",
         "description": "[ENV: Browser] Take a screenshot of the current page in the headless browser. This browser is ISOLATED from the Cloud Desktop and Code Sandbox. Use this after clicking, typing, or submitting a form to verify the result — it preserves the current page state. Never call browser_navigate just to take a screenshot.",
         "category": "agentbay",
         "icon": "📸",
@@ -1708,7 +1708,7 @@ AGENTBAY_TOOLS = [
                     "type": "boolean",
                     # Set to True ONLY when the user explicitly asks to SEE or SAVE
                     # a screenshot. Default False = in-memory for LLM vision only.
-                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
+                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"show me a screenshot\", \"save a screenshot\", \"take a screenshot\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
                     "default": False,
                 },
             },
@@ -1718,7 +1718,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_browser_click",
-        "display_name": "AgentBay: 浏览器点击",
+        "display_name": "AgentBay: Browser Click",
         "description": "[ENV: Browser] Click an element in the headless browser (ISOLATED from Desktop and Code Sandbox). selector can be a CSS selector (e.g. #btn) or natural language description (e.g. 'the Send button').",
         "category": "agentbay",
         "icon": "🖱️",
@@ -1735,7 +1735,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_browser_type",
-        "display_name": "AgentBay: 浏览器输入",
+        "display_name": "AgentBay: Browser Type",
         "description": "[ENV: Browser] Type text into an element in the headless browser (ISOLATED from Desktop and Code Sandbox). selector can be a CSS selector or natural language description (e.g. 'phone number input').",
         "category": "agentbay",
         "icon": "⌨️",
@@ -1744,7 +1744,7 @@ AGENTBAY_TOOLS = [
             "type": "object",
             "properties": {
                 "selector": {"type": "string", "description": "CSS selector or natural language description of the input field (e.g. 'the phone number input' or 'input[type=tel]')"},
-                "text": {"type": "string", "description": "要输入的文本"},
+                "text": {"type": "string", "description": "Text to type"},
             },
             "required": ["selector", "text"],
         },
@@ -1753,7 +1753,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_code_execute",
-        "display_name": "AgentBay: 代码执行",
+        "display_name": "AgentBay: Code Execute",
         "description": "[ENV: Code Sandbox] Execute code (Python, Bash, Node.js) in the AgentBay Code Sandbox. IMPORTANT: This sandbox is an ISOLATED environment — it does NOT share filesystem, processes, or network with the Headless Browser (browser_* tools) or Cloud Desktop (computer_* tools). Files created here are NOT accessible from other environments.",
         "category": "agentbay",
         "icon": "💻",
@@ -1761,9 +1761,9 @@ AGENTBAY_TOOLS = [
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "编程语言"},
-                "code": {"type": "string", "description": "要执行的代码"},
-                "timeout": {"type": "integer", "description": "超时时间（秒）", "default": 30},
+                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
+                "code": {"type": "string", "description": "Code to execute"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 30},
             },
             "required": ["language", "code"],
         },
