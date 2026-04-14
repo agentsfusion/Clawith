@@ -12,6 +12,7 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.services.agent_tools import resolve_storage_key, resolve_read_key, _is_user_scoped_path
 from app.services.storage.factory import get_storage
 from app.services.storage.interface import (
     FileNotFoundError as StorageFileNotFoundError,
@@ -63,10 +64,20 @@ async def list_files(
         _validate_path(path)
 
     storage = get_storage()
-    prefix = f"{agent_id}/{path}" if path else str(agent_id)
+    user_id = current_user.id
+
+    if _is_user_scoped_path(path or ""):
+        user_prefix = f"{agent_id}/users/{user_id}/{path.strip('/')}" if path else f"{agent_id}/users/{user_id}/"
+        items = await storage.list(user_prefix)
+        if not items:
+            prefix = f"{agent_id}/{path}" if path else str(agent_id)
+            items = await storage.list(prefix)
+    else:
+        prefix = f"{agent_id}/{path}" if path else str(agent_id)
+        items = await storage.list(prefix)
+
     agent_prefix = f"{agent_id}/"
 
-    items = await storage.list(prefix)
     result = []
     for item in items:
         rel = item.path.removeprefix(agent_prefix)
@@ -93,7 +104,7 @@ async def read_file(
     _validate_path(path)
 
     storage = get_storage()
-    key = f"{agent_id}/{path}"
+    key = await resolve_read_key(agent_id, current_user.id, path)
     try:
         content = await storage.read(key)
     except StorageFileNotFoundError:
@@ -142,7 +153,7 @@ async def download_file(
     _validate_path(path)
 
     storage = get_storage()
-    key = f"{agent_id}/{path}"
+    key = await resolve_read_key(agent_id, uuid.UUID(user_id), path)
     filename = Path(path).name
 
     # Try presigned URL first (works for S3/cloud backends)
@@ -177,7 +188,7 @@ async def write_file(
     _validate_path(path)
 
     storage = get_storage()
-    key = f"{agent_id}/{path}"
+    key = resolve_storage_key(agent_id, current_user.id, path)
     await storage.write(key, data.content)
 
     return {"status": "ok", "path": path}
@@ -195,7 +206,7 @@ async def delete_file(
     _validate_path(path)
 
     storage = get_storage()
-    key = f"{agent_id}/{path}"
+    key = resolve_storage_key(agent_id, current_user.id, path)
 
     # Check if it's a file
     if await storage.exists(key):
