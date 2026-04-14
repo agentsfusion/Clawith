@@ -1700,7 +1700,7 @@ function SkillsTab() {
         setInstalling(slug);
         try {
             const result = await skillApi.clawhub.install(slug);
-            const tierLabel = result.tier === 1 ? 'Tier 1 (Pure Prompt)' : result.tier === 2 ? 'Tier 2 (CLI/API)' : 'Tier 3 (OpenClaw Native)';
+            const tierLabel = result.tier === 1 ? 'Tier 1 (Pure Prompt)' : result.tier === 2 ? 'Tier 2 (CLI/API)' : 'Tier 3 (AgentsFusion Native)';
             showToast(`Installed "${result.name}" — ${tierLabel}, ${result.file_count} files`);
             setRefreshKey(k => k + 1);
             // Remove from search results
@@ -1744,7 +1744,7 @@ function SkillsTab() {
         const styles: Record<number, { bg: string; color: string; label: string }> = {
             1: { bg: 'rgba(52,199,89,0.12)', color: 'var(--success, #34c759)', label: 'Tier 1 · Pure Prompt' },
             2: { bg: 'rgba(255,159,10,0.12)', color: 'var(--warning, #ff9f0a)', label: 'Tier 2 · CLI/API' },
-            3: { bg: 'rgba(255,59,48,0.12)', color: 'var(--error, #ff3b30)', label: 'Tier 3 · OpenClaw Native' },
+            3: { bg: 'rgba(255,59,48,0.12)', color: 'var(--error, #ff3b30)', label: 'Tier 3 · AgentsFusion Native' },
         };
         const s = styles[tier] || styles[1];
         return (
@@ -3048,7 +3048,7 @@ export default function EnterpriseSettings() {
                                 className="form-input"
                                 value={companyIntro}
                                 onChange={e => setCompanyIntro(e.target.value)}
-                                placeholder={`# Company Name\nClawith\n\n# About\nOpenClaw\uD83E\uDD9E For Teams\nOpen Source \u00B7 Multi-OpenClaw Collaboration\n\nOpenClaw empowers individuals.\nClawith scales it to frontier organizations.`}
+                                placeholder={`# Company Name\nAgentsFusion\n\n# About\nPersonal Assistant For Teams\nOpen Source \u00B7 Multi-AgentsFusion Collaboration\n\nAgentsFusion empowers individuals.\nAgentsFusion scales it to frontier organizations.`}
                                 style={{
                                     minHeight: '200px', resize: 'vertical',
                                     fontFamily: 'var(--font-mono)', fontSize: '13px',

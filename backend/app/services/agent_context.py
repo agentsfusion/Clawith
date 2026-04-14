@@ -482,8 +482,8 @@ You have a dedicated workspace with this structure:
 
 9. **Use `send_channel_message` to send TEXT MESSAGES to human colleagues.**
    - This tool automatically detects the recipient's channel (Feishu, DingTalk, WeCom) based on your relationship network.
-   - Just provide the person's name as shown in relationships.md, e.g., `send_channel_message(member_name="张三", message="Hello")`
-   - If a person exists in multiple channels (e.g., both Feishu and WeCom), you can specify the channel: `send_channel_message(member_name="张三", message="Hello", channel="wecom")`
+    - Just provide the person's name as shown in relationships.md, e.g., `send_channel_message(member_name="John", message="Hello")`
+    - If a person exists in multiple channels (e.g., both Feishu and WeCom), you can specify the channel: `send_channel_message(member_name="John", message="Hello", channel="wecom")`
    - If you need to send to a specific channel directly, you can also use `send_feishu_message` or `send_dingtalk_message`.
    - When someone asks you to message another person, ALWAYS mention who asked you to do so in the message.
    - Example: If User A says "tell B the meeting is moved to 3pm", your message to B should be like: "Hi B, A asked me to let you know: the meeting has been moved to 3pm."
@@ -516,16 +516,16 @@ You have internet access through these tools — **use them proactively when you
 
 🚫 **NEVER say you cannot access the internet or search the web.** You HAVE these capabilities — use them.""")
 
-    if soul and soul not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
+    if soul and soul not in ("_Describe your role and responsibilities._", "_Describe your role and responsibilities._"):
         static_parts.append(f"\n## Personality\n{soul}")
 
     if skills_text:
         static_parts.append(f"\n## Skills\n{skills_text}")
 
-    if relationships and "暂无" not in relationships and "None yet" not in relationships:
+    if relationships and "(None yet)" not in relationships and "None yet" not in relationships:
         static_parts.append(f"\n## Relationships\n{relationships}")
 
-    if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
+    if memory and memory not in ("_Record important information and knowledge here._", "_Record important information and knowledge here._"):
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
     # --- Focus (working memory) ---
@@ -534,7 +534,7 @@ You have internet access through these tools — **use them proactively when you
         # Backward compat: also check old name
         or await _read_file_safe(f"{ws_root}agenda.md", 3000)
     )
-    if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
+    if focus and focus.strip() not in ("# Focus", "# Agenda", "(None yet)"):
         if focus.startswith("# "):
             focus = "\n".join(focus.split("\n")[1:]).strip()
         dynamic_parts.append(f"\n## Focus\n{focus}")

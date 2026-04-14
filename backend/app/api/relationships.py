@@ -21,21 +21,21 @@ settings = get_settings()
 router = APIRouter(prefix="/agents/{agent_id}/relationships", tags=["relationships"])
 
 RELATION_LABELS = {
-    "direct_leader": "直属上级",
-    "collaborator": "协作伙伴",
-    "stakeholder": "利益相关者",
-    "team_member": "团队成员",
-    "subordinate": "下属",
-    "mentor": "导师",
-    "other": "其他",
+    "direct_leader": "Direct Supervisor",
+    "collaborator": "Collaborator",
+    "stakeholder": "Stakeholder",
+    "team_member": "Team Member",
+    "subordinate": "Subordinate",
+    "mentor": "Mentor",
+    "other": "Other",
 }
 
 AGENT_RELATION_LABELS = {
-    "peer": "同级协作",
-    "supervisor": "上级数字员工",
-    "assistant": "助手",
-    "collaborator": "协作伙伴",
-    "other": "其他",
+    "peer": "Peer",
+    "supervisor": "Supervisor Digital Employee",
+    "assistant": "Assistant",
+    "collaborator": "Collaborator",
+    "other": "Other",
 }
 
 
@@ -270,42 +270,42 @@ async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
     agent_rels = a_result.scalars().all()
 
     if not human_rows and not agent_rels:
-        await storage.write(relationships_key, "# 关系网络\n\n_暂无配置的关系。_\n")
+        await storage.write(relationships_key, "# Relationship Network\n\n_No relationships configured yet._\n")
         return
 
-    lines = ["# 关系网络\n"]
+    lines = ["# Relationship Network\n"]
 
     # Human relationships
     if human_rows:
-        lines.append("## 👤 人类同事\n")
+        lines.append("## 👤 Human Colleagues\n")
         for r, provider_name in human_rows:
             m = r.member
             if not m:
                 continue
             label = RELATION_LABELS.get(r.relation, r.relation)
-            source = f"（通过 {provider_name} 同步）" if provider_name else ""
-            lines.append(f"### {m.name} — {m.title or '未设置职位'}{source}")
-            lines.append(f"- 部门：{m.department_path or '未设置'}")
-            lines.append(f"- 关系：{label}")
+            source = f" (synced via {provider_name})" if provider_name else ""
+            lines.append(f"### {m.name} — {m.title or 'No title set'}{source}")
+            lines.append(f"- Department: {m.department_path or 'Not set'}")
+            lines.append(f"- Relationship: {label}")
             if m.open_id:
-                lines.append(f"- OpenID：{m.open_id}")
+                lines.append(f"- OpenID: {m.open_id}")
             if m.email:
-                lines.append(f"- 邮箱：{m.email}")
+                lines.append(f"- Email: {m.email}")
             if r.description:
                 lines.append(f"- {r.description}")
             lines.append("")
 
     # Agent relationships
     if agent_rels:
-        lines.append("## 🤖 数字员工同事\n")
+        lines.append("## 🤖 Digital Employee Colleagues\n")
         for r in agent_rels:
             a = r.target_agent
             if not a:
                 continue
             label = AGENT_RELATION_LABELS.get(r.relation, r.relation)
-            lines.append(f"### {a.name} — {a.role_description or '数字员工'}")
-            lines.append(f"- 关系：{label}")
-            lines.append(f"- 可以用 send_message_to_agent 工具给 {a.name} 发消息协作")
+            lines.append(f"### {a.name} — {a.role_description or 'Digital Employee'}")
+            lines.append(f"- Relationship: {label}")
+            lines.append(f"- You can collaborate with {a.name} using the send_message_to_agent tool")
             if r.description:
                 lines.append(f"- {r.description}")
             lines.append("")

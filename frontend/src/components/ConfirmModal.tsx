@@ -11,7 +11,7 @@ interface ConfirmModalProps {
     onCancel: () => void;
 }
 
-export default function ConfirmModal({ open, title, message, confirmLabel = '确定', cancelLabel = '取消', danger, onConfirm, onCancel }: ConfirmModalProps) {
+export default function ConfirmModal({ open, title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger, onConfirm, onCancel }: ConfirmModalProps) {
     const btnRef = useRef<HTMLButtonElement>(null);
 
     useEffect(() => {
