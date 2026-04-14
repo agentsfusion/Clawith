@@ -104,19 +104,19 @@ def _decrypt_sensitive_fields(config: dict, config_schema: dict | None = None) -
 
 
 def _get_cached_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Optional[dict]:
-    """获取缓存的工具配置，过期返回 None。"""
+    """Get cached tool config, return None if expired."""
     cache_key = (str(agent_id) if agent_id else None, tool_name)
     if cache_key in _tool_config_cache:
         config, expiry = _tool_config_cache[cache_key]
         if datetime.now() < expiry:
             return config
-        # 过期，删除
+        # Expired, delete
         del _tool_config_cache[cache_key]
     return None
 
 
 def _set_cached_tool_config(agent_id: Optional[uuid.UUID], tool_name: str, config: dict):
-    """设置工具配置缓存。"""
+    """Set tool config cache."""
     cache_key = (str(agent_id) if agent_id else None, tool_name)
     expiry = datetime.now() + timedelta(seconds=_TOOL_CONFIG_CACHE_TTL_SECONDS)
     _tool_config_cache[cache_key] = (config, expiry)
@@ -364,7 +364,7 @@ AGENT_TOOLS = [
                     },
                     "config": {
                         "type": "object",
-                        "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"张三\"} (for human users on Feishu/Slack/Discord). webhook: {\"secret\": \"optional_hmac_secret\"} (system auto-generates the URL)",
+                        "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"John\"} (for human users on Feishu/Slack/Discord). webhook: {\"secret\": \"optional_hmac_secret\"} (system auto-generates the URL)",
                     },
                     "reason": {
                         "type": "string",
@@ -472,7 +472,7 @@ AGENT_TOOLS = [
                 "properties": {
                     "member_name": {
                         "type": "string",
-                        "description": "Recipient's name, e.g. '覃睿'. Will be looked up automatically.",
+                        "description": "Recipient's name, e.g. 'John'. Will be looked up automatically.",
                     },
                     "user_id": {
                         "type": "string",
@@ -505,7 +505,7 @@ AGENT_TOOLS = [
                 "properties": {
                     "member_name": {
                         "type": "string",
-                        "description": "Recipient's name as shown in relationships, e.g. '张三'. Must be a person in your relationship network.",
+                        "description": "Recipient's name as shown in relationships, e.g. 'Alice'. Must be a person in your relationship network.",
                     },
                     "message": {
                         "type": "string",
@@ -837,7 +837,7 @@ AGENT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
+                    "url": {"type": "string", "description": "URL of the Bitable."},
                 },
                 "required": ["url"],
             },
@@ -851,8 +851,8 @@ AGENT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                    "url": {"type": "string", "description": "URL of the Bitable."},
+                    "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
                 },
                 "required": ["url"],
             },
@@ -866,8 +866,8 @@ AGENT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                    "url": {"type": "string", "description": "URL of the Bitable."},
+                    "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
                     "filter_info": {"type": "string", "description": "可选，FQL 语法的过滤条件，例如 'CurrentValue.[Status]=\"Done\"'。如不确定过滤语法，可以不填，由你臺己在本地过滤返回的所有数据。"},
                     "max_results": {"type": "integer", "description": "最大返回条数 (默认 100)"},
                 },
@@ -883,8 +883,8 @@ AGENT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                    "url": {"type": "string", "description": "URL of the Bitable."},
+                    "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
                     "fields": {"type": "string", "description": "一个 JSON 字符串，代表要插入的 fields。例如：'{\"Name\": \"张三\", \"Age\": 30}'"},
                 },
                 "required": ["url", "fields"],
@@ -899,8 +899,8 @@ AGENT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                    "url": {"type": "string", "description": "URL of the Bitable."},
+                    "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
                     "record_id": {"type": "string", "description": "要更新的 record_id，通过 bitable_query_records 获取。"},
                     "fields": {"type": "string", "description": "一个 JSON 字符串，代表要更新的 fields。例如：'{\"Status\": \"Done\"}'"},
                 },
@@ -916,8 +916,8 @@ AGENT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "多维表格的 URL 链接。"},
-                    "table_id": {"type": "string", "description": "具体的数据表 ID，如果 url 中包含 tbl 则可以不填。"},
+                    "url": {"type": "string", "description": "URL of the Bitable."},
+                    "table_id": {"type": "string", "description": "Specific data table ID. Optional if the URL contains tbl."},
                     "record_id": {"type": "string", "description": "要删除的 record_id，通过 bitable_query_records 获取。"},
                 },
                 "required": ["url", "record_id"],

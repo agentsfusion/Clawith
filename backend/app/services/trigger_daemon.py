@@ -419,13 +419,13 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             context_parts = []
             trigger_names = []
             for t in triggers:
-                part = f"触发器：{t.name} ({t.type})\n原因：{t.reason}"
+                part = f"Trigger: {t.name} ({t.type})\nReason: {t.reason}"
                 if t.focus_ref:
-                    part += f"\n关联 Focus：{t.focus_ref}"
+                    part += f"\nRelated Focus: {t.focus_ref}"
                 # Include matched message for on_message triggers
                 cfg = t.config or {}
                 if t.type == "on_message" and cfg.get("_matched_message"):
-                    part += f"\n收到来自 {cfg.get('_matched_from', '?')} 的消息：\n\"{cfg['_matched_message'][:500]}\""
+                    part += f"\nReceived message from {cfg.get('_matched_from', '?')}:\n\"{cfg['_matched_message'][:500]}\""
                 # Include webhook payload
                 if t.type == "webhook" and cfg.get("_webhook_payload"):
                     payload_str = cfg["_webhook_payload"]
@@ -436,14 +436,14 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 trigger_names.append(t.name)
 
             trigger_context = (
-                "===== 本次唤醒上下文 =====\n"
-                f"唤醒来源：trigger（{'多个触发器同时触发' if len(triggers) > 1 else '触发器触发'}）\n\n"
+                "===== Current wake context =====\n"
+                f"Wake source: trigger ({'multiple triggers fired' if len(triggers) > 1 else 'trigger fired'})\n\n"
                 + "\n---\n".join(context_parts)
                 + "\n==========================="
             )
 
             # Create Reflection Session
-            title = f"🤖 内心独白：{', '.join(trigger_names)}"
+            title = f"🤖 Inner monologue: {', '.join(trigger_names)}"
             # Find agent's participant
             result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
@@ -601,7 +601,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                             trigger_reasons.append(r)
                         elif r:
                             trigger_reasons.append(r[:77] + "...")
-                summary = trigger_reasons[0] if trigger_reasons else "有新的事件需要处理"
+                summary = trigger_reasons[0] if trigger_reasons else "New event needs processing"
 
                 _is_a2a_wait = any(t.name.startswith("a2a_wait_") for t in triggers)
                 if _is_a2a_wait:
@@ -614,13 +614,13 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                         r'\bfocus[_ ]?item\b',
                         r'\btask_delegate\b',
                         r'\bfocus_ref\b',
-                        r'✅\s*(a2a\w+|wait\w+|触发器\w*|focus\w*).*(?:已取消|已为|保持|活跃|完成状态)[^\n]*',
-                        r'[\-•]\s*(?:触发器|trigger|focus|wait_\w+|a2a\w+).*[^\n]*',
-                        r'(?:触发器|trigger)\s+\S+\s*(?:已取消|保持活跃|已为完成状态|fired)',
-                        r'已静默清理触发器',
-                        r'已静默处理完毕',
-                        r'继续待命[。，]?\s*',
-                        r'，?\s*(?:继续)?待命。',
+                        r'✅\s*(a2a\w+|wait\w+|trigger\w*|focus\w*).*(?:cancelled|set to|keep|active|completed status)[^\n]*',
+                        r'[\-•]\s*(?:trigger|focus|wait_\w+|a2a\w+).*[^\n]*',
+                        r'(?:trigger)\s+\S+\s*(?:cancelled|keep active|set to completed status|fired)',
+                        r'Silently cleaned triggers',
+                        r'Silently processed',
+                        r'Standby[.,]?\s*',
+                        r',?\s*(?:continue)?standby.',
                     ]
                     for _pat in _internal_patterns:
                         cleaned = _re.sub(_pat, '', cleaned, flags=_re.IGNORECASE)

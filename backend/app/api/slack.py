@@ -341,7 +341,7 @@ async def slack_event_webhook(
     if not user_text and not _file_user_messages and slack_files:
         # Files were present but all downloads failed — still send ack so user knows we got the file event
         _file_names = ", ".join(_sf.get("name", "file") for _sf in slack_files)
-        _ack = f"收到了文件 {_file_names}，不过我暂时无法下载其内容，请检查 Slack App 是否已授权 files:read 权限。"
+        _ack = f"Received file(s) {_file_names}, but I'm unable to download the content. Please check if the Slack App has files:read permission."
         db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
                            content=_ack, conversation_id=session_conv_id))
         sess.last_message_at = datetime.now(timezone.utc)

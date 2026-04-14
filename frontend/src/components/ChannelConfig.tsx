@@ -198,7 +198,7 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         fields: [
             { key: 'app_key', label: 'AppKey', type: 'password', required: true },
             { key: 'app_secret', label: 'AppSecret', type: 'password', required: true },
-            { key: 'agent_id', label: 'AgentId', type: 'text', placeholder: 'DingTalk应用AgentId(可选)', required: false },
+            { key: 'agent_id', label: 'AgentId', type: 'text', placeholder: 'DingTalk App AgentId (optional)', required: false },
         ],
         guide: { prefix: 'channelGuide.dingtalk', steps: 6 },
         webhookLabel: 'Webhook URL',

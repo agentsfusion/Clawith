@@ -117,8 +117,8 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                 </h4>
                 <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                     {isChinese
-                        ? 'OpenClaw 通过此 Key 连接平台。重新生成后旧 Key 将立即失效。'
-                        : 'OpenClaw uses this key to connect to the platform. Regenerating will immediately invalidate the old key.'}
+                        ? 'Personal Assistant 通过此 Key 连接平台。重新生成后旧 Key 将立即失效。'
+                        : 'Personal Assistant uses this key to connect to the platform. Regenerating will immediately invalidate the old key.'}
                 </p>
 
                 {/* API Key Display Logic */}
