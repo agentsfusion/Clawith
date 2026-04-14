@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  IconPlus, IconTrash, IconMessage, IconChevronRight, IconSend,
+  IconPlus, IconTrash, IconMessage, IconChevronRight, IconChevronLeft, IconSend,
   IconPlayerStop, IconRobot, IconUser, IconLoader2, IconCode,
   IconCopy, IconCheck, IconDownload, IconActivity, IconChartBar,
-  IconTool, IconBulb, IconRocket, IconExternalLink
+  IconTool, IconBulb, IconRocket, IconExternalLink, IconLayoutSidebar
 } from '@tabler/icons-react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
@@ -74,7 +74,7 @@ function StreamingMessage({ content }: { content: string }) {
 }
 
 function Sidebar({
-  conversations, activeId, onSelect, onCreate, onDelete, loading
+  conversations, activeId, onSelect, onCreate, onDelete, loading, collapsed, onToggle
 }: {
   conversations: ScriptConversation[];
   activeId: number | null;
@@ -82,7 +82,39 @@ function Sidebar({
   onCreate: () => void;
   onDelete: (id: number) => void;
   loading: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
 }) {
+  if (collapsed) {
+    return (
+      <div className="sb-sidebar sb-sidebar-collapsed">
+        <div className="sb-sidebar-header" style={{ justifyContent: 'center' }}>
+          <button className="sb-sidebar-toggle" onClick={onToggle} title="Expand sessions">
+            <IconChevronRight size={16} />
+          </button>
+        </div>
+        <div style={{ padding: '10px', display: 'flex', justifyContent: 'center' }}>
+          <button className="sb-sidebar-toggle" onClick={onCreate} disabled={loading} title="New Session">
+            {loading ? <IconLoader2 size={16} className="spin" /> : <IconPlus size={16} />}
+          </button>
+        </div>
+        <div className="sb-sidebar-list">
+          {conversations.map((c) => (
+            <div
+              key={c.id}
+              className={`sb-sidebar-item ${activeId === c.id ? 'active' : ''}`}
+              onClick={() => onSelect(c.id)}
+              title={c.title}
+              style={{ justifyContent: 'center', padding: '8px 0' }}
+            >
+              <IconMessage size={14} style={{ opacity: 0.7, flexShrink: 0 }} />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="sb-sidebar">
       <div className="sb-sidebar-header">
@@ -92,6 +124,9 @@ function Sidebar({
           </div>
           <span style={{ fontWeight: 600, fontSize: '14px' }}>Script Builder</span>
         </div>
+        <button className="sb-sidebar-toggle" onClick={onToggle} title="Collapse sessions">
+          <IconChevronLeft size={16} />
+        </button>
       </div>
       <div style={{ padding: '10px' }}>
         <button className="sb-btn-new" onClick={onCreate} disabled={loading}>
@@ -387,6 +422,7 @@ export default function ScriptBuilder() {
   const [streamedContent, setStreamedContent] = useState('');
   const [currentScript, setCurrentScript] = useState<string | null>(null);
   const [convLoading, setConvLoading] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [analyzeResult, setAnalyzeResult] = useState<(ScriptAnalysisResult & { error?: string }) | { error: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -599,6 +635,8 @@ export default function ScriptBuilder() {
         onCreate={handleCreate}
         onDelete={handleDelete}
         loading={convLoading}
+        collapsed={sidebarCollapsed}
+        onToggle={() => setSidebarCollapsed(c => !c)}
       />
 
       <div className="sb-main">

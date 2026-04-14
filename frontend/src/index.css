@@ -2704,6 +2704,29 @@ select:focus {
     display: flex;
     flex-direction: column;
     height: 100%;
+    transition: width 0.2s ease, min-width 0.2s ease;
+}
+.sb-sidebar-collapsed {
+    width: 48px;
+    min-width: 48px;
+}
+.sb-sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    flex-shrink: 0;
+}
+.sb-sidebar-toggle:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
 }
 .sb-sidebar-header {
     padding: 14px 16px;
