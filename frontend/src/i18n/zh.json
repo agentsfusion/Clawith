@@ -216,7 +216,8 @@
       "settings": "设置",
       "feedback": "反馈",
       "health": "健康",
-      "script": "脚本"
+      "script": "脚本",
+      "jobs": "进化任务"
     },
     "fields": {
       "name": "名称",

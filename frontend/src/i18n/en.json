@@ -209,7 +209,8 @@
       "settings": "Settings",
       "feedback": "Feedback",
       "health": "Health",
-      "script": "Script"
+      "script": "Script",
+      "jobs": "Jobs"
     },
     "fields": {
       "name": "Name",
