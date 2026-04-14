@@ -66,7 +66,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
             from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
 
-            static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "")
+            static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "", user_id=agent.creator_id)
 
             messages = [
                 LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),

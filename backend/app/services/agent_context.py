@@ -159,7 +159,7 @@ async def _load_skills_index(agent_id: uuid.UUID) -> str:
     return "\n".join(lines)
 
 
-async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> tuple[str, str]:
+async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None, user_id: uuid.UUID | None = None) -> tuple[str, str]:
     """Build a rich system prompt incorporating agent's full context.
 
     Reads from workspace files:
@@ -170,14 +170,20 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     """
     ws_root = _agent_workspace(agent_id)  # e.g. "{agent_id}/"
 
-    # --- Soul ---
+    # --- Soul (always global) ---
     soul = await _read_file_safe(f"{ws_root}soul.md", 2000)
     # Strip markdown heading if present
     if soul.startswith("# "):
         soul = "\n".join(soul.split("\n")[1:]).strip()
 
-    # --- Memory ---
-    memory = await _read_file_safe(f"{ws_root}memory/memory.md", 2000) or await _read_file_safe(f"{ws_root}memory.md", 2000)
+    # --- Memory (user-scoped when user_id is provided) ---
+    if user_id is not None:
+        user_mem_key = f"{ws_root}users/{user_id}/memory/memory.md"
+        memory = await _read_file_safe(user_mem_key, 2000)
+        if not memory:
+            memory = await _read_file_safe(f"{ws_root}memory/memory.md", 2000) or await _read_file_safe(f"{ws_root}memory.md", 2000)
+    else:
+        memory = await _read_file_safe(f"{ws_root}memory/memory.md", 2000) or await _read_file_safe(f"{ws_root}memory.md", 2000)
     if memory.startswith("# "):
         memory = "\n".join(memory.split("\n")[1:]).strip()
 
@@ -528,12 +534,20 @@ You have internet access through these tools — **use them proactively when you
     if memory and memory not in ("_Record important information and knowledge here._", "_Record important information and knowledge here._"):
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
-    # --- Focus (working memory) ---
-    focus = (
-        await _read_file_safe(f"{ws_root}focus.md", 3000)
-        # Backward compat: also check old name
-        or await _read_file_safe(f"{ws_root}agenda.md", 3000)
-    )
+    # --- Focus (working memory, user-scoped) ---
+    if user_id is not None:
+        user_focus_key = f"{ws_root}users/{user_id}/focus.md"
+        focus = await _read_file_safe(user_focus_key, 3000)
+        if not focus:
+            focus = (
+                await _read_file_safe(f"{ws_root}focus.md", 3000)
+                or await _read_file_safe(f"{ws_root}agenda.md", 3000)
+            )
+    else:
+        focus = (
+            await _read_file_safe(f"{ws_root}focus.md", 3000)
+            or await _read_file_safe(f"{ws_root}agenda.md", 3000)
+        )
     if focus and focus.strip() not in ("# Focus", "# Agenda", "(None yet)"):
         if focus.startswith("# "):
             focus = "\n".join(focus.split("\n")[1:]).strip()

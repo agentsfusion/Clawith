@@ -198,7 +198,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 
             # Build context
             from app.services.agent_context import build_agent_context
-            static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent_role)
+            static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent_role, user_id=agent_creator_id)
 
             # Fetch recent activity to give heartbeat context for curiosity exploration
             from app.models.activity_log import AgentActivityLog

@@ -81,7 +81,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
 
     # Step 3: Build full agent context (same as chat dialog)
     from app.services.agent_context import build_agent_context
-    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent.role_description or "")
+    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent.role_description or "", user_id=creator_id)
 
     # Add task-execution-specific instructions
     task_addendum = """
