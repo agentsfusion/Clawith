@@ -258,8 +258,13 @@ async def _save_skill_to_db(
     category: str, icon: str, files: list[dict],
     source_url: str | None = None,
     tenant_id: str | None = None,
+    overwrite: bool = False,
 ) -> dict:
-    """Create a Skill + SkillFile records in the database."""
+    """Create a Skill + SkillFile records in the database.
+
+    When overwrite=True, update an existing skill with the same folder_name
+    instead of raising a 409 conflict.
+    """
     import uuid as _uuid
     async with async_session() as db:
         # Check for folder_name conflict (scoped by tenant)
@@ -268,12 +273,31 @@ async def _save_skill_to_db(
             conflict_q = conflict_q.where(Skill.tenant_id == _uuid.UUID(tenant_id))
         else:
             conflict_q = conflict_q.where(Skill.tenant_id.is_(None))
-        existing = await db.execute(conflict_q)
-        if existing.scalar_one_or_none():
+        existing_result = await db.execute(conflict_q)
+        existing_skill = existing_result.scalar_one_or_none()
+
+        if existing_skill and not overwrite:
             raise HTTPException(
                 409, f"A skill with folder name '{folder_name}' already exists. "
                      "Delete it first or use a different name."
             )
+
+        if existing_skill and overwrite:
+            existing_skill.name = name
+            existing_skill.description = description
+            existing_skill.category = category
+            existing_skill.icon = icon
+
+            for old_file in list(existing_skill.files):
+                await db.delete(old_file)
+            await db.flush()
+
+            for f in files:
+                content = f["content"].replace("\x00", "") if f.get("content") else ""
+                db.add(SkillFile(skill_id=existing_skill.id, path=f["path"], content=content))
+
+            await db.commit()
+            return {"id": str(existing_skill.id), "name": existing_skill.name, "folder_name": existing_skill.folder_name, "updated": True}
 
         skill = Skill(
             name=name,
@@ -683,9 +707,10 @@ async def batch_upload(body: BatchUploadIn, current_user: User = Depends(get_cur
                 icon=skill.icon,
                 files=[{"path": f.path, "content": f.content} for f in skill.files],
                 tenant_id=tenant_id,
+                overwrite=True,
             )
             results.append({
-                "status": "ok",
+                "status": "updated" if result.get("updated") else "ok",
                 "id": result["id"],
                 "name": result["name"],
                 "folder_name": result["folder_name"],
