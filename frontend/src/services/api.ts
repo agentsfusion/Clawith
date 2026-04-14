@@ -449,6 +449,8 @@ export const skillApi = {
         setClawhubKey: (clawhub_key: string) =>
             request<any>('/skills/settings/token', { method: 'PUT', body: JSON.stringify({ clawhub_key }) }),
     },
+    batchUpload: (skills: any[]) =>
+        request<{results: any[]}>('/skills/batch-upload', { method: 'POST', body: JSON.stringify({ skills }) }),
     // Agent-level import (writes to agent workspace)
     agentImport: {
         fromClawhub: (agentId: string, slug: string) =>
