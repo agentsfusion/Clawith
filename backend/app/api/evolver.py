@@ -256,7 +256,7 @@ async def trigger_health_check(
     finally:
         await client.close()
 
-    analysis = _parse_analysis(response)
+    analysis = _parse_analysis(response.content)
     version_label = f"v{script.version}" if script.folder == "evolved" else f"v{script.version}-initial"
 
     check = AgentHealthCheck(
