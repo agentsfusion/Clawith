@@ -14,6 +14,7 @@ import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLiveP
 import AgentCredentials from '../components/AgentCredentials';
 import FeedbackTab from '../components/evolver/FeedbackTab';
 import HealthTab from '../components/evolver/HealthTab';
+import JobDashboard from '../components/evolver/JobDashboard';
 import ScriptTab from '../components/evolver/ScriptTab';
 import EvolverMindTab from '../components/evolver/EvolverMindTab';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, gwsApi, larkApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
@@ -24,7 +25,7 @@ import { formatFileSize } from '../utils/formatFileSize';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 
-const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings', 'feedback', 'health', 'script'] as const;
+const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings', 'feedback', 'health', 'script', 'jobs'] as const;
 
 // Format large token numbers with K/M suffixes
 const formatTokens = (n: number) => {
@@ -1633,7 +1634,7 @@ function AgentDetailInner() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
-    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings', 'feedback', 'health', 'script'];
+    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings', 'feedback', 'health', 'script', 'jobs'];
     const hashTab = location.hash?.replace('#', '');
     const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
 
@@ -3231,7 +3232,7 @@ function AgentDetailInner() {
                             return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
                         }
                         const isEvolver = (agent as any)?.agent_type === 'evolver';
-                        if (['feedback', 'health', 'script'].includes(tab)) return isEvolver;
+                        if (['feedback', 'health', 'script', 'jobs'].includes(tab)) return isEvolver;
                         if (isEvolver && ['aware', 'workspace'].includes(tab)) return false;
                         return true;
                     }).map((tab) => (
@@ -6273,6 +6274,10 @@ function AgentDetailInner() {
 
                     {activeTab === 'script' && id && (
                         <ScriptTab agentId={id} />
+                    )}
+
+                    {activeTab === 'jobs' && id && (
+                        <JobDashboard agentId={id} />
                     )}
 
         </>

@@ -1,4 +1,4 @@
-"""Evolver Agent API — Feedback CRUD, Health Check, Script Version management."""
+"""Evolver Agent API — Feedback CRUD, Health Check, Script Version, Evolution Job management."""
 
 import json
 import logging
@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.auth import get_current_user
 from app.database import get_db, async_session
 from app.models.agent import Agent
-from app.models.evolver import AgentFeedback, AgentHealthCheck, AgentScriptVersion
+from app.models.evolver import AgentFeedback, AgentHealthCheck, AgentScriptVersion, EvolutionJob
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.llm_client import create_llm_client, LLMMessage, get_max_tokens
@@ -399,3 +399,171 @@ async def trigger_evolution(
     from app.services.evolver_evolution import run_evolution
     result = await run_evolution(agent_id, agent.tenant_id, direction)
     return result
+
+
+class EvolutionJobCreate(BaseModel):
+    direction: str = Field(min_length=1, max_length=500)
+    cron_schedule: str = Field(default="0 0 * * *", min_length=1, max_length=100)
+
+class EvolutionJobUpdate(BaseModel):
+    direction: str | None = None
+    cron_schedule: str | None = None
+    active: bool | None = None
+
+class EvolutionJobOut(BaseModel):
+    id: str
+    agent_id: str
+    agent_name: str | None = None
+    direction: str
+    cron_schedule: str
+    active: bool
+    last_run_at: datetime | None = None
+    next_run_at: datetime | None = None
+    last_run_status: str | None = None
+    last_run_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+def _job_to_out(job: EvolutionJob, agent_name: str | None = None) -> EvolutionJobOut:
+    return EvolutionJobOut(
+        id=str(job.id), agent_id=str(job.agent_id), agent_name=agent_name,
+        direction=job.direction, cron_schedule=job.cron_schedule,
+        active=job.active, last_run_at=job.last_run_at, next_run_at=job.next_run_at,
+        last_run_status=job.last_run_status, last_run_error=job.last_run_error,
+        created_at=job.created_at, updated_at=job.updated_at,
+    )
+
+
+@router.get("/agents/{agent_id}/jobs", response_model=list[EvolutionJobOut])
+async def list_evolution_jobs(
+    agent_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await _verify_evolver_agent(db, agent_id, current_user)
+    result = await db.execute(
+        select(EvolutionJob)
+        .where(EvolutionJob.agent_id == agent_id)
+        .order_by(desc(EvolutionJob.created_at))
+    )
+    jobs = result.scalars().all()
+    return [_job_to_out(j, agent.name) for j in jobs]
+
+
+@router.post("/agents/{agent_id}/jobs", response_model=EvolutionJobOut, status_code=201)
+async def create_evolution_job(
+    agent_id: str,
+    body: EvolutionJobCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await _verify_evolver_agent(db, agent_id, current_user)
+
+    from app.services.evolution_job_daemon import is_valid_cron, get_next_run_at
+    if not is_valid_cron(body.cron_schedule):
+        raise HTTPException(status_code=400, detail="Invalid cron schedule expression")
+
+    job = EvolutionJob(
+        agent_id=agent_id,
+        direction=body.direction,
+        cron_schedule=body.cron_schedule,
+        next_run_at=get_next_run_at(body.cron_schedule),
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return _job_to_out(job, agent.name)
+
+
+@router.patch("/agents/{agent_id}/jobs/{job_id}", response_model=EvolutionJobOut)
+async def update_evolution_job(
+    agent_id: str,
+    job_id: str,
+    body: EvolutionJobUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await _verify_evolver_agent(db, agent_id, current_user)
+    try:
+        parsed_job_id = uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
+    result = await db.execute(
+        select(EvolutionJob).where(
+            EvolutionJob.id == parsed_job_id,
+            EvolutionJob.agent_id == agent_id,
+        )
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if body.direction is not None:
+        job.direction = body.direction
+    if body.active is not None:
+        job.active = body.active
+    if body.cron_schedule is not None:
+        from app.services.evolution_job_daemon import is_valid_cron, get_next_run_at
+        if not is_valid_cron(body.cron_schedule):
+            raise HTTPException(status_code=400, detail="Invalid cron schedule expression")
+        job.cron_schedule = body.cron_schedule
+        job.next_run_at = get_next_run_at(body.cron_schedule)
+
+    await db.commit()
+    await db.refresh(job)
+    return _job_to_out(job, agent.name)
+
+
+@router.delete("/agents/{agent_id}/jobs/{job_id}", status_code=204)
+async def delete_evolution_job(
+    agent_id: str,
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _verify_evolver_agent(db, agent_id, current_user)
+    try:
+        parsed_job_id = uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
+    result = await db.execute(
+        select(EvolutionJob).where(
+            EvolutionJob.id == parsed_job_id,
+            EvolutionJob.agent_id == agent_id,
+        )
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    await db.delete(job)
+    await db.commit()
+
+
+@router.post("/agents/{agent_id}/jobs/{job_id}/run", status_code=200)
+async def trigger_evolution_job(
+    agent_id: str,
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await _verify_evolver_agent(db, agent_id, current_user)
+    try:
+        parsed_job_id = uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
+    result = await db.execute(
+        select(EvolutionJob).where(
+            EvolutionJob.id == parsed_job_id,
+            EvolutionJob.agent_id == agent_id,
+        )
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    import asyncio
+    from app.services.evolution_job_daemon import _run_evolution_job
+    asyncio.create_task(_run_evolution_job(job.id, job.agent_id, agent.tenant_id, job.direction))
+
+    return {"message": "Evolution job triggered", "job_id": str(job.id)}
