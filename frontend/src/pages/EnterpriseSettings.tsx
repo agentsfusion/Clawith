@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi, gwsApi, larkApi, skillApi } from '../services/api';
@@ -1670,10 +1670,148 @@ function SkillsTab() {
     const [savingToken, setSavingToken] = useState(false);
     const [clawhubKeyInput, setClawhubKeyInput] = useState('');
     const [savingClawhubKey, setSavingClawhubKey] = useState(false);
+    const [showBatchModal, setShowBatchModal] = useState(false);
+    const [batchSkills, setBatchSkills] = useState<any[]>([]);
+    const [batchSelected, setBatchSelected] = useState<Set<number>>(new Set());
+    const [batchUploading, setBatchUploading] = useState(false);
+    const [batchResult, setBatchResult] = useState<{ok: number; failed: number; errors: {name: string; error: string}[]} | null>(null);
+    const batchDirInputRef = useRef<HTMLInputElement | null>(null);
 
     const showToast = (message: string, type: 'success' | 'error' = 'success') => {
         setToast({ message, type });
         setTimeout(() => setToast(null), 4000);
+    };
+
+    const handleBatchDirSelect = async () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        (input as any).webkitdirectory = true;
+        input.multiple = true;
+        input.onchange = async () => {
+            const files = Array.from(input.files || []);
+            if (files.length === 0) return;
+
+            // Read all files content
+            const readFile = (file: File): Promise<{ path: string; content: string }> =>
+                new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve({ path: (file as any).webkitRelativePath, content: reader.result as string });
+                    reader.onerror = () => resolve({ path: (file as any).webkitRelativePath, content: '' });
+                    reader.readAsText(file);
+                });
+
+            const allFiles = await Promise.all(files.map(readFile));
+
+            // Group by first path segment (immediate subdirectory)
+            const groups = new Map<string, { path: string; content: string }[]>();
+            for (const f of allFiles) {
+                const parts = f.path.split('/');
+                if (parts.length < 2) continue; // skip root-level files
+                const folder = parts[1];
+                if (!groups.has(folder)) groups.set(folder, []);
+                groups.get(folder)!.push(f);
+            }
+
+            // Parse each group
+            const candidates: any[] = [];
+            for (const [folderName, folderFiles] of groups) {
+                // Find SKILL.md
+                const skillMd = folderFiles.find(f => {
+                    const parts = f.path.split('/');
+                    return parts.length >= 3 && parts[2] === 'SKILL.md';
+                });
+
+                if (!skillMd) {
+                    candidates.push({
+                        folderName,
+                        name: folderName,
+                        description: '',
+                        category: 'custom',
+                        icon: '📋',
+                        files: folderFiles.map(f => ({ path: f.path.split('/').slice(2).join('/'), content: f.content })),
+                        fileCount: folderFiles.length,
+                        valid: false,
+                        error: 'Missing SKILL.md',
+                    });
+                    continue;
+                }
+
+                // Parse YAML frontmatter
+                let name = folderName;
+                let description = '';
+                const fmMatch = skillMd.content.match(/^---\s*\n(.*?)\n---/s);
+                if (fmMatch) {
+                    const fm = fmMatch[1];
+                    for (const line of fm.split('\n')) {
+                        const m = line.match(/^(\w+)\s*:\s*(.+)$/);
+                        if (m) {
+                            if (m[1] === 'name') name = m[2].trim();
+                            if (m[1] === 'description') description = m[2].trim();
+                        }
+                    }
+                }
+
+                candidates.push({
+                    folderName,
+                    name,
+                    description,
+                    category: 'custom',
+                    icon: '📋',
+                    files: folderFiles.map(f => ({ path: f.path.split('/').slice(2).join('/'), content: f.content })),
+                    fileCount: folderFiles.length,
+                    valid: true,
+                });
+            }
+
+            setBatchSkills(candidates);
+            // Select all valid ones by default
+            const validIndices = new Set<number>();
+            candidates.forEach((c, i) => { if (c.valid) validIndices.add(i); });
+            setBatchSelected(validIndices);
+            setBatchResult(null);
+        };
+        input.click();
+    };
+
+    const handleBatchImport = async () => {
+        const selected = batchSkills
+            .filter((_, i) => batchSelected.has(i))
+            .map(s => ({
+                folder_name: s.folderName,
+                name: s.name,
+                description: s.description,
+                category: s.category,
+                icon: s.icon,
+                files: s.files,
+            }));
+
+        if (selected.length === 0) return;
+        setBatchUploading(true);
+        try {
+            const res = await skillApi.batchUpload(selected);
+            const results = res.results || [];
+            const ok = results.filter((r: any) => r.status === 'ok').length;
+            const failed = results.filter((r: any) => r.status !== 'ok');
+            setBatchResult({
+                ok,
+                failed: failed.length,
+                errors: failed.map((r: any) => ({ name: r.name || r.folder_name || 'Unknown', error: r.error || 'Failed' })),
+            });
+            setRefreshKey(k => k + 1);
+            if (failed.length === 0) {
+                showToast(t('enterprise.tools.batchSuccess', { count: ok }));
+                setTimeout(() => {
+                    setShowBatchModal(false);
+                    setBatchSkills([]);
+                    setBatchSelected(new Set());
+                    setBatchResult(null);
+                }, 1500);
+            }
+        } catch (e: any) {
+            showToast(e.message || 'Batch upload failed', 'error');
+        } finally {
+            setBatchUploading(false);
+        }
     };
 
     const adapter: FileBrowserApi = useMemo(() => ({
@@ -1783,6 +1921,13 @@ function SkillsTab() {
                             <circle cx="12" cy="12" r="3" />
                             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                         </svg>
+                    </button>
+                    <button
+                        className="btn btn-secondary"
+                        style={{ fontSize: '13px' }}
+                        onClick={() => { setShowBatchModal(true); setBatchSkills([]); setBatchSelected(new Set()); setBatchResult(null); }}
+                    >
+                        {t('enterprise.tools.batchUpload', 'Batch Upload')}
                     </button>
                     <button
                         className="btn btn-secondary"
@@ -2115,6 +2260,150 @@ function SkillsTab() {
                                     <button className="btn btn-secondary" onClick={() => setShowUrlModal(false)} style={{ fontSize: '13px' }}>Cancel</button>
                                     <button className="btn btn-primary" onClick={handleUrlImport} disabled={urlImporting} style={{ fontSize: '13px' }}>
                                         {urlImporting ? 'Importing...' : 'Import'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Batch Upload Modal */}
+            {showBatchModal && (
+                <div style={{
+                    position: 'fixed', inset: 0, zIndex: 9999,
+                    background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }} onClick={() => setShowBatchModal(false)}>
+                    <div style={{
+                        background: 'var(--bg-primary)', borderRadius: '12px', width: '640px', maxHeight: '80vh',
+                        display: 'flex', flexDirection: 'column', border: '1px solid var(--border-default)',
+                        boxShadow: '0 16px 48px rgba(0,0,0,0.2)',
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <h3 style={{ margin: 0, fontSize: '16px' }}>{t('enterprise.tools.batchUpload', 'Batch Upload')}</h3>
+                                <button className="btn btn-ghost" onClick={() => setShowBatchModal(false)} style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>x</button>
+                            </div>
+                        </div>
+                        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
+                            <button
+                                className="btn btn-secondary"
+                                style={{ fontSize: '13px', marginBottom: '16px' }}
+                                onClick={handleBatchDirSelect}
+                            >
+                                {t('enterprise.tools.selectDirectory', 'Select Directory')}
+                            </button>
+
+                            {batchSkills.length === 0 && (
+                                <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                    {t('enterprise.tools.selectDirectoryHint', 'Select a local directory containing skill folders')}
+                                </div>
+                            )}
+
+                            {batchSkills.length > 0 && batchSkills.every(s => !s.valid) && (
+                                <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                    {t('enterprise.tools.noSkillsFound', 'No valid skill packages found. Each skill directory must contain a SKILL.md file.')}
+                                </div>
+                            )}
+
+                            {batchSkills.filter(s => s.valid).length > 0 && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                    {batchSkills.map((skill: any, idx: number) => (
+                                        <div key={idx} style={{
+                                            display: 'flex', alignItems: 'center', gap: '10px',
+                                            padding: '10px 12px', borderRadius: '8px',
+                                            border: '1px solid var(--border-subtle)',
+                                            background: skill.valid ? 'var(--bg-secondary)' : 'var(--bg-secondary)',
+                                            opacity: skill.valid ? 1 : 0.6,
+                                        }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={batchSelected.has(idx)}
+                                                disabled={!skill.valid}
+                                                onChange={e => {
+                                                    const next = new Set(batchSelected);
+                                                    if (e.target.checked) next.add(idx);
+                                                    else next.delete(idx);
+                                                    setBatchSelected(next);
+                                                }}
+                                                style={{ accentColor: 'var(--accent-primary)' }}
+                                            />
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div style={{ fontWeight: 600, fontSize: '13px' }}>{skill.name}</div>
+                                                {skill.description && (
+                                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                        {skill.description}
+                                                    </div>
+                                                )}
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                                                    {skill.fileCount} files
+                                                </div>
+                                            </div>
+                                            {skill.valid ? (
+                                                <span style={{ fontSize: '12px', color: '#34c759', fontWeight: 500 }}>✓ Valid</span>
+                                            ) : (
+                                                <span style={{ fontSize: '12px', color: 'var(--error, #ff3b30)', fontWeight: 500 }}>✗ {skill.error}</span>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {batchResult && (
+                                <div style={{ marginTop: '16px', padding: '12px', borderRadius: '8px', background: batchResult.failed === 0 ? 'rgba(52,199,89,0.1)' : 'rgba(255,59,48,0.1)', fontSize: '13px' }}>
+                                    {batchResult.failed === 0
+                                        ? t('enterprise.tools.batchSuccess', { count: batchResult.ok })
+                                        : t('enterprise.tools.batchPartialFail', { ok: batchResult.ok, failed: batchResult.failed })
+                                    }
+                                    {batchResult.errors.length > 0 && (
+                                        <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                            {batchResult.errors.map((e, i) => (
+                                                <div key={i}>{e.name}: {e.error}</div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {batchSkills.length > 0 && !batchResult && (
+                            <div style={{ padding: '12px 24px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                    <button
+                                        className="btn btn-ghost"
+                                        style={{ fontSize: '12px' }}
+                                        onClick={() => {
+                                            const validIndices = batchSkills.map((s, i) => s.valid ? i : -1).filter(i => i >= 0);
+                                            setBatchSelected(new Set(validIndices));
+                                        }}
+                                    >
+                                        {t('enterprise.tools.selectAll', 'Select All')}
+                                    </button>
+                                    <button
+                                        className="btn btn-ghost"
+                                        style={{ fontSize: '12px' }}
+                                        onClick={() => setBatchSelected(new Set())}
+                                    >
+                                        {t('enterprise.tools.deselectAll', 'Deselect All')}
+                                    </button>
+                                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                        {t('enterprise.tools.selectedCount', { selected: batchSelected.size, total: batchSkills.length })}
+                                    </span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button className="btn btn-secondary" onClick={() => setShowBatchModal(false)} style={{ fontSize: '13px' }}>
+                                        Cancel
+                                    </button>
+                                    <button
+                                        className="btn btn-primary"
+                                        disabled={batchSelected.size === 0 || batchUploading}
+                                        onClick={handleBatchImport}
+                                        style={{ fontSize: '13px' }}
+                                    >
+                                        {batchUploading
+                                            ? 'Importing...'
+                                            : t('enterprise.tools.importNSkills', { count: batchSelected.size })
+                                        }
                                     </button>
                                 </div>
                             </div>
