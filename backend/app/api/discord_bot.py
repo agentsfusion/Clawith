@@ -264,7 +264,7 @@ async def discord_interaction_webhook(
                 break
 
         if not user_text:
-            return {"type": 4, "data": {"content": "⚠️ 请提供消息内容。Usage: `/ask message:<你的问题>`"}}
+            return {"type": 4, "data": {"content": "⚠️ Please provide a message. Usage: `/ask message:<your question>`"}}
 
         interaction_token = body.get("token", "")
         application_id = config.app_id or ""

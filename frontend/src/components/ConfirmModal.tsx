@@ -12,8 +12,7 @@ interface ConfirmModalProps {
     onCancel: () => void;
 }
 
-export default function ConfirmModal({ open, title, message, confirmLabel, cancelLabel, danger, onConfirm, onCancel }: ConfirmModalProps) {
-    const { t } = useTranslation();
+export default function ConfirmModal({ open, title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger, onConfirm, onCancel }: ConfirmModalProps) {
     const btnRef = useRef<HTMLButtonElement>(null);
     const resolvedConfirmLabel = confirmLabel ?? t('common.confirmActions.confirmLabel');
     const resolvedCancelLabel = cancelLabel ?? t('common.confirmActions.cancelLabel');

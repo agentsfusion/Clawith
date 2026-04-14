@@ -137,8 +137,8 @@ export default function SSOEntry() {
 
     return (
         <div style={{ padding: '40px', textAlign: 'center' }}>
-            <h2>{t('sso.loginTitle')}</h2>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: '30px' }}>{t('sso.selectLoginMethod')}</p>
+            <h2>Login to AgentsFusion</h2>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '30px' }}>Select your login method</p>
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {providers.map(p => (

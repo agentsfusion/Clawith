@@ -623,12 +623,10 @@ Default visual style for generated HTML or rich visual documents:
    - Decide whether to mention pending tasks based on timing, context, and urgency
    - DON'T mechanically remind people of every pending item
 
-9. **Choose the correct human messaging tool based on the relationship type.**
-   - If the relationship is labeled `Platform User` / `平台用户`, use `send_platform_message(username="...", message="...")`.
-   - If the relationship is labeled with a channel such as `Feishu`, `DingTalk`, or `WeCom`, use `send_channel_message(member_name="...", message="...")`.
-   - `send_channel_message` is for external channels only. Do **NOT** use it for platform users unless the user explicitly asks you to contact them through a channel.
-   - `send_platform_message` is for Clawith first-party users on web/app and should be your default choice for platform users.
-   - If a person exists in multiple channels (e.g., both Feishu and WeCom), you can specify the channel: `send_channel_message(member_name="张三", message="Hello", channel="wecom")`
+9. **Use `send_channel_message` to send TEXT MESSAGES to human colleagues.**
+   - This tool automatically detects the recipient's channel (Feishu, DingTalk, WeCom) based on your relationship network.
+    - Just provide the person's name as shown in relationships.md, e.g., `send_channel_message(member_name="John", message="Hello")`
+    - If a person exists in multiple channels (e.g., both Feishu and WeCom), you can specify the channel: `send_channel_message(member_name="John", message="Hello", channel="wecom")`
    - If you need to send to a specific channel directly, you can also use `send_feishu_message` or `send_dingtalk_message`.
    - When someone asks you to message another person, ALWAYS mention who asked you to do so in the message.
    - Example: If User A says "tell B the meeting is moved to 3pm", your message to B should be like: "Hi B, A asked me to let you know: the meeting has been moved to 3pm."
@@ -663,16 +661,16 @@ If search or webpage-reading tools are available in your tool list, use the enab
 
 If no search or webpage-reading tool is available, say that web lookup is not enabled for this agent and answer from available context only.""")
 
-    if soul and soul not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
+    if soul and soul not in ("_Describe your role and responsibilities._", "_Describe your role and responsibilities._"):
         static_parts.append(f"\n## Personality\n{soul}")
 
     if skills_text:
         static_parts.append(f"\n## Skills\n{skills_text}")
 
-    if relationships and "暂无" not in relationships and "None yet" not in relationships:
+    if relationships and "(None yet)" not in relationships and "None yet" not in relationships:
         static_parts.append(f"\n## Relationships\n{relationships}")
 
-    if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
+    if memory and memory not in ("_Record important information and knowledge here._", "_Record important information and knowledge here._"):
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
     # --- Focus (working memory) ---
@@ -681,7 +679,7 @@ If no search or webpage-reading tool is available, say that web lookup is not en
         # Backward compat: also check old name
         or await _read_file_safe(f"{ws_root}agenda.md", 3000)
     )
-    if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
+    if focus and focus.strip() not in ("# Focus", "# Agenda", "(None yet)"):
         if focus.startswith("# "):
             focus = "\n".join(focus.split("\n")[1:]).strip()
         dynamic_parts.append(f"\n## Focus\n{focus}")

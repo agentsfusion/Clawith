@@ -97,18 +97,18 @@ def _extract_pdf(data: bytes) -> str:
             page_parts = []
             text = page.extract_text()
             if text and text.strip():
-                page_parts.append(text.strip())
+                pages.append(f"--- Page {i+1} ---\n{text.strip()}")
             
             # Also extract tables
             tables = page.extract_tables()
             for table in tables:
                 if table:
-                    table_md = _markdown_table(table)
-                    if table_md:
-                        page_parts.append(table_md)
-
-            if page_parts:
-                pages.append(f"## 第 {i + 1} 页\n\n" + "\n\n".join(page_parts))
+                    rows = []
+                    for row in table:
+                        cells = [str(c or "").strip() for c in row]
+                        rows.append(" | ".join(cells))
+                    if rows:
+                        pages.append("Table:\n" + "\n".join(rows))
     
     return "\n\n".join(pages)
 
@@ -143,10 +143,10 @@ def _extract_docx(data: bytes) -> str:
     for table in doc.tables:
         rows = []
         for row in table.rows:
-            rows.append([cell.text.strip() for cell in row.cells])
-        table_md = _markdown_table(rows)
-        if table_md:
-            parts.append("## 表格\n\n" + table_md)
+            cells = [cell.text.strip() for cell in row.cells]
+            rows.append(" | ".join(cells))
+        if rows:
+            parts.append("\nTable:\n" + "\n".join(rows))
     
     return "\n\n".join(parts)
 
@@ -166,9 +166,8 @@ def _extract_xlsx(data: bytes) -> str:
             if any(str(c).strip() for c in cells):
                 rows.append(cells)
         
-        table_md = _markdown_table(rows)
-        if table_md:
-            parts.append(f"## 工作表: {sheet}\n\n" + table_md)
+        if rows:
+            parts.append(f"## Worksheet: {sheet}\n" + "\n".join(rows))
     
     wb.close()
     return "\n\n".join(parts)
@@ -200,9 +199,6 @@ def _extract_pptx(data: bytes) -> str:
         
         slide_parts = []
         if texts:
-            slide_parts.append("\n\n".join(texts))
-        slide_parts.extend(tables)
-        if slide_parts:
-            parts.append(f"## 幻灯片 {i + 1}\n\n" + "\n\n".join(slide_parts))
+            parts.append(f"--- Slide {i+1} ---\n" + "\n".join(texts))
     
     return "\n\n".join(parts)

@@ -433,6 +433,7 @@ export default function Login() {
                     ) : (
                     <>
                     <div className="login-form-header">
+                        <div className="login-form-logo"><img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />AgentsFusion</div>
                         <h2 className="login-form-title">
                             {showVerification
                                 ? (isZh ? '验证邮箱' : 'Verify email')

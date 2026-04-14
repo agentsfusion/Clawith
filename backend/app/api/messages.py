@@ -63,10 +63,10 @@ async def get_inbox(
             .limit(3)
         )
         for msg in msgs_q.scalars().all():
-            sender_name = "未知"
+            sender_name = "Unknown"
             if msg.participant_id:
                 p_r = await db.execute(select(Participant.display_name).where(Participant.id == msg.participant_id))
-                sender_name = p_r.scalar_one_or_none() or "未知"
+                sender_name = p_r.scalar_one_or_none() or "Unknown"
 
             result_list.append({
                 "id": str(msg.id),

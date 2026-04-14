@@ -43,7 +43,7 @@ class CollaborationService:
         # Create task for target agent
         task = Task(
             agent_id=to_agent_id,
-            title=f"[委托自 {from_agent.name}] {task_title}",
+            title=f"[Delegated from {from_agent.name}] {task_title}",
             description=task_description,
             type="todo",
             priority="medium",
@@ -121,11 +121,10 @@ class CollaborationService:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         msg_file_key = f"{inbox_key_prefix}{timestamp}_{str(from_agent_id)[:8]}.md"
         await storage.write(msg_file_key,
-            f"# 来自 {from_agent.name if from_agent else 'Unknown'} 的消息\n"
-            f"- 类型: {msg_type}\n"
-            f"- 时间: {datetime.now(timezone.utc).isoformat()}\n\n"
-            f"{message}\n".encode("utf-8"),
-            content_type="text/markdown; charset=utf-8",
+            f"# Message from {from_agent.name if from_agent else 'Unknown'}\n"
+            f"- Type: {msg_type}\n"
+            f"- Time: {datetime.now(timezone.utc).isoformat()}\n\n"
+            f"{message}\n"
         )
 
         db.add(AuditLog(

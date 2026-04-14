@@ -219,7 +219,7 @@ async def read_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     except UnicodeDecodeError:
         raw = await storage.read_bytes(key)
-        return FileContent(path=path, content=f"[二进制文件: {Path(path).name}, {len(raw)} bytes]")
+        return FileContent(path=path, content=f"[Binary file: {Path(path).name}, {len(raw)} bytes]")
     return FileContent(path=path, content=content)
 
 
@@ -582,8 +582,8 @@ async def upload_file_to_workspace(
         normalized_path = DEFAULT_UPLOAD_DIR
 
     # Validate path prefix
-    if normalized_path not in {"workspace", "skills"} and not normalized_path.startswith(("workspace/", "skills/")):
-        raise HTTPException(status_code=400, detail="右侧根目录视图是 agent 根目录；上传文件时请放到 workspace/ 或 skills/ 目录下")
+    if not path.startswith(("workspace/", "skills/")):
+        raise HTTPException(status_code=400, detail="Can only upload to workspace/ or skills/ directories")
 
     _validate_path(path)
     filename = file.filename or "unnamed"
@@ -722,7 +722,7 @@ async def read_enterprise_file(
         raise HTTPException(status_code=404, detail="File not found")
     except UnicodeDecodeError:
         raw = await storage.read_bytes(key)
-        return {"path": path, "content": f"[二进制文件: {Path(path).name}, {len(raw)} bytes]"}
+        return {"path": path, "content": f"[Binary file: {Path(path).name}, {len(raw)} bytes]"}
     return {"path": path, "content": content}
 
 
