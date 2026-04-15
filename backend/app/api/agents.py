@@ -408,6 +408,7 @@ async def create_agent(
     # Copy selected skills + mandatory default skills into agent workspace
     from app.models.skill import Skill
     from sqlalchemy.orm import selectinload
+    from sqlalchemy import or_ as _or
 
     # Always include global default skills (mcp-installer, skill-creator,
     # complex-task-executor)
@@ -417,64 +418,30 @@ async def create_agent(
     default_ids = {s.id for s in default_result.scalars().all()}
     t_default_query = time.perf_counter() - t_default_query_start
 
-    # Include the template's declared default skills (e.g. trading templates
-    # ship with `market-data` / `financial-calendar` in their meta.yaml).
-    # Without this, the SKILL.md never reaches `<agent_dir>/skills/<folder>/`,
-    # so the agent has no idea those MCP-backed skills exist and silently
-    # falls back to web search.
-    template_skill_ids: set = set()
-    t_template_query = 0.0
-    if data.template_id:
-        t_template_query_start = time.perf_counter()
-        tpl_r = await db.execute(
-            select(AgentTemplate).where(AgentTemplate.id == data.template_id)
-        )
-        tpl = tpl_r.scalar_one_or_none()
-        folder_names = list((tpl.default_skills if tpl else None) or [])
-        if folder_names:
-            tpl_skills_r = await db.execute(
-                select(Skill).where(Skill.folder_name.in_(folder_names))
-            )
-            template_skill_ids = {s.id for s in tpl_skills_r.scalars().all()}
-        t_template_query = time.perf_counter() - t_template_query_start
-
-    # Merge user-selected + global default + template-default skill IDs
-    all_skill_ids = set(data.skill_ids or []) | default_ids | template_skill_ids
+    all_skill_ids = set(data.skill_ids or []) | default_ids
 
     if all_skill_ids:
         import asyncio
         storage = get_storage_backend()
         agent_prefix = agent_manager._agent_storage_prefix(agent.id)
 
-        t_skill_fetch_start = time.perf_counter()
-        skills_result = await db.execute(
-            select(Skill).where(Skill.id.in_(all_skill_ids)).options(selectinload(Skill.files))
-        )
-        skills = skills_result.scalars().all()
-        t_skill_fetch = time.perf_counter() - t_skill_fetch_start
-
-        file_specs = [
-            (f"{agent_prefix}/skills/{skill.folder_name}/{sf.path}", sf.content)
-            for skill in skills
-            for sf in skill.files
-        ]
-
-        if file_specs:
-            t_upload_start = time.perf_counter()
-            await asyncio.gather(*[
-                storage.write_text(key, content, encoding="utf-8")
-                for key, content in file_specs
-            ])
-            logger.info(
-                f"[_skills_copy] agent={agent.id} skills={len(skills)} files={len(file_specs)} "
-                f"fetch={t_skill_fetch:.2f}s upload={time.perf_counter() - t_upload_start:.2f}s "
-                f"total={time.perf_counter() - t_skills_copy_start:.2f}s"
-            )
-        else:
-            logger.info(
-                f"[_skills_copy] agent={agent.id} no files "
-                f"fetch={t_skill_fetch:.2f}s total={time.perf_counter() - t_skills_copy_start:.2f}s"
-            )
+        for sid in all_skill_ids:
+            q = select(Skill).where(
+                Skill.id == sid,
+                _or(Skill.tenant_id.is_(None), Skill.tenant_id == agent.tenant_id)
+            ).options(selectinload(Skill.files))
+            result = await db.execute(q)
+            skill = result.scalar_one_or_none()
+            if not skill:
+                continue
+            # Create folder: skills/<folder_name>/
+            skill_folder = skills_dir / skill.folder_name
+            skill_folder.mkdir(parents=True, exist_ok=True)
+            # Write each file
+            for sf in skill.files:
+                file_path = skill_folder / sf.path
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(sf.content, encoding="utf-8")
 
         from app.services.gws_skill_seeder import is_gws_skill
         has_gws = any(
