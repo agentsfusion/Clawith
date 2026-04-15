@@ -690,7 +690,7 @@ async def wecom_callback(
             db, "wecom", str(tenant_id or provider.tenant_id) if (tenant_id or provider.tenant_id) else None
         )
         if not auth_provider:
-            return HTMLResponse("Auth failed: WeCom provider unavailable")
+            return HTMLResponse("Auth failed: WeCom provider not configured")
         
         token_data = await auth_provider.exchange_code_for_token(code)
         access_token_str = token_data.get("access_token")

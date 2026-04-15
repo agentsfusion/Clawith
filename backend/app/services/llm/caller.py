@@ -180,7 +180,7 @@ def _convert_messages_for_vision(
                 _n_imgs = len(_re_v.findall(_img_marker_pattern, msg.content))
                 cleaned = _re_v.sub(_img_marker_pattern, '', msg.content).strip()
                 if _n_imgs > 0:
-                    cleaned += f"\n[用户发送了 {_n_imgs} 张图片，但当前模型不支持视觉，无法查看图片内容]"
+                    cleaned += f"\n[User sent {_n_imgs} image(s), but the current model does not support vision, unable to view image content]"
                 new_messages[i] = type(msg)(role=msg.role, content=cleaned, tool_calls=msg.tool_calls, tool_call_id=msg.tool_call_id)
 
     return new_messages
@@ -189,7 +189,17 @@ def _convert_messages_for_vision(
 def _check_tool_requires_args(tool_name: str, args: dict) -> tuple[bool, str]:
     """Check if tool requires arguments and return (should_execute, result_or_error)."""
     if not args and tool_name in TOOLS_REQUIRING_ARGS:
-        return False, f"Error: {tool_name} was called with empty arguments. You must provide the required parameters. Please retry with the correct arguments."
+        if tool_name == "read_file":
+            hint = (
+                "Error: read_file requires a 'path' argument. "
+                "Example: read_file({\"path\": \"skills/my_skill/SKILL.md\"}). "
+                "Use list_files to discover available paths first, then call read_file with the exact path."
+            )
+        elif tool_name == "write_file":
+            hint = "Error: write_file requires 'path' and 'content' arguments."
+        else:
+            hint = f"Error: {tool_name} was called with empty arguments. You must provide the required parameters."
+        return False, hint
     return True, ""
 
 
@@ -341,6 +351,8 @@ async def call_llm(
 
     max_tokens = get_max_tokens(model.provider, model.model, getattr(model, 'max_output_tokens', None))
     _accumulated_tokens = 0
+    _recent_tool_calls: list[str] = []
+    _DUPLICATE_TOOL_CALL_LIMIT = 3
 
     # Tool-calling loop
     for round_i in range(_max_tool_rounds):
@@ -351,15 +363,15 @@ async def call_llm(
             api_messages.append(LLMMessage(
                 role="user",
                 content=(
-                    f"⚠️ 你已使用 {round_i}/{_max_tool_rounds} 轮工具调用。"
-                    "如果当前任务尚未完成，请尽快保存进度到 focus.md，"
-                    "并使用 set_trigger 设置续接触发器，在剩余轮次中做好收尾。"
+                    f"⚠️ You have used {round_i}/{_max_tool_rounds} tool call rounds. "
+                    "If the current task is not yet complete, please save your progress to focus.md as soon as possible, "
+                    "and use set_trigger to set a continuation trigger to wrap up within the remaining rounds."
                 ),
             ))
         elif round_i == _warn_threshold_96:
             api_messages.append(LLMMessage(
                 role="user",
-                content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 focus.md 并设置续接触发器。",
+                content=f"🚨 Only 2 tool call rounds remaining. Please save your progress to focus.md immediately and set a continuation trigger.",
             ))
 
         try:
@@ -418,6 +430,29 @@ async def call_llm(
         full_reasoning_content = response.reasoning_content or ""
 
         for tc in response.tool_calls:
+            fn = tc["function"]
+            tool_name = fn["name"]
+            raw_args = fn.get("arguments", "{}")
+            try:
+                _args = json.loads(raw_args) if raw_args else {}
+            except json.JSONDecodeError:
+                _args = {}
+
+            _call_sig = f"{tool_name}:{json.dumps(_args, sort_keys=True)}"
+            _recent_tool_calls.append(_call_sig)
+            _dup_count = sum(1 for c in _recent_tool_calls if c == _call_sig)
+            if _dup_count > _DUPLICATE_TOOL_CALL_LIMIT:
+                logger.warning(f"[LLM] Duplicate tool call detected ({_dup_count}x): {tool_name}({_args})")
+                api_messages.append(LLMMessage(
+                    role="tool",
+                    content=(
+                        f"Error: You have already called {tool_name} with the same arguments {_dup_count} times and received the same result each time. "
+                        "Please try a DIFFERENT approach — use a different tool, different arguments, or respond to the user directly based on the information you already have."
+                    ),
+                    tool_call_id=tc.get("id", ""),
+                ))
+                continue
+
             tool_error = await _process_tool_call(
                 tc=tc,
                 api_messages=api_messages,
@@ -467,7 +502,7 @@ async def call_llm_with_failover(
         fallback_model = None
 
     if primary_model is None:
-        return "⚠️ 未配置 LLM 模型"
+        return "⚠️ No LLM model configured"
 
     # Wrapper callbacks to track state for guard checks
     async def _wrapped_on_chunk(text: str):
@@ -558,7 +593,7 @@ async def call_llm_with_failover(
 
     # Combine error messages if fallback also failed
     if is_retryable_error(fallback_result) or fallback_result.startswith("⚠️") or fallback_result.startswith("[Error]"):
-        return f"⚠️ 调用模型出错: Primary: {primary_result[:80]} | Fallback: {fallback_result[:80]}"
+        return f"⚠️ Model call error: Primary: {primary_result[:80]} | Fallback: {fallback_result[:80]}"
 
     return fallback_result
 
@@ -587,7 +622,7 @@ async def call_agent_llm(
     agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent: Agent | None = agent_result.scalar_one_or_none()
     if not agent:
-        return "⚠️ 数字员工未找到"
+        return "⚠️ Agent not found"
 
     if is_agent_expired(agent):
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
@@ -611,7 +646,7 @@ async def call_agent_llm(
         logger.warning(f"[call_agent_llm] Primary model unavailable, using fallback: {primary_model.model}")
 
     if not primary_model:
-        return f"⚠️ {agent.name} 未配置 LLM 模型，请在管理后台设置。"
+        return f"⚠️ {agent.name} has no LLM model configured. Please set one in the admin panel."
 
     # Build conversation messages
     messages: list[dict] = []
@@ -638,7 +673,7 @@ async def call_agent_llm(
     except Exception as e:
         error_msg = str(e) or repr(e)
         logger.error(f"[call_agent_llm] Unexpected error: {error_msg}")
-        return f"⚠️ 调用模型出错: {error_msg[:150]}"
+        return f"⚠️ Model call error: {error_msg[:150]}"
 
 
 async def call_agent_llm_with_tools(
