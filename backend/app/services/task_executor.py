@@ -42,7 +42,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             return
 
         task.status = "doing"
-        db.add(TaskLog(task_id=task_id, content="🤖 开始执行任务..."))
+        db.add(TaskLog(task_id=task_id, content="🤖 Starting task execution..."))
         await db.commit()
         task_title = task.title
         task_description = task.description or ""
@@ -54,7 +54,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
         agent = agent_result.scalar_one_or_none()
         if not agent:
-            await _log_error(task_id, "数字员工未找到")
+            await _log_error(task_id, "Agent not found")
             if task_type == 'supervision':
                 await _restore_supervision_status(task_id)
             return
@@ -83,17 +83,17 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
 
     # Build user prompt
     if task_type == 'supervision':
-        user_prompt = f"[督办任务] {task_title}"
+        user_prompt = f"[Supervision Task] {task_title}"
         if task_description:
-            user_prompt += f"\n任务描述: {task_description}"
+            user_prompt += f"\nTask description: {task_description}"
         if supervision_target:
-            user_prompt += f"\n督办对象: {supervision_target}"
-        user_prompt += "\n\n请执行此督办任务：联系督办对象，了解进展，并汇报结果。"
+            user_prompt += f"\nSupervision target: {supervision_target}"
+        user_prompt += "\n\nPlease execute this supervision task: contact the supervision target, check progress, and report results."
     else:
-        user_prompt = f"[任务执行] {task_title}"
+        user_prompt = f"[Task Execution] {task_title}"
         if task_description:
-            user_prompt += f"\n任务描述: {task_description}"
-        user_prompt += "\n\n请认真完成此任务，给出详细的执行结果。"
+            user_prompt += f"\nTask description: {task_description}"
+        user_prompt += "\n\nPlease complete this task thoroughly and provide a detailed execution report."
 
     # Step 4: Call LLM with unified failover support
     from app.services.llm import call_agent_llm_with_tools
@@ -115,7 +115,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
     except Exception as e:
         error_msg = str(e) or repr(e)
         logger.error(f"[TaskExec] Error: {error_msg}")
-        await _log_error(task_id, f"执行出错: {error_msg[:150]}")
+        await _log_error(task_id, f"Execution error: {error_msg[:150]}")
         if task_type == 'supervision':
             await _restore_supervision_status(task_id)
         return
@@ -128,11 +128,11 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
             if task_type == 'supervision':
                 # Supervision tasks stay active; just log the result
                 task.status = "pending"
-                db.add(TaskLog(task_id=task_id, content=f"✅ 督办执行完成\n\n{reply}"))
+                db.add(TaskLog(task_id=task_id, content=f"✅ Supervision execution completed\n\n{reply}"))
             else:
                 task.status = "done"
                 task.completed_at = datetime.now(timezone.utc)
-                db.add(TaskLog(task_id=task_id, content=f"✅ 任务完成\n\n{reply}"))
+                db.add(TaskLog(task_id=task_id, content=f"✅ Task completed\n\n{reply}"))
             await db.commit()
             logger.info(f"[TaskExec] Task {task_id} {'logged' if task_type == 'supervision' else 'completed'}!")
 
@@ -140,7 +140,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
     from app.services.activity_logger import log_activity
     await log_activity(
         agent_id, "task_updated",
-        f"{'督办' if task_type == 'supervision' else '任务'}执行: {task_title[:60]}",
+        f"{'Supervision' if task_type == 'supervision' else 'Task'} executed: {task_title[:60]}",
         detail={"task_id": str(task_id), "task_type": task_type, "title": task_title, "reply": reply[:500]},
         related_id=task_id,
     )
