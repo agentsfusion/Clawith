@@ -559,6 +559,34 @@ Plan would be:
         "is_default": True,
         "files": [],  # populated at runtime from agent_template/skills/MCP_INSTALLER.md
     },
+    # ─── Office Suite Skills ──────────────────────────
+    {
+        "name": "PPTX",
+        "description": "PowerPoint presentation creation, editing, and analysis. Use when: working with .pptx files, creating slide decks, pitch decks, presentations, reading or extracting text from .pptx, editing templates, adding speaker notes. NOT for: general document editing.",
+        "category": "productivity",
+        "icon": "📊",
+        "folder_name": "pptx",
+        "is_default": True,
+        "files": [],  # populated at runtime from skill_seeder_files/pptx/
+    },
+    {
+        "name": "DOCX",
+        "description": "Word document creation, editing, and analysis. Use when: working with .docx files, creating reports, memos, letters, templates, adding tables of contents, tracked changes, comments, headers/footers. NOT for: PDFs, spreadsheets.",
+        "category": "productivity",
+        "icon": "📄",
+        "folder_name": "docx",
+        "is_default": True,
+        "files": [],  # populated at runtime from skill_seeder_files/docx/
+    },
+    {
+        "name": "XLSX",
+        "description": "Excel spreadsheet creation, editing, and analysis. Use when: working with .xlsx files, creating financial models, data analysis, pivot tables, charts, formula construction, formatting. NOT for: general data processing without Excel output.",
+        "category": "productivity",
+        "icon": "📗",
+        "folder_name": "xlsx",
+        "is_default": True,
+        "files": [],  # populated at runtime from skill_seeder_files/xlsx/
+    },
 ]
 
 
@@ -573,6 +601,7 @@ async def seed_skills():
         return
 
     _files_dir = _Path(__file__).parent / "skill_creator_files"
+    _seeder_files_dir = _Path(__file__).parent / "skill_seeder_files"
     _template_skills_dir = _Path(__file__).parent.parent.parent / "agent_template" / "skills"
 
     # Populate skill-creator files at runtime
@@ -590,6 +619,18 @@ async def seed_skills():
                 s["files"] = [{"path": "SKILL.md", "content": mcp_file.read_text(encoding="utf-8")}]
             else:
                 logger.warning("[SkillSeeder] MCP_INSTALLER.md not found in agent_template/skills/")
+        elif s["folder_name"] in ("pptx", "docx", "xlsx") and not s["files"]:
+            _office_dir = _seeder_files_dir / s["folder_name"]
+            if _office_dir.is_dir():
+                files = []
+                for f in sorted(_office_dir.rglob("*")):
+                    if f.is_file():
+                        rel = str(f.relative_to(_office_dir))
+                        files.append({"path": rel, "content": f.read_text(encoding="utf-8")})
+                s["files"] = files
+                logger.info(f"[SkillSeeder] Loaded {len(files)} files for {s['folder_name']}")
+            else:
+                logger.warning(f"[SkillSeeder] skill_seeder_files/{s['folder_name']}/ not found")
 
     async with async_session() as db:
         for skill_data in BUILTIN_SKILLS:
