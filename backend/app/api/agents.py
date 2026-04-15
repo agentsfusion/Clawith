@@ -305,6 +305,7 @@ async def create_agent(
     # Copy selected skills + mandatory default skills into agent workspace
     from app.models.skill import Skill
     from sqlalchemy.orm import selectinload
+    from sqlalchemy import or_ as _or
 
     # Always include default skills
     default_result = await db.execute(
@@ -312,7 +313,6 @@ async def create_agent(
     )
     default_ids = {s.id for s in default_result.scalars().all()}
 
-    # Merge user-selected + default skill IDs
     all_skill_ids = set(data.skill_ids or []) | default_ids
 
     if all_skill_ids:
@@ -321,9 +321,11 @@ async def create_agent(
         skills_dir.mkdir(parents=True, exist_ok=True)
 
         for sid in all_skill_ids:
-            result = await db.execute(
-                select(Skill).where(Skill.id == sid).options(selectinload(Skill.files))
-            )
+            q = select(Skill).where(
+                Skill.id == sid,
+                _or(Skill.tenant_id.is_(None), Skill.tenant_id == agent.tenant_id)
+            ).options(selectinload(Skill.files))
+            result = await db.execute(q)
             skill = result.scalar_one_or_none()
             if not skill:
                 continue
