@@ -235,11 +235,10 @@ async def import_skill_to_agent(
 
     from sqlalchemy.orm import selectinload
     from app.models.skill import Skill, SkillFile
+    from app.api.skills import _apply_skill_scope
 
-    # Load the global skill with its files
-    result = await db.execute(
-        select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files))
-    )
+    q = select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files))
+    result = await db.execute(_apply_skill_scope(q, current_user))
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
@@ -283,6 +282,7 @@ async def import_skills_batch_to_agent(
 
     from sqlalchemy.orm import selectinload
     from app.models.skill import Skill
+    from app.api.skills import _apply_skill_scope
 
     if not body.skill_ids:
         return {"results": []}
@@ -294,9 +294,8 @@ async def import_skills_batch_to_agent(
         result_row: dict = {"skill_id": sid, "status": "ok"}
 
         try:
-            db_result = await db.execute(
-                select(Skill).where(Skill.id == sid).options(selectinload(Skill.files))
-            )
+            q = select(Skill).where(Skill.id == sid).options(selectinload(Skill.files))
+            db_result = await db.execute(_apply_skill_scope(q, current_user))
             skill = db_result.scalar_one_or_none()
 
             if not skill:
