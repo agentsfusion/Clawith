@@ -266,23 +266,35 @@ async def _save_skill_to_db(
     instead of raising a 409 conflict.
     """
     import uuid as _uuid
+    from sqlalchemy import or_ as _or
     async with async_session() as db:
-        # Check for folder_name conflict (scoped by tenant)
-        conflict_q = select(Skill).where(Skill.folder_name == folder_name)
-        if tenant_id:
-            conflict_q = conflict_q.where(Skill.tenant_id == _uuid.UUID(tenant_id))
-        else:
-            conflict_q = conflict_q.where(Skill.tenant_id.is_(None))
+        # Both name and folder_name have global unique constraints,
+        # so we must query globally regardless of tenant scope.
+        conflict_q = (
+            select(Skill)
+            .where(_or(Skill.folder_name == folder_name, Skill.name == name))
+            .options(selectinload(Skill.files))
+        )
         existing_result = await db.execute(conflict_q)
         existing_skill = existing_result.scalar_one_or_none()
 
         if existing_skill and not overwrite:
             raise HTTPException(
-                409, f"A skill with folder name '{folder_name}' already exists. "
+                409, f"A skill with folder name '{folder_name}' or name '{name}' already exists. "
                      "Delete it first or use a different name."
             )
 
         if existing_skill and overwrite:
+            existing_tenant = str(existing_skill.tenant_id) if existing_skill.tenant_id else None
+            if existing_tenant != tenant_id:
+                return {
+                    "id": str(existing_skill.id),
+                    "name": existing_skill.name,
+                    "folder_name": existing_skill.folder_name,
+                    "skipped": True,
+                    "reason": "belongs to different tenant or is global builtin",
+                }
+
             existing_skill.name = name
             existing_skill.description = description
             existing_skill.category = category
@@ -604,7 +616,14 @@ async def get_skill(skill_id: str, current_user: User = Depends(get_current_user
 @router.post("/")
 async def create_skill(body: SkillCreateIn, current_user: User = Depends(get_current_admin)):
     """Create a custom skill."""
+    from sqlalchemy import or_ as _or
     async with async_session() as db:
+        conflict = await db.execute(
+            select(Skill).where(_or(Skill.folder_name == body.folder_name, Skill.name == body.name))
+        )
+        if conflict.scalar_one_or_none():
+            raise HTTPException(409, f"A skill with folder name '{body.folder_name}' or name '{body.name}' already exists.")
+
         skill = Skill(
             name=body.name,
             description=body.description,
@@ -710,7 +729,7 @@ async def batch_upload(body: BatchUploadIn, current_user: User = Depends(get_cur
                 overwrite=True,
             )
             results.append({
-                "status": "updated" if result.get("updated") else "ok",
+                "status": "skipped" if result.get("skipped") else ("updated" if result.get("updated") else "ok"),
                 "id": result["id"],
                 "name": result["name"],
                 "folder_name": result["folder_name"],
@@ -906,7 +925,13 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(get_cur
         skill = result.scalar_one_or_none()
         created_new_skill = False
         if not skill:
-            # Auto-create skill from folder name, scoped to tenant
+            from sqlalchemy import or_ as _or
+            conflict = await db.execute(
+                select(Skill).where(_or(Skill.folder_name == folder, Skill.name == folder.replace("-", " ").title()))
+            )
+            if conflict.scalar_one_or_none():
+                raise HTTPException(409, f"A skill with folder name '{folder}' already exists globally.")
+
             skill = Skill(
                 name=folder.replace("-", " ").title(),
                 description="",
