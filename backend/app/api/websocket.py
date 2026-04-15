@@ -401,7 +401,7 @@ async def websocket_chat(
                         # Use display_content for title (avoids raw base64/markers)
                         title_src = display_content if display_content else content
                         # Clean up common prefixes from image/file messages
-                        clean_title = title_src.replace("[图片] ", "📷 ").replace("[image_data:", "").strip()
+                        clean_title = title_src.replace("[Image] ", "📷 ").replace("[image_data:", "").strip()
                         if file_name and not clean_title:
                             clean_title = f"📎 {file_name}"
                         _sess.title = clean_title[:40] if clean_title else content[:40]
@@ -432,7 +432,7 @@ async def websocket_chat(
             # Detect task creation intent
             import re
             task_match = re.search(
-                r'(?:创建|新建|添加|建一个|帮我建|create|add)(?:一个|a )?(?:任务|待办|todo|task)[，,：：:\\s]*(.+)',
+                r'(?:create|add)(?:\s+a)?\s+(?:todo|task)[,:\s]*(.+)',
                 content, re.IGNORECASE
             )
 
