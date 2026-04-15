@@ -148,13 +148,11 @@ async def _save_gws_skill_to_db(
     description = frontmatter.get("description", "")
     
     async with async_session() as db:
-        # Check for conflict (folder_name + tenant_id)
-        conflict_q = select(Skill).where(Skill.folder_name == folder_name)
-        if tenant_id:
-            conflict_q = conflict_q.where(Skill.tenant_id == uuid.UUID(tenant_id))
-        else:
-            conflict_q = conflict_q.where(Skill.tenant_id.is_(None))
-        
+        from sqlalchemy import or_ as _or
+
+        conflict_q = select(Skill).where(
+            _or(Skill.folder_name == folder_name, Skill.name == name)
+        )
         existing = await db.execute(conflict_q)
         if existing.scalar_one_or_none():
             logger.info(f"[GWS Seeder] Skill {folder_name} already exists, skipping")
