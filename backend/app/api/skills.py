@@ -286,13 +286,13 @@ async def _save_skill_to_db(
 
         if existing_skill and overwrite:
             existing_tenant = str(existing_skill.tenant_id) if existing_skill.tenant_id else None
-            if existing_tenant != tenant_id:
+            if existing_tenant is not None and existing_tenant != tenant_id:
                 return {
                     "id": str(existing_skill.id),
                     "name": existing_skill.name,
                     "folder_name": existing_skill.folder_name,
                     "skipped": True,
-                    "reason": "belongs to different tenant or is global builtin",
+                    "reason": "belongs to a different tenant",
                 }
 
             existing_skill.name = name
