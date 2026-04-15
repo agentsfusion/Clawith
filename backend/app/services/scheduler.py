@@ -56,7 +56,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent.name, agent.role_description or "")
             system_prompt = f"{static_prompt}\n\n{dynamic_prompt}"
 
-            user_prompt = f"[自动调度任务] {instruction}"
+            user_prompt = f"[Auto-Scheduled Task] {instruction}"
 
             # Call LLM with unified failover support
             reply = await call_agent_llm_with_tools(
@@ -72,7 +72,7 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
             from app.services.activity_logger import log_activity
             await log_activity(
                 agent_id, "schedule_run",
-                f"定时任务执行: {instruction[:60]}",
+                f"Scheduled task executed: {instruction[:60]}",
                 detail={"schedule_id": str(schedule_id), "instruction": instruction, "reply": reply[:500]},
             )
 

@@ -685,7 +685,8 @@ class WebSocketChatHandler:
                     _sess.last_message_at = _now
                     if not self.history_messages and _sess.title.startswith("Session "):
                         title_src = display_content if display_content else content
-                        clean_title = title_src.replace("[图片] ", "📷 ").replace("[image_data:", "").strip()
+                        # Clean up common prefixes from image/file messages
+                        clean_title = title_src.replace("[Image] ", "📷 ").replace("[image_data:", "").strip()
                         if file_name and not clean_title:
                             clean_title = f"📎 {file_name}"
                         _sess.title = clean_title[:40] if clean_title else content[:40]
@@ -696,13 +697,11 @@ class WebSocketChatHandler:
         """Enqueues message for OpenClaw edge node poll."""
         from app.models.gateway_message import GatewayMessage as GwMsg
 
-        async with async_session() as db:
-            gw_msg = GwMsg(
-                agent_id=self.agent_id,
-                sender_user_id=self.user.id,
-                conversation_id=self.conv_id,
-                content=content,
-                status="pending",
+            # Detect task creation intent
+            import re
+            task_match = re.search(
+                r'(?:create|add)(?:\s+a)?\s+(?:todo|task)[,:\s]*(.+)',
+                content, re.IGNORECASE
             )
             db.add(gw_msg)
             await db.commit()

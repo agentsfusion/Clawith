@@ -84,13 +84,16 @@ async def _load_skills_index(agent_id: uuid.UUID) -> str:
     prompt. The model is instructed to call read_file to load full content
     when a skill is relevant.
     """
+    import logging
+    _log = logging.getLogger(__name__)
     storage = get_storage()
     prefix = _agent_workspace(agent_id)  # e.g. "{agent_id}/"
     skills: list[tuple[str, str, str]] = []  # (name, description, path_relative_to_skills)
 
     try:
         entries = await storage.list(f"{prefix}skills")
-    except Exception:
+    except Exception as e:
+        _log.warning(f"[skills] Failed to list {prefix}skills: {e}")
         return ""
 
     for entry in sorted(entries, key=lambda e: (not e.is_dir, e.name)):
@@ -108,17 +111,20 @@ async def _load_skills_index(agent_id: uuid.UUID) -> str:
                     content = (await storage.read(skill_key)).strip()
                     name, desc = _parse_skill_frontmatter(content, entry.name)
                     skills.append((name, desc, f"{entry.name}/SKILL.md"))
-                except Exception:
+                except Exception as e:
+                    _log.warning(f"[skills] Failed to read folder skill {skill_key}: {e}")
                     skills.append((entry.name, "", f"{entry.name}/SKILL.md"))
 
         # Case 2: Flat file — skills/<name>.md
         elif entry.name.endswith(".md") and not entry.is_dir:
+            read_key = f"{prefix}skills/{entry.name}"
             try:
-                content = (await storage.read(entry.path)).strip()
+                content = (await storage.read(read_key)).strip()
                 stem = entry.name[:-3]  # remove .md suffix
                 name, desc = _parse_skill_frontmatter(content, stem)
                 skills.append((name, desc, entry.name))
-            except Exception:
+            except Exception as e:
+                _log.warning(f"[skills] Failed to read flat skill {read_key}: {e}")
                 skills.append((entry.name[:-3], "", entry.name))
 
     # Deduplicate by name
