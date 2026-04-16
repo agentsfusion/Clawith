@@ -1512,72 +1512,6 @@ AGENT_TOOLS = [
             },
         },
     },
-    # ── Agent Factory Tools ──────────────────────────────────────
-    {
-        "type": "function",
-        "function": {
-            "name": "list_tenant_tools",
-            "description": "List all installed and available tools for the current company/tenant. Returns tool names, descriptions, and parameter schemas. Use this to discover which tools can be referenced as action targets in an Agent Script.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "description": "Optional filter by category (e.g. 'search', 'feishu', 'communication'). Leave empty for all tools.",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_tenant_skills",
-            "description": "List all available skills for the current company/tenant. Returns skill names, descriptions, categories, and folder names. Use this to discover which skills can be referenced as action targets in an Agent Script.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "description": "Optional filter by category (e.g. 'research', 'productivity'). Leave empty for all skills.",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_ascript_agent",
-            "description": "Create a new Agent Script-powered digital employee. Provide the complete Agent Script content, agent name, role description, and optionally a model ID. The system will create the agent, write the Agent Script to its workspace, parse action targets to auto-enable referenced tools and install referenced skills, and initialize state variables. Returns the created agent's ID and details.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the new agent (2-100 characters)",
-                    },
-                    "role_description": {
-                        "type": "string",
-                        "description": "Brief role description (max 500 characters)",
-                    },
-                    "agent_script": {
-                        "type": "string",
-                        "description": "The complete Agent Script content in .ascript format",
-                    },
-                    "primary_model_id": {
-                        "type": "string",
-                        "description": "Optional UUID of the LLM model to use. If not provided, uses the same model as the factory agent.",
-                    },
-                    "enable_evolution": {
-                        "type": "boolean",
-                        "description": "Whether to create a daily evolution trigger for this agent (default: true)",
-                    },
-                },
-                "required": ["name", "role_description", "agent_script"],
-            },
-        },
-    },
     # ── AgentBay Tools ────────────────────────────────────────────
     {
         "type": "function",
@@ -1728,6 +1662,209 @@ AGENT_TOOLS = [
         },
     },
 ]
+
+
+# ── Factory-only Tools (dynamically injected for Factory Agents) ──
+_FACTORY_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tenant_tools",
+            "description": "List all installed and available tools for the current company/tenant. Returns tool names, descriptions, and parameter schemas. Use this to discover which tools can be referenced as action targets in an Agent Script.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Optional filter by category (e.g. 'search', 'feishu', 'communication'). Leave empty for all tools.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tenant_skills",
+            "description": "List all available skills for the current company/tenant. Returns skill names, descriptions, categories, and folder names. Use this to discover which skills can be referenced as action targets in an Agent Script.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Optional filter by category (e.g. 'research', 'productivity'). Leave empty for all skills.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_ascript_agent",
+            "description": "Create a new Agent Script-powered digital employee. Provide the complete Agent Script content, agent name, role description, and optionally a model ID. The system will create the agent, write the Agent Script to its workspace, parse action targets to auto-enable referenced tools and install referenced skills, and initialize state variables. Returns the created agent's ID and details.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the new agent (2-100 characters)",
+                    },
+                    "role_description": {
+                        "type": "string",
+                        "description": "Brief role description (max 500 characters)",
+                    },
+                    "agent_script": {
+                        "type": "string",
+                        "description": "The complete Agent Script content in .ascript format",
+                    },
+                    "primary_model_id": {
+                        "type": "string",
+                        "description": "Optional UUID of the LLM model to use. If not provided, uses the same model as the factory agent.",
+                    },
+                    "enable_evolution": {
+                        "type": "boolean",
+                        "description": "Whether to create a daily evolution trigger for this agent (default: true)",
+                    },
+                },
+                "required": ["name", "role_description", "agent_script"],
+            },
+        },
+    },
+]
+
+_FACTORY_TOOL_NAMES = {t["function"]["name"] for t in _FACTORY_TOOLS}
+
+
+async def _is_factory_agent(agent_id: uuid.UUID) -> bool:
+    try:
+        from app.models.agent import Agent as AgentModel
+        async with async_session() as db:
+            r = await db.execute(
+                select(AgentModel.name, AgentModel.role_description).where(AgentModel.id == agent_id)
+            )
+            row = r.one_or_none()
+            if not row:
+                return False
+            name, role = (row[0] or "").lower(), (row[1] or "").lower()
+            return "agent factory" in name or "agent factory" in role
+    except Exception:
+        return False
+
+
+async def _list_tenant_tools(agent_id: uuid.UUID, arguments: dict) -> str:
+    try:
+        from app.models.agent import Agent as AgentModel
+        from app.models.tool import Tool as ToolModel
+        async with async_session() as db:
+            agent_row = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+            tenant_id = agent_row.scalar_one_or_none()
+            if not tenant_id:
+                return json.dumps({"error": "Agent not found"})
+            result = await db.execute(
+                select(ToolModel).where(
+                    ToolModel.tenant_id == tenant_id,
+                    ToolModel.enabled == True,
+                )
+            )
+            tools = result.scalars().all()
+            cat_filter = (arguments.get("category") or "").lower()
+            out = []
+            for t in tools:
+                if cat_filter and cat_filter not in (t.category or "").lower():
+                    continue
+                out.append({
+                    "name": t.name,
+                    "description": t.description or "",
+                    "category": t.category or "",
+                })
+            return json.dumps({"tools": out, "count": len(out)}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[FactoryTool] list_tenant_tools failed: {e}")
+        return json.dumps({"error": str(e)})
+
+
+async def _list_tenant_skills(agent_id: uuid.UUID, arguments: dict) -> str:
+    try:
+        from app.models.agent import Agent as AgentModel
+        from app.models.skill import Skill as SkillModel
+        async with async_session() as db:
+            agent_row = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+            tenant_id = agent_row.scalar_one_or_none()
+            if not tenant_id:
+                return json.dumps({"error": "Agent not found"})
+            result = await db.execute(
+                select(SkillModel).where(SkillModel.tenant_id == tenant_id)
+            )
+            skills = result.scalars().all()
+            cat_filter = (arguments.get("category") or "").lower()
+            out = []
+            for s in skills:
+                if cat_filter and cat_filter not in (s.category or "").lower():
+                    continue
+                out.append({
+                    "name": s.name,
+                    "folder": s.folder_name if hasattr(s, 'folder_name') else s.name,
+                    "description": s.description or "",
+                    "category": s.category or "",
+                })
+            return json.dumps({"skills": out, "count": len(out)}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[FactoryTool] list_tenant_skills failed: {e}")
+        return json.dumps({"error": str(e)})
+
+
+async def _create_ascript_agent(agent_id: uuid.UUID, user_id: uuid.UUID, arguments: dict) -> str:
+    try:
+        from app.models.agent import Agent as AgentModel
+        from app.services.storage.factory import get_storage
+
+        name = arguments.get("name", "").strip()
+        role_description = arguments.get("role_description", "").strip()
+        agent_script = arguments.get("agent_script", "").strip()
+
+        if not name or not agent_script:
+            return json.dumps({"error": "Both 'name' and 'agent_script' are required"})
+
+        async with async_session() as db:
+            factory = await db.execute(
+                select(AgentModel).where(AgentModel.id == agent_id)
+            )
+            factory_agent = factory.scalar_one_or_none()
+            if not factory_agent:
+                return json.dumps({"error": "Factory agent not found"})
+
+            model_id = arguments.get("primary_model_id") or (str(factory_agent.primary_model_id) if factory_agent.primary_model_id else None)
+
+            new_agent = AgentModel(
+                name=name,
+                role_description=role_description or f"Agent Script agent: {name}",
+                tenant_id=factory_agent.tenant_id,
+                agent_type="ascript",
+                status="idle",
+                creator_id=user_id,
+            )
+            if model_id:
+                new_agent.primary_model_id = uuid.UUID(model_id) if isinstance(model_id, str) else model_id
+            db.add(new_agent)
+            await db.commit()
+            await db.refresh(new_agent)
+
+        storage = get_storage()
+        agent_id_str = str(new_agent.id)
+        await storage.write(f"{agent_id_str}/agent_script.ascript", agent_script)
+        await storage.write(f"{agent_id_str}/script_versions/initial/v1.ascript", agent_script)
+
+        logger.info(f"[FactoryTool] Created ascript agent: {name} ({new_agent.id})")
+        return json.dumps({
+            "success": True,
+            "agent_id": agent_id_str,
+            "name": name,
+            "message": f"Agent '{name}' created successfully with Agent Script.",
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[FactoryTool] create_ascript_agent failed: {e}")
+        return json.dumps({"error": str(e)})
 
 
 # Core tools that should always be available to agents regardless of
@@ -2052,6 +2189,13 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                 for t in _always_tools:
                     if t["function"]["name"] not in db_tool_names:
                         result.append(t)
+
+                # Dynamically inject Factory tools if this is a Factory Agent
+                if await _is_factory_agent(agent_id):
+                    for t in _FACTORY_TOOLS:
+                        if t["function"]["name"] not in db_tool_names:
+                            result.append(t)
+
                 # Inject OS-aware paths into computer-related tool descriptions
                 result = _patch_computer_tool_descriptions(result, computer_os_type)
                 # Strip msg_type from send_message_to_agent when async A2A is disabled
@@ -2062,7 +2206,10 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
         logger.error(f"[Tools] DB load failed, using fallback: {e}")
 
     # Fallback to hardcoded tools (still apply OS-aware path patching)
-    fallback = _patch_computer_tool_descriptions(AGENT_TOOLS, computer_os_type)
+    fallback = list(AGENT_TOOLS)
+    if await _is_factory_agent(agent_id):
+        fallback.extend(_FACTORY_TOOLS)
+    fallback = _patch_computer_tool_descriptions(fallback, computer_os_type)
     if not _a2a_async:
         fallback = _strip_a2a_msg_type(fallback)
     return fallback

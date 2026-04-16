@@ -32,7 +32,7 @@ from app.schemas.schemas import (
     ScriptAnalyzeRequest,
 )
 from app.services.agent_script_prompt import AGENT_SCRIPT_SYSTEM_PROMPT, ANALYZE_SYSTEM_PROMPT
-from app.services.llm_client import create_llm_client, LLMMessage, get_max_tokens
+from app.services.llm.client import create_llm_client, LLMMessage, get_max_tokens
 
 router = APIRouter(prefix="/script-builder", tags=["script-builder"])
 

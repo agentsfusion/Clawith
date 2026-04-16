@@ -17,7 +17,7 @@ from app.models.agent import Agent
 from app.models.evolver import AgentFeedback, AgentHealthCheck, AgentScriptVersion, EvolutionJob
 from app.models.llm import LLMModel
 from app.models.user import User
-from app.services.llm_client import create_llm_client, LLMMessage, get_max_tokens
+from app.services.llm.client import create_llm_client, LLMMessage, get_max_tokens
 from app.services.agent_script_prompt import ANALYZE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
