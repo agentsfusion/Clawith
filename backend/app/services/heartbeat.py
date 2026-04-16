@@ -410,6 +410,26 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         logger.exception(f"Heartbeat error for agent {agent_id}: {e}")
 
 
+async def _execute_evolver_evolution(agent_id: str, tenant_id):
+    """Run evolution for an evolver-type agent (replaces native heartbeat)."""
+    try:
+        from app.services.evolver_evolution import run_evolution
+        from app.database import async_session as _async_session
+        from app.models.agent import Agent
+
+        result = await run_evolution(agent_id, tenant_id, "Improve overall quality based on feedback and past learnings")
+        logger.info(f"💓 Evolver evolution for {agent_id}: {result.get('status')}")
+
+        async with _async_session() as db:
+            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            agent = agent_result.scalar_one_or_none()
+            if agent:
+                agent.last_heartbeat_at = datetime.now(timezone.utc)
+                await db.commit()
+    except Exception as e:
+        logger.exception(f"Evolver evolution error for agent {agent_id}: {e}")
+
+
 async def _heartbeat_tick():
     """One heartbeat tick: find agents due for heartbeat."""
     from app.database import async_session
@@ -461,10 +481,13 @@ async def _heartbeat_tick():
                 if agent.last_heartbeat_at and (now - agent.last_heartbeat_at) < interval:
                     continue
 
-                # Fire heartbeat
+                # Fire heartbeat — branch by agent type
                 logger.info(f"💓 Triggering heartbeat for {agent.name}")
                 await write_audit_log("heartbeat_fire", {"agent_name": agent.name}, agent_id=agent.id)
-                asyncio.create_task(_execute_heartbeat(agent.id))
+                if getattr(agent, 'agent_type', 'native') == 'evolver':
+                    asyncio.create_task(_execute_evolver_evolution(agent.id, agent.tenant_id))
+                else:
+                    asyncio.create_task(_execute_heartbeat(agent.id))
                 triggered += 1
 
             if triggered:

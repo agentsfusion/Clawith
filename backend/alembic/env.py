@@ -36,6 +36,8 @@ from app.models.tenant_setting import TenantSetting  # noqa: F401
 from app.models.notification import Notification  # noqa: F401
 from app.models.published_page import PublishedPage  # noqa: F401
 from app.models.gateway_message import GatewayMessage  # noqa: F401
+from app.models.script_builder import ScriptConversation, ScriptMessage  # noqa: F401
+from app.models.evolver import AgentFeedback, AgentHealthCheck, AgentScriptVersion  # noqa: F401
 
 config = context.config
 settings = get_settings()
