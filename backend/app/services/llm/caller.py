@@ -598,10 +598,20 @@ async def call_llm(
             continue
 
         # Add assistant message with tool calls
+        _tc_list = []
+        for tc in response.tool_calls:
+            _tc_item: dict = {
+                "id": tc["id"],
+                "type": "function",
+                "function": tc["function"],
+            }
+            if tc.get("_thought_signatures"):
+                _tc_item["_thought_signatures"] = tc["_thought_signatures"]
+            _tc_list.append(_tc_item)
         api_messages.append(LLMMessage(
             role="assistant",
             content=response.content or None,
-            tool_calls=sanitized_tool_calls,
+            tool_calls=_tc_list,
             reasoning_content=response.reasoning_content,
         ))
 
@@ -959,35 +969,20 @@ async def call_agent_llm_with_tools(
                     continue
 
                 # Execute tool calls
-                sanitized_tool_calls, retry_instruction = _sanitize_tool_calls_for_context(response.tool_calls)
-                if retry_instruction:
-                    api_messages.append(LLMMessage(role="user", content=retry_instruction))
-                    continue
-
-                finish_call = find_finish_call(sanitized_tool_calls)
-                if finish_call:
-                    if finish_call.valid:
-                        if agent_id and _accumulated_usage.total_tokens > 0:
-                            await record_token_usage(agent_id, _accumulated_usage)
-                        await client.close()
-                        return finish_call.content, True, tool_executed
-                    api_messages.append(LLMMessage(
-                        role="assistant",
-                        content=response.content or None,
-                        tool_calls=sanitized_tool_calls,
-                        reasoning_content=response.reasoning_content,
-                    ))
-                    api_messages.append(LLMMessage(
-                        role="tool",
-                        tool_call_id=finish_call.call_id,
-                        content=finish_call.error or "`finish` was invalid.",
-                    ))
-                    continue
-
+                _tc_list = []
+                for tc in response.tool_calls:
+                    _tc_item: dict = {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": tc["function"],
+                    }
+                    if tc.get("_thought_signatures"):
+                        _tc_item["_thought_signatures"] = tc["_thought_signatures"]
+                    _tc_list.append(_tc_item)
                 api_messages.append(LLMMessage(
                     role="assistant",
                     content=response.content or None,
-                    tool_calls=sanitized_tool_calls,
+                    tool_calls=_tc_list,
                     reasoning_content=response.reasoning_content,
                 ))
 
