@@ -28,6 +28,9 @@ class LLMMessage:
     role: Literal["system", "user", "assistant", "tool"]
     content: str | list | None = None
     tool_calls: list[dict] | None = None
+    """List of tool call dicts with keys: id, type, function.
+    Gemini responses may also include '_thought_signatures' (list[str]) for
+    round-tripping Gemini thought signatures through multi-turn conversations."""
     tool_call_id: str | None = None
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
@@ -1183,6 +1186,7 @@ class GeminiClient(LLMClient):
                         }
                         sigs = tc.get("_thought_signatures", [])
                         if sigs:
+                            # Gemini API supports one thoughtSignature per functionCall part
                             fc_part["thoughtSignature"] = sigs[0]
                         parts.append(fc_part)
                 if parts:
@@ -1215,7 +1219,7 @@ class GeminiClient(LLMClient):
             role = c.get("role", "?")
             part_keys_list = [sorted(p.keys()) for p in c.get("parts", [])]
             content_summary.append(f"  [{i}] {role}: {part_keys_list}")
-        logger.info(f"[Gemini-Debug] Final contents ({len(contents)} entries):\n" + "\n".join(content_summary))
+        logger.debug(f"[Gemini-Debug] Final contents ({len(contents)} entries):\n" + "\n".join(content_summary))
 
         payload: dict[str, Any] = {
             "contents": contents or [{"role": "user", "parts": [{"text": ""}]}],
@@ -1286,8 +1290,13 @@ class GeminiClient(LLMClient):
                 text = part.get("text")
                 if text:
                     content_chunks.append(text)
+                # Collect thought signatures (Gemini thinking model reasoning markers)
+                # They are attached to the next functionCall in part order.
                 if "thoughtSignature" in part:
                     thought_signatures.append(part["thoughtSignature"])
+                elif "thought_signature" in part:
+                    # Defensive: handle non-standard snake_case variant
+                    thought_signatures.append(part["thought_signature"])
                 function_call = part.get("functionCall")
                 if function_call:
                     name = function_call.get("name", "")
@@ -1446,8 +1455,8 @@ class GeminiClient(LLMClient):
 
                         part_keys = set(part.keys())
                         non_standard_keys = part_keys - {"text", "functionCall", "functionResponse"}
-                        if non_standard_keys or part.get("functionCall"):
-                            logger.info(f"[Gemini-Debug] Part keys: {sorted(part_keys)}")
+                        if non_standard_keys:
+                            logger.debug(f"[Gemini-Debug] Part keys: {sorted(part_keys)}")
 
                         function_call = part.get("functionCall")
                         if function_call:
@@ -1471,12 +1480,12 @@ class GeminiClient(LLMClient):
                                 tc_entry["_thought_signatures"] = list(pending_thought_sigs)
                                 pending_thought_sigs.clear()
                             tool_calls.append(tc_entry)
-                            logger.info(f"[Gemini-Debug] Tool call '{name}' has {len(tc_entry.get('_thought_signatures', []))} thought signatures")
+                            logger.debug(f"[Gemini-Debug] Tool call '{name}' has {len(tc_entry.get('_thought_signatures', []))} thought signatures")
 
         except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
             raise LLMError(f"Connection failed: {e}")
 
-        logger.info(f"[Gemini-Debug] Stream result: {len(tool_calls)} tool_calls, pending_sigs={len(pending_thought_sigs)}")
+        logger.debug(f"[Gemini-Debug] Stream result: {len(tool_calls)} tool_calls, pending_sigs={len(pending_thought_sigs)}")
 
         return LLMResponse(
             content=full_text,

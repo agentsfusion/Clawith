@@ -776,14 +776,20 @@ async def call_agent_llm_with_tools(
                     return response.content or "[Empty response]", True
 
                 # Execute tool calls
-                api_messages.append(LLMMessage(
-                    role="assistant",
-                    content=response.content or None,
-                    tool_calls=[{
+                _tc_list = []
+                for tc in response.tool_calls:
+                    _tc_item: dict = {
                         "id": tc["id"],
                         "type": "function",
                         "function": tc["function"],
-                    } for tc in response.tool_calls],
+                    }
+                    if tc.get("_thought_signatures"):
+                        _tc_item["_thought_signatures"] = tc["_thought_signatures"]
+                    _tc_list.append(_tc_item)
+                api_messages.append(LLMMessage(
+                    role="assistant",
+                    content=response.content or None,
+                    tool_calls=_tc_list,
                     reasoning_content=response.reasoning_content,
                 ))
 
