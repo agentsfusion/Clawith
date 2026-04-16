@@ -329,7 +329,7 @@ async def handle_gws_oauth_callback(
     tenant_id = uuid.UUID(state_data["tenant_id"])
     
     redirect_uri = await _get_gws_redirect_uri(db, request)
-
+    
     try:
         token_response = await gws_service.exchange_code_for_tokens(
             code=code,
