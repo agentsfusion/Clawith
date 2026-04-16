@@ -44,7 +44,7 @@ export interface Agent {
     last_heartbeat_at?: string;
     timezone?: string;
     context_window_size?: number;
-    agent_type?: 'native' | 'openclaw';
+    agent_type?: 'native' | 'evolver' | 'openclaw';
     openclaw_last_seen?: string;
     access_mode?: 'company' | 'private' | 'custom';
     company_access_level?: 'use' | 'manage';
