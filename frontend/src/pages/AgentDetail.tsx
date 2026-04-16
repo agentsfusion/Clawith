@@ -10,6 +10,11 @@ import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import AgentCredentials from '../components/AgentCredentials';
+import FeedbackTab from '../components/evolver/FeedbackTab';
+import HealthTab from '../components/evolver/HealthTab';
+import JobDashboard from '../components/evolver/JobDashboard';
+import ScriptTab from '../components/evolver/ScriptTab';
+import EvolverMindTab from '../components/evolver/EvolverMindTab';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, gwsApi, larkApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
@@ -18,7 +23,33 @@ import { formatFileSize } from '../utils/formatFileSize';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 
-function ErrorFallback({ error, onReload }: { error: Error | null; onReload: () => void }) {
+const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings', 'feedback', 'health', 'script', 'jobs'] as const;
+
+// Format large token numbers with K/M suffixes
+const formatTokens = (n: number) => {
+    if (!n) return '0';
+    if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return String(n);
+};
+
+const getCategoryLabels = (t: any): Record<string, string> => ({
+    file: t('agent.toolCategories.file'),
+    task: t('agent.toolCategories.task'),
+    communication: t('agent.toolCategories.communication'),
+    search: t('agent.toolCategories.search'),
+    aware: t('agent.toolCategories.aware', 'Aware & Triggers'),
+    social: t('agent.toolCategories.social', 'Social'),
+    code: t('agent.toolCategories.code', 'Code & Execution'),
+    discovery: t('agent.toolCategories.discovery', 'Discovery'),
+    email: t('agent.toolCategories.email', 'Email'),
+    feishu: t('agent.toolCategories.feishu', 'Feishu / Lark'),
+    custom: t('agent.toolCategories.custom'),
+    general: t('agent.toolCategories.general'),
+    agentbay: t('agent.toolCategories.agentbay', 'AgentBay'),
+});
+
+function ToolsManager({ agentId, canManage = false }: { agentId: string; canManage?: boolean }) {
     const { t } = useTranslation();
     return (
         <>
@@ -1287,7 +1318,7 @@ function AgentDetailInner() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
-    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'];
+    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings', 'feedback', 'health', 'script', 'jobs'];
     const hashTab = location.hash?.replace('#', '');
     const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
 
@@ -1993,6 +2024,10 @@ function AgentDetailInner() {
             // Capture session_id from the 'connected' message for Take Control
             if (d.type === 'connected' && d.session_id) {
                 if (isActiveRuntime) setWsSessionId(d.session_id);
+                return;
+            }
+
+            if (d.type === 'script_trace' || d.type === 'info' || d.type === 'agentbay_live') {
                 return;
             }
 
@@ -2836,6 +2871,13 @@ function AgentDetailInner() {
                                         letterSpacing: '0.5px',
                                     }}>AgentsFusion · Lab</span>
                                 )}
+                                {(agent as any).agent_type === 'evolver' && (
+                                    <span style={{
+                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                        background: 'linear-gradient(135deg, #f59e0b, #ef4444)', color: '#fff', fontWeight: 600,
+                                        letterSpacing: '0.5px',
+                                    }}>Evolver</span>
+                                )}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                         Expires: {new Date((agent as any).expires_at).toLocaleString()}
@@ -2878,6 +2920,9 @@ function AgentDetailInner() {
                         if ((agent as any)?.agent_type === 'openclaw') {
                             return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
                         }
+                        const isEvolver = (agent as any)?.agent_type === 'evolver';
+                        if (['feedback', 'health', 'script', 'jobs'].includes(tab)) return isEvolver;
+                        if (isEvolver && ['aware', 'workspace'].includes(tab)) return false;
                         return true;
                     }).map((tab) => (
                         <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
@@ -3745,6 +3790,12 @@ function AgentDetailInner() {
                 {/* ── Mind Tab (Soul + Memory + Heartbeat) ── */}
                 {
                     activeTab === 'mind' && (() => {
+                        const isEvolverAgent = (agent as any)?.agent_type === 'evolver';
+
+                        if (isEvolverAgent) {
+                            return <EvolverMindTab agentId={id!} />;
+                        }
+
                         const adapter: FileBrowserApi = {
                             list: (p) => fileApi.list(id!, p),
                             read: (p) => fileApi.read(id!, p),
@@ -5901,6 +5952,22 @@ function AgentDetailInner() {
                     </div>
                 )
             }
+
+                    {activeTab === 'feedback' && id && (
+                        <FeedbackTab agentId={id} />
+                    )}
+
+                    {activeTab === 'health' && id && (
+                        <HealthTab agentId={id} />
+                    )}
+
+                    {activeTab === 'script' && id && (
+                        <ScriptTab agentId={id} />
+                    )}
+
+                    {activeTab === 'jobs' && id && (
+                        <JobDashboard agentId={id} />
+                    )}
 
         </>
     );
