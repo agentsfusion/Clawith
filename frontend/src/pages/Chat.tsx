@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useParams } from 'react-router-dom';
+import { useParams, useLocation } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
@@ -45,12 +45,37 @@ interface ToolCall {
     result?: string;
 }
 
+interface ScriptTraceEntry {
+    phase: 'input' | 'output' | 'init' | 'execution';
+    current_topic?: string;
+    topic_description?: string;
+    variables?: Record<string, any>;
+    available_actions?: { name: string; description: string; target: string }[];
+    reasoning_mode?: 'procedural' | 'natural_language';
+    active_prompts?: string[];
+    pending_transitions?: string[];
+    pending_actions?: string[];
+    reasoning?: string;
+    available_topics?: { name: string; description: string }[];
+    changes?: string[];
+    new_topic?: string;
+    new_variables?: Record<string, any>;
+    welcome_source?: 'script' | 'agent';
+    execution_steps?: { topic: string; action: string; detail: string }[];
+    topic_path?: string[];
+    engine_changes?: string[];
+    llm_instructions?: string[];
+    actions_to_run?: string[];
+    mem?: Record<string, string>;
+}
+
 interface Message {
     role: 'user' | 'assistant';
     content: string;
     fileName?: string;
     toolCalls?: ToolCall[];
     thinking?: string;
+    scriptTrace?: ScriptTraceEntry[];
     imageUrl?: string;
     timestamp?: string;
     _isToolGroup?: boolean;
@@ -263,10 +288,12 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
 export default function Chat() {
     const { t } = useTranslation();
     const { id } = useParams<{ id: string }>();
+    const location = useLocation();
     const token = useAuthStore((s) => s.token);
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [connected, setConnected] = useState(false);
+    const initialMessageSent = useRef(false);
     const [uploadProgress, setUploadProgress] = useState<{
         name: string;
         percent: number;
@@ -288,7 +315,6 @@ export default function Chat() {
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
-
     const { data: agent } = useQuery({
         queryKey: ['agent', id],
         queryFn: () => agentApi.get(id!),
@@ -419,6 +445,27 @@ export default function Chat() {
                 }
                 setConnected(true);
                 wsRef.current = ws;
+
+                const initMsg = (location.state as any)?.initialMessage;
+                if (initMsg && !initialMessageSent.current) {
+                    initialMessageSent.current = true;
+                    window.history.replaceState({}, '');
+                    setTimeout(() => {
+                        if (ws.readyState === WebSocket.OPEN) {
+                            pendingToolCalls.current = [];
+                            streamContent.current = '';
+                            thinkingContent.current = '';
+                            setIsWaiting(true);
+                            setStreaming(true);
+                            setMessages((prev) => [...prev, {
+                                role: 'user',
+                                content: initMsg,
+                                timestamp: new Date().toISOString(),
+                            }]);
+                            ws.send(JSON.stringify({ content: initMsg, display_content: initMsg, file_name: '' }));
+                        }
+                    }, 300);
+                }
             };
             ws.onclose = () => {
                 if (!cancelled) {
@@ -466,6 +513,21 @@ export default function Chat() {
                     return;
                 }
 
+                if (data.type === 'script_trace') {
+                    const traceEntry: ScriptTraceEntry = data;
+                    setMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        if (last && last.role === 'assistant') {
+                            const updated = [...prev];
+                            const existing = last.scriptTrace || [];
+                            updated[updated.length - 1] = { ...last, scriptTrace: [...existing, traceEntry] };
+                            return updated;
+                        }
+                        return [...prev, { role: 'assistant', content: '', scriptTrace: [traceEntry], timestamp: new Date().toISOString() }];
+                    });
+                    return;
+                }
+
                 if (data.type === 'thinking') {
                     // Accumulate thinking content
                     thinkingContent.current += data.content;
@@ -479,12 +541,10 @@ export default function Chat() {
                         return [...prev, { role: 'assistant', content: '', thinking: thinkingContent.current, timestamp: new Date().toISOString() }];
                     });
                 } else if (data.type === 'chunk') {
-                    // Streaming text chunk — accumulate and update live preview
                     streamContent.current += data.content;
                     setMessages(prev => {
                         const last = prev[prev.length - 1];
                         if (last && last.role === 'assistant') {
-                            // Update the streaming message in-place
                             const updated = [...prev];
                             updated[updated.length - 1] = { ...last, content: streamContent.current };
                             return updated;
@@ -574,7 +634,6 @@ export default function Chat() {
                         }
                     }
                 } else if (data.type === 'done') {
-                    // Final response — replace streaming message with final + tool calls
                     const toolCalls = pendingToolCalls.current.length > 0 ? [...pendingToolCalls.current] : undefined;
                     const thinking = thinkingContent.current || undefined;
                     pendingToolCalls.current = [];
@@ -583,9 +642,12 @@ export default function Chat() {
                     setStreaming(false);
                     setMessages(prev => {
                         const updated = [...prev];
-                        // Replace the last streaming assistant message
                         if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
-                            updated[updated.length - 1] = { role: 'assistant', content: data.content, toolCalls, thinking };
+                            const existing = updated[updated.length - 1];
+                            updated[updated.length - 1] = {
+                                role: 'assistant', content: data.content, toolCalls, thinking,
+                                ...(existing.scriptTrace ? { scriptTrace: existing.scriptTrace } : {}),
+                            };
                         } else {
                             updated.push({ role: 'assistant', content: data.content, toolCalls, thinking });
                         }
@@ -842,6 +904,398 @@ export default function Chat() {
                                     const fi = fe === 'pdf' ? '\uD83D\uDCC4' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '\uD83D\uDCCA' : (fe === 'docx' || fe === 'doc') ? '\uD83D\uDCDD' : '\uD83D\uDCCE';
                                     return (<div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'rgba(0,0,0,0.08)', borderRadius: '6px', padding: '4px 8px', marginBottom: msg.content ? '4px' : '0', fontSize: '11px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}><span>{fi}</span><span style={{ fontWeight: 500, color: 'var(--text-primary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.fileName}</span></div>);
                                 })()}
+                                {msg.scriptTrace && msg.scriptTrace.length > 0 && (() => {
+                                    const execTrace = msg.scriptTrace.find(t => t.phase === 'execution');
+                                    const outputTrace = msg.scriptTrace.find(t => t.phase === 'output');
+                                    const topicPath = execTrace?.topic_path || [];
+                                    const currentTopic = outputTrace?.new_topic || execTrace?.current_topic || '';
+                                    const hasEngineSteps = execTrace?.execution_steps && execTrace.execution_steps.length > 0;
+                                    const summaryParts: string[] = [];
+                                    if (currentTopic) summaryParts.push(currentTopic === '__start__' ? 'start_agent' : currentTopic);
+                                    if (execTrace?.llm_instructions?.length) summaryParts.push(`${execTrace.llm_instructions.length} instructions`);
+                                    if (outputTrace?.changes?.length) summaryParts.push(`${outputTrace.changes.length} changes`);
+                                    return (<>
+                                    {hasEngineSteps && (
+                                        <div style={{
+                                            display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                            background: 'rgba(249, 115, 22, 0.08)', borderRadius: '6px',
+                                            padding: '4px 10px', marginBottom: '6px',
+                                            border: '1px solid rgba(249, 115, 22, 0.2)',
+                                            fontSize: '11px', color: 'rgba(249, 115, 22, 0.85)', fontWeight: 600,
+                                        }}>
+                                            <span>{'\u2699'}</span>
+                                            <span>Agent Script</span>
+                                            {topicPath.length > 0 && (
+                                                <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}>
+                                                    {topicPath.map(t => t === '__start__' ? 'start' : t).join(' \u2192 ')}
+                                                </span>
+                                            )}
+                                            {summaryParts.length > 0 && (
+                                                <span style={{
+                                                    background: 'rgba(249, 115, 22, 0.12)', borderRadius: '3px',
+                                                    padding: '1px 5px', fontSize: '10px',
+                                                }}>{summaryParts.join(' | ')}</span>
+                                            )}
+                                        </div>
+                                    )}
+                                    <details open={hasEngineSteps} style={{
+                                        marginBottom: '8px', fontSize: '12px',
+                                        background: 'rgba(34, 197, 94, 0.06)', borderRadius: '8px',
+                                        border: '1px solid rgba(34, 197, 94, 0.2)',
+                                    }}>
+                                        <summary style={{
+                                            padding: '8px 12px', cursor: 'pointer',
+                                            color: 'rgba(34, 197, 94, 0.9)', fontWeight: 600,
+                                            userSelect: 'none', display: 'flex', alignItems: 'center', gap: '6px',
+                                            fontSize: '12px',
+                                        }}>
+                                            <span style={{ fontSize: '14px' }}>&#x26A1;</span> Script Execution Trace
+                                        </summary>
+                                        <div style={{ padding: '4px 12px 10px' }}>
+                                            {msg.scriptTrace.map((trace, ti) => (
+                                                <div key={ti} style={{
+                                                    marginBottom: ti < msg.scriptTrace!.length - 1 ? '8px' : 0,
+                                                    paddingBottom: ti < msg.scriptTrace!.length - 1 ? '8px' : 0,
+                                                    borderBottom: ti < msg.scriptTrace!.length - 1 ? '1px solid rgba(34, 197, 94, 0.12)' : 'none',
+                                                }}>
+                                                    <div style={{
+                                                        fontWeight: 600, fontSize: '11px', textTransform: 'uppercase',
+                                                        color: trace.phase === 'init' ? 'rgba(34, 197, 94, 0.85)' : trace.phase === 'execution' ? 'rgba(249, 115, 22, 0.85)' : trace.phase === 'input' ? 'rgba(59, 130, 246, 0.85)' : 'rgba(234, 179, 8, 0.85)',
+                                                        marginBottom: '4px', letterSpacing: '0.5px',
+                                                    }}>
+                                                        {trace.phase === 'init' ? '\u2726 Session Init' : trace.phase === 'execution' ? '\u2699 Script Engine' : trace.phase === 'input' ? '\u25B6 Input State' : '\u25C0 Output State'}
+                                                    </div>
+
+                                                    {trace.phase === 'init' && (
+                                                        <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
+                                                            <div style={{ display: 'flex', gap: '4px', marginBottom: '3px' }}>
+                                                                <span style={{ color: 'var(--text-tertiary)', minWidth: '70px' }}>Topic:</span>
+                                                                <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                                                                    {trace.current_topic || '(none)'}
+                                                                </span>
+                                                            </div>
+                                                            {trace.welcome_source && (
+                                                                <div style={{ display: 'flex', gap: '4px', marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', minWidth: '70px' }}>Welcome:</span>
+                                                                    <span style={{
+                                                                        display: 'inline-block',
+                                                                        background: trace.welcome_source === 'script' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
+                                                                        border: `1px solid ${trace.welcome_source === 'script' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(156, 163, 175, 0.3)'}`,
+                                                                        borderRadius: '4px', padding: '0 6px', fontSize: '10px', fontWeight: 600,
+                                                                        color: trace.welcome_source === 'script' ? 'rgba(34, 197, 94, 0.85)' : 'rgba(156, 163, 175, 0.85)',
+                                                                    }}>
+                                                                        {trace.welcome_source === 'script' ? 'From Agent Script' : 'From Agent Config'}
+                                                                    </span>
+                                                                </div>
+                                                            )}
+                                                            {trace.variables && Object.keys(trace.variables).length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Initial Variables:</span>
+                                                                    {Object.entries(trace.variables).map(([k, v]) => (
+                                                                        <div key={k} style={{ marginLeft: '8px' }}>
+                                                                            <code style={{ background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                            {' = '}
+                                                                            <span style={{ color: 'var(--text-tertiary)' }}>{JSON.stringify(v)}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
+                                                    {trace.phase === 'input' && (
+                                                        <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
+                                                            <div style={{ display: 'flex', gap: '4px', marginBottom: '3px' }}>
+                                                                <span style={{ color: 'var(--text-tertiary)', minWidth: '70px' }}>Topic:</span>
+                                                                <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                                                                    {trace.current_topic || '(none)'}
+                                                                    {trace.topic_description ? ` \u2014 ${trace.topic_description}` : ''}
+                                                                </span>
+                                                            </div>
+                                                            {trace.variables && Object.keys(trace.variables).length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', minWidth: '70px', display: 'inline-block' }}>Variables:</span>
+                                                                    <div style={{ marginLeft: '74px', marginTop: '-18px' }}>
+                                                                        {Object.entries(trace.variables).map(([k, v]) => (
+                                                                            <div key={k}>
+                                                                                <code style={{ background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                                {' = '}
+                                                                                <span style={{ color: typeof v === 'string' && v ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
+                                                                                    {JSON.stringify(v)}
+                                                                                </span>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            {trace.reasoning_mode && (
+                                                                <div style={{ display: 'flex', gap: '4px', marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', minWidth: '70px' }}>Mode:</span>
+                                                                    <span style={{
+                                                                        display: 'inline-block',
+                                                                        background: trace.reasoning_mode === 'procedural' ? 'rgba(249, 115, 22, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                                                                        border: `1px solid ${trace.reasoning_mode === 'procedural' ? 'rgba(249, 115, 22, 0.3)' : 'rgba(34, 197, 94, 0.3)'}`,
+                                                                        borderRadius: '4px', padding: '0 6px', fontSize: '10px', fontWeight: 600,
+                                                                        color: trace.reasoning_mode === 'procedural' ? 'rgba(249, 115, 22, 0.85)' : 'rgba(34, 197, 94, 0.85)',
+                                                                    }}>
+                                                                        {trace.reasoning_mode === 'procedural' ? '\u2699 Procedural (-\u003E)' : '\u270D Natural Language (|)'}
+                                                                    </span>
+                                                                </div>
+                                                            )}
+                                                            {trace.active_prompts && trace.active_prompts.length > 0 && (
+                                                                <div style={{ marginBottom: '4px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Active Prompts (evaluated):</span>
+                                                                    {trace.active_prompts.map((p, pi) => (
+                                                                        <div key={pi} style={{
+                                                                            marginLeft: '8px', marginTop: '2px', padding: '3px 8px',
+                                                                            background: 'rgba(34, 197, 94, 0.06)', borderLeft: '2px solid rgba(34, 197, 94, 0.4)',
+                                                                            fontSize: '10px', color: 'var(--text-primary)', lineHeight: '1.5',
+                                                                        }}>
+                                                                            {p}
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.pending_transitions && trace.pending_transitions.length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px' }}>Auto-Transition: </span>
+                                                                    {trace.pending_transitions.map((t, ti3) => (
+                                                                        <span key={ti3} style={{
+                                                                            display: 'inline-block', background: 'rgba(249, 115, 22, 0.1)',
+                                                                            border: '1px solid rgba(249, 115, 22, 0.25)', borderRadius: '4px',
+                                                                            padding: '1px 6px', fontSize: '10px', fontWeight: 600,
+                                                                            color: 'rgba(249, 115, 22, 0.85)',
+                                                                        }}>
+                                                                            {'\u2192'} {t}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.pending_actions && trace.pending_actions.length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px' }}>Actions to Run: </span>
+                                                                    {trace.pending_actions.map((a, ai2) => (
+                                                                        <span key={ai2} style={{
+                                                                            display: 'inline-block', background: 'rgba(239, 68, 68, 0.08)',
+                                                                            border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '4px',
+                                                                            padding: '1px 6px', margin: '1px 3px 1px 0', fontSize: '10px',
+                                                                            color: 'rgba(239, 68, 68, 0.85)', fontWeight: 500,
+                                                                        }}>
+                                                                            {'\u25B6'} {a}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.available_actions && trace.available_actions.length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>Actions: </span>
+                                                                    {trace.available_actions.map((a, ai) => (
+                                                                        <span key={ai} style={{
+                                                                            display: 'inline-block', background: 'rgba(59, 130, 246, 0.1)',
+                                                                            border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '4px',
+                                                                            padding: '1px 6px', margin: '1px 3px 1px 0', fontSize: '10px',
+                                                                            color: 'rgba(59, 130, 246, 0.85)',
+                                                                        }}>
+                                                                            {a.name}{a.target ? ` \u2192 ${a.target}` : ''}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.reasoning && (
+                                                                <details style={{ marginTop: '4px' }}>
+                                                                    <summary style={{
+                                                                        cursor: 'pointer', color: 'var(--text-tertiary)',
+                                                                        fontSize: '10px', userSelect: 'none',
+                                                                    }}>
+                                                                        Raw Script (source)
+                                                                    </summary>
+                                                                    <pre style={{
+                                                                        fontSize: '10px', lineHeight: '1.5',
+                                                                        background: 'rgba(0,0,0,0.04)', borderRadius: '4px',
+                                                                        padding: '6px 8px', marginTop: '2px',
+                                                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                                                        maxHeight: '150px', overflow: 'auto',
+                                                                        color: 'var(--text-secondary)',
+                                                                    }}>
+                                                                        {trace.reasoning}
+                                                                    </pre>
+                                                                </details>
+                                                            )}
+                                                            {trace.available_topics && trace.available_topics.length > 0 && (
+                                                                <div>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>Topics: </span>
+                                                                    {trace.available_topics.map((t, ti2) => (
+                                                                        <span key={ti2} style={{
+                                                                            display: 'inline-block', background: 'rgba(147, 130, 220, 0.1)',
+                                                                            border: '1px solid rgba(147, 130, 220, 0.2)', borderRadius: '4px',
+                                                                            padding: '1px 6px', margin: '1px 3px 1px 0', fontSize: '10px',
+                                                                            color: 'rgba(147, 130, 220, 0.85)',
+                                                                        }}>
+                                                                            {t.name}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
+                                                    {trace.phase === 'execution' && (
+                                                        <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
+                                                            {trace.topic_path && trace.topic_path.length > 1 && (
+                                                                <div style={{ display: 'flex', gap: '4px', marginBottom: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Path:</span>
+                                                                    {trace.topic_path.map((tp, tpi) => (
+                                                                        <span key={tpi} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                                            {tpi > 0 && <span style={{ color: 'rgba(249, 115, 22, 0.6)', fontSize: '10px' }}>{'\u2192'}</span>}
+                                                                            <span style={{
+                                                                                display: 'inline-block', background: tpi === trace.topic_path!.length - 1 ? 'rgba(34, 197, 94, 0.15)' : 'rgba(147, 130, 220, 0.1)',
+                                                                                border: `1px solid ${tpi === trace.topic_path!.length - 1 ? 'rgba(34, 197, 94, 0.3)' : 'rgba(147, 130, 220, 0.2)'}`,
+                                                                                borderRadius: '4px', padding: '1px 6px', fontSize: '10px', fontWeight: 600,
+                                                                                color: tpi === trace.topic_path!.length - 1 ? 'rgba(34, 197, 94, 0.85)' : 'rgba(147, 130, 220, 0.85)',
+                                                                            }}>{tp === '__start__' ? 'start_agent' : tp}</span>
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.execution_steps && trace.execution_steps.length > 0 && (
+                                                                <div style={{ marginBottom: '6px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Engine Steps:</span>
+                                                                    {trace.execution_steps.map((es, esi) => {
+                                                                        const actionColors: Record<string, string> = {
+                                                                            enter: 'rgba(59, 130, 246, 0.7)',
+                                                                            set: 'rgba(234, 179, 8, 0.8)',
+                                                                            transition: 'rgba(249, 115, 22, 0.8)',
+                                                                            llm_prompt: 'rgba(34, 197, 94, 0.8)',
+                                                                            run_action: 'rgba(239, 68, 68, 0.8)',
+                                                                            stop: 'rgba(239, 68, 68, 0.6)',
+                                                                        };
+                                                                        const icons: Record<string, string> = {
+                                                                            enter: '\u25B6',
+                                                                            set: '\u270E',
+                                                                            transition: '\u2192',
+                                                                            llm_prompt: '\u2728',
+                                                                            run_action: '\u2699',
+                                                                            stop: '\u23F9',
+                                                                        };
+                                                                        return (
+                                                                            <div key={esi} style={{
+                                                                                marginLeft: '8px', marginTop: '2px', display: 'flex', alignItems: 'flex-start', gap: '6px',
+                                                                            }}>
+                                                                                <span style={{
+                                                                                    color: actionColors[es.action] || 'var(--text-tertiary)',
+                                                                                    fontSize: '10px', minWidth: '12px', textAlign: 'center',
+                                                                                }}>{icons[es.action] || '\u2022'}</span>
+                                                                                <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>
+                                                                                    {es.detail}
+                                                                                </span>
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                            {trace.llm_instructions && trace.llm_instructions.length > 0 && (
+                                                                <div style={{ marginBottom: '6px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>LLM Instructions:</span>
+                                                                    {trace.llm_instructions.map((inst, ii) => (
+                                                                        <div key={ii} style={{
+                                                                            marginLeft: '8px', marginTop: '2px', padding: '3px 8px',
+                                                                            background: 'rgba(34, 197, 94, 0.06)', borderLeft: '2px solid rgba(34, 197, 94, 0.4)',
+                                                                            fontSize: '10px', color: 'var(--text-primary)', lineHeight: '1.5',
+                                                                        }}>{inst}</div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.engine_changes && trace.engine_changes.length > 0 && (
+                                                                <div style={{ marginBottom: '4px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Engine Changes:</span>
+                                                                    {trace.engine_changes.map((ec, eci) => (
+                                                                        <div key={eci} style={{ marginLeft: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                                            <code style={{
+                                                                                background: 'rgba(249, 115, 22, 0.08)', border: '1px solid rgba(249, 115, 22, 0.15)',
+                                                                                borderRadius: '3px', padding: '1px 5px', fontSize: '10px',
+                                                                            }}>{ec}</code>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.variables && Object.keys(trace.variables).length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Variables:</span>
+                                                                    {Object.entries(trace.variables).map(([k, v]) => (
+                                                                        <div key={k} style={{ marginLeft: '8px' }}>
+                                                                            <code style={{ background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                            {' = '}
+                                                                            <span style={{ color: typeof v === 'string' && v ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>{JSON.stringify(v)}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {trace.mem && Object.keys(trace.mem).length > 0 && (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Memory:</span>
+                                                                    {Object.entries(trace.mem).map(([k, v]) => (
+                                                                        <div key={k} style={{ marginLeft: '8px' }}>
+                                                                            <code style={{ background: 'rgba(147, 130, 220, 0.1)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                            {' = '}
+                                                                            <span style={{ color: 'var(--text-primary)' }}>{v}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
+                                                    {trace.phase === 'output' && (
+                                                        <div style={{ fontSize: '11px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
+                                                            {trace.changes && trace.changes.length > 0 ? (
+                                                                <div style={{ marginBottom: '3px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>Changes: </span>
+                                                                    {trace.changes.map((c, ci) => (
+                                                                        <div key={ci} style={{
+                                                                            marginLeft: '8px', display: 'flex', alignItems: 'center', gap: '4px',
+                                                                        }}>
+                                                                            <span style={{ color: 'rgba(234, 179, 8, 0.7)', fontSize: '10px' }}>{'\u2192'}</span>
+                                                                            <code style={{
+                                                                                background: 'rgba(234, 179, 8, 0.08)',
+                                                                                border: '1px solid rgba(234, 179, 8, 0.15)',
+                                                                                borderRadius: '3px', padding: '1px 5px', fontSize: '10px',
+                                                                            }}>
+                                                                                {c}
+                                                                            </code>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            ) : (
+                                                                <div style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                                                                    No state changes
+                                                                </div>
+                                                            )}
+                                                            {trace.new_topic && (
+                                                                <div>
+                                                                    <span style={{ color: 'var(--text-tertiary)' }}>Current Topic: </span>
+                                                                    <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{trace.new_topic}</span>
+                                                                </div>
+                                                            )}
+                                                            {trace.mem && Object.keys(trace.mem).length > 0 && (
+                                                                <div style={{ marginTop: '4px' }}>
+                                                                    <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', fontWeight: 600 }}>Memory:</span>
+                                                                    {Object.entries(trace.mem).map(([k, v]) => (
+                                                                        <div key={k} style={{ marginLeft: '8px' }}>
+                                                                            <code style={{ background: 'rgba(147, 130, 220, 0.1)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{k}</code>
+                                                                            {' = '}
+                                                                            <span style={{ color: 'var(--text-primary)', fontSize: '10px' }}>{v}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </details>
+                                    </>);
+                                })()}
                                 {msg.thinking && (
                                     <details style={{
                                         marginBottom: '8px', fontSize: '12px',
@@ -1021,7 +1475,6 @@ export default function Chat() {
                 </div>
                 </div>
 
-                {/* AgentBay Live Preview Panel */}
                 {hasLiveData && (
                     <AgentBayLivePanel
                         liveState={liveState}

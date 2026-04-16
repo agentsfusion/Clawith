@@ -872,4 +872,10 @@ async def start_trigger_daemon():
             except Exception as e:
                 logger.error(f"Heartbeat tick error: {e}")
 
+            try:
+                from app.services.evolution_job_daemon import check_and_run_due_jobs
+                await check_and_run_due_jobs()
+            except Exception as e:
+                logger.error(f"Evolution job daemon error: {e}")
+
         await asyncio.sleep(TICK_INTERVAL)

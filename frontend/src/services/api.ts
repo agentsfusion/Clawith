@@ -256,6 +256,21 @@ export const agentApi = {
 
     gatewayMessages: (id: string) =>
         request<any[]>(`/agents/${id}/gateway-messages`),
+
+    sessions: (id: string) =>
+        request<any[]>(`/agents/${id}/sessions?scope=mine`),
+
+    createSession: (id: string, title?: string) =>
+        request<any>(`/agents/${id}/sessions`, { method: 'POST', body: JSON.stringify({ title }) }),
+
+    deleteSession: (id: string, sessionId: string) =>
+        request<void>(`/agents/${id}/sessions/${sessionId}`, { method: 'DELETE' }),
+
+    renameSession: (id: string, sessionId: string, title: string) =>
+        request<any>(`/agents/${id}/sessions/${sessionId}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+
+    sessionMessages: (id: string, sessionId: string) =>
+        request<any[]>(`/agents/${id}/sessions/${sessionId}/messages`),
 };
 
 // ─── Tasks ────────────────────────────────────────────
@@ -619,5 +634,198 @@ export const larkApi = {
 
     importSkills: () =>
         request<{ ok: boolean; imported: number }>('/lark/skills/import', { method: 'POST' }),
+};
+
+// ─── Script Builder ─────────────────────────────────
+export interface ScriptConversation {
+    id: number;
+    title: string;
+    createdAt: string;
+}
+
+export interface ScriptMessage {
+    id: number;
+    role: string;
+    content: string;
+    createdAt: string;
+}
+
+export interface ScriptAnalysisResult {
+    overallScore: number;
+    dimensions: { name: string; score: number; feedback: string }[];
+    strengths: string[];
+    suggestions: string[];
+}
+
+export interface ScriptBuilderContextItem {
+    name: string;
+    display_name?: string;
+    folder_name?: string;
+    category: string;
+    description: string;
+    icon: string;
+}
+
+export interface ScriptBuilderContext {
+    tools: ScriptBuilderContextItem[];
+    skills: ScriptBuilderContextItem[];
+}
+
+export const scriptBuilderApi = {
+    getContext: () =>
+        request<ScriptBuilderContext>('/script-builder/context'),
+
+    listConversations: () =>
+        request<ScriptConversation[]>('/script-builder/conversations'),
+
+    createConversation: (title: string) =>
+        request<ScriptConversation>('/script-builder/conversations', {
+            method: 'POST',
+            body: JSON.stringify({ title }),
+        }),
+
+    deleteConversation: (id: number) =>
+        request<void>(`/script-builder/conversations/${id}`, { method: 'DELETE' }),
+
+    listMessages: (convId: number) =>
+        request<ScriptMessage[]>(`/script-builder/conversations/${convId}/messages`),
+
+    streamMessage: (convId: number, content: string, signal?: AbortSignal) => {
+        const token = localStorage.getItem('token');
+        return fetch(`${API_BASE}/script-builder/conversations/${convId}/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({ content }),
+            signal,
+        });
+    },
+
+    analyze: (script: string) =>
+        request<ScriptAnalysisResult>('/script-builder/analyze', {
+            method: 'POST',
+            body: JSON.stringify({ script }),
+        }),
+
+    applyAsAgent: (script: string, name?: string) =>
+        request<{ agent_id: string; agent_name: string; installed_tools: string[]; installed_skills: string[] }>(
+            '/script-builder/apply-as-agent',
+            {
+                method: 'POST',
+                body: JSON.stringify({ script, name: name || undefined }),
+            },
+        ),
+};
+
+export interface EvolverFeedback {
+    id: string;
+    agent_id: string;
+    category: string;
+    content: string;
+    status: string;
+    created_at: string;
+}
+
+export interface EvolverHealthCheck {
+    id: string;
+    agent_id: string;
+    overall_score: number;
+    dimensions?: { name: string; score: number; feedback: string }[];
+    strengths?: string[];
+    suggestions?: string[];
+    script_version?: string;
+    created_at: string;
+}
+
+export interface EvolverScriptVersion {
+    id: string;
+    agent_id: string;
+    version: number;
+    folder: string;
+    content: string;
+    source?: string;
+    created_at: string;
+}
+
+export interface EvolutionJob {
+    id: string;
+    agent_id: string;
+    agent_name?: string;
+    direction: string;
+    cron_schedule: string;
+    active: boolean;
+    last_run_at?: string;
+    next_run_at?: string;
+    last_run_status?: string;
+    last_run_error?: string;
+    created_at: string;
+    updated_at: string;
+}
+
+export const evolverApi = {
+    listFeedbacks: (agentId: string) =>
+        request<EvolverFeedback[]>(`/evolver/agents/${agentId}/feedbacks`),
+
+    createFeedback: (agentId: string, category: string, content: string) =>
+        request<EvolverFeedback>(`/evolver/agents/${agentId}/feedbacks`, {
+            method: 'POST',
+            body: JSON.stringify({ category, content }),
+        }),
+
+    updateFeedback: (agentId: string, feedbackId: string, data: { status?: string; content?: string }) =>
+        request<EvolverFeedback>(`/evolver/agents/${agentId}/feedbacks/${feedbackId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(data),
+        }),
+
+    deleteFeedback: (agentId: string, feedbackId: string) =>
+        request<void>(`/evolver/agents/${agentId}/feedbacks/${feedbackId}`, { method: 'DELETE' }),
+
+    listHealthChecks: (agentId: string) =>
+        request<EvolverHealthCheck[]>(`/evolver/agents/${agentId}/health-checks`),
+
+    triggerHealthCheck: (agentId: string) =>
+        request<EvolverHealthCheck>(`/evolver/agents/${agentId}/health-checks`, { method: 'POST' }),
+
+    deleteHealthCheck: (agentId: string, checkId: string) =>
+        request<void>(`/evolver/agents/${agentId}/health-checks/${checkId}`, { method: 'DELETE' }),
+
+    listScriptVersions: (agentId: string, folder?: string) =>
+        request<EvolverScriptVersion[]>(`/evolver/agents/${agentId}/script-versions${folder ? `?folder=${folder}` : ''}`),
+
+    createScriptVersion: (agentId: string, folder: string, content: string, source?: string) =>
+        request<EvolverScriptVersion>(`/evolver/agents/${agentId}/script-versions`, {
+            method: 'POST',
+            body: JSON.stringify({ folder, content, source }),
+        }),
+
+    triggerEvolution: (agentId: string, direction?: string) =>
+        request<{ status: string; version?: number; feedbacks_addressed?: number }>(
+            `/evolver/agents/${agentId}/evolve`,
+            { method: 'POST', body: JSON.stringify({ direction }) },
+        ),
+
+    listJobs: (agentId: string) =>
+        request<EvolutionJob[]>(`/evolver/agents/${agentId}/jobs`),
+
+    createJob: (agentId: string, direction: string, cronSchedule: string) =>
+        request<EvolutionJob>(`/evolver/agents/${agentId}/jobs`, {
+            method: 'POST',
+            body: JSON.stringify({ direction, cron_schedule: cronSchedule }),
+        }),
+
+    updateJob: (agentId: string, jobId: string, updates: { direction?: string; cron_schedule?: string; active?: boolean }) =>
+        request<EvolutionJob>(`/evolver/agents/${agentId}/jobs/${jobId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(updates),
+        }),
+
+    deleteJob: (agentId: string, jobId: string) =>
+        request<void>(`/evolver/agents/${agentId}/jobs/${jobId}`, { method: 'DELETE' }),
+
+    triggerJob: (agentId: string, jobId: string) =>
+        request<{ message: string; job_id: string }>(`/evolver/agents/${agentId}/jobs/${jobId}/run`, { method: 'POST' }),
 };
 

@@ -19,7 +19,7 @@ DEFAULT_CONTEXT_WINDOW_SIZE = 100
 class Agent(Base):
     """Digital employee (Agent) instance.
 
-    agent_type: 'native' (platform-hosted) or 'openclaw' (remote OpenClaw bot).
+    agent_type: 'native' (platform-hosted), 'evolver' (self-evolving Agent Script), or 'openclaw' (remote OpenClaw bot).
     """
 
     __tablename__ = "agents"
