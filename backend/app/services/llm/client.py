@@ -28,6 +28,9 @@ class LLMMessage:
     role: Literal["system", "user", "assistant", "tool"]
     content: str | list | None = None
     tool_calls: list[dict] | None = None
+    """List of tool call dicts with keys: id, type, function.
+    Gemini responses may also include '_thought_signatures' (list[str]) for
+    round-tripping Gemini thought signatures through multi-turn conversations."""
     tool_call_id: str | None = None
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
@@ -1175,30 +1178,29 @@ class GeminiClient(LLMClient):
                             parsed_args = args
                         else:
                             parsed_args = {}
-                        parts.append({
+                        fc_part: dict[str, Any] = {
                             "functionCall": {
                                 "name": fn.get("name", ""),
                                 "args": parsed_args,
                             }
-                        })
+                        }
+                        sigs = tc.get("_thought_signatures", [])
+                        if sigs:
+                            # Gemini API supports one thoughtSignature per functionCall part
+                            fc_part["thoughtSignature"] = sigs[0]
+                        parts.append(fc_part)
                 if parts:
                     contents.append({"role": "model", "parts": parts})
                 continue
 
             if msg.role == "tool":
-                name = tool_name_map.get(msg.tool_call_id or "", msg.tool_call_id or "tool_result")
+                tc_id = msg.tool_call_id or ""
+                name = tool_name_map.get(tc_id, tc_id or "tool_result")
                 response_content = msg.content or ""
                 if isinstance(response_content, str):
-                    try:
-                        parsed = json.loads(response_content)
-                        if isinstance(parsed, dict):
-                            response_obj: dict[str, Any] = parsed
-                        else:
-                            response_obj = {"result": parsed}
-                    except json.JSONDecodeError:
-                        response_obj = {"result": response_content}
+                    response_obj: dict[str, Any] = {"result": response_content}
                 elif isinstance(response_content, dict):
-                    response_obj = response_content
+                    response_obj = {"result": json.dumps(response_content, ensure_ascii=False)}
                 else:
                     response_obj = {"result": str(response_content)}
 
@@ -1211,6 +1213,13 @@ class GeminiClient(LLMClient):
                         }
                     }],
                 })
+
+        content_summary = []
+        for i, c in enumerate(contents):
+            role = c.get("role", "?")
+            part_keys_list = [sorted(p.keys()) for p in c.get("parts", [])]
+            content_summary.append(f"  [{i}] {role}: {part_keys_list}")
+        logger.debug(f"[Gemini-Debug] Final contents ({len(contents)} entries):\n" + "\n".join(content_summary))
 
         payload: dict[str, Any] = {
             "contents": contents or [{"role": "user", "parts": [{"text": ""}]}],
@@ -1271,14 +1280,23 @@ class GeminiClient(LLMClient):
         finish_reason = None
 
         candidates = data.get("candidates") or []
+        thought_signatures: list[str] = []
         if candidates:
             candidate = candidates[0]
             finish_reason = candidate.get("finishReason")
             content_obj = candidate.get("content", {}) or {}
-            for part in content_obj.get("parts", []) or []:
+            parts = content_obj.get("parts", []) or []
+            for part in parts:
                 text = part.get("text")
                 if text:
                     content_chunks.append(text)
+                # Collect thought signatures (Gemini thinking model reasoning markers)
+                # They are attached to the next functionCall in part order.
+                if "thoughtSignature" in part:
+                    thought_signatures.append(part["thoughtSignature"])
+                elif "thought_signature" in part:
+                    # Defensive: handle non-standard snake_case variant
+                    thought_signatures.append(part["thought_signature"])
                 function_call = part.get("functionCall")
                 if function_call:
                     name = function_call.get("name", "")
@@ -1286,16 +1304,21 @@ class GeminiClient(LLMClient):
                     args_str = json.dumps(args if isinstance(args, dict) else {}, ensure_ascii=False)
                     dedup_key = f"{name}:{args_str}"
                     if dedup_key in seen_tool_calls:
+                        thought_signatures.clear()
                         continue
                     seen_tool_calls.add(dedup_key)
-                    tool_calls.append({
+                    tc_entry: dict[str, Any] = {
                         "id": f"call_{len(tool_calls) + 1}",
                         "type": "function",
                         "function": {
                             "name": name,
                             "arguments": args_str,
                         },
-                    })
+                    }
+                    if thought_signatures:
+                        tc_entry["_thought_signatures"] = list(thought_signatures)
+                        thought_signatures.clear()
+                    tool_calls.append(tc_entry)
 
         usage = self._normalize_usage(data.get("usageMetadata"))
 
@@ -1373,6 +1396,7 @@ class GeminiClient(LLMClient):
         full_text = ""
         tool_calls: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
+        pending_thought_sigs: list[str] = []
         final_usage: dict[str, int] | None = None
         final_finish_reason: str | None = None
 
@@ -1424,6 +1448,16 @@ class GeminiClient(LLMClient):
                             if on_chunk:
                                 await on_chunk(text)
 
+                        if "thoughtSignature" in part:
+                            pending_thought_sigs.append(part["thoughtSignature"])
+                        elif "thought_signature" in part:
+                            pending_thought_sigs.append(part["thought_signature"])
+
+                        part_keys = set(part.keys())
+                        non_standard_keys = part_keys - {"text", "functionCall", "functionResponse"}
+                        if non_standard_keys:
+                            logger.debug(f"[Gemini-Debug] Part keys: {sorted(part_keys)}")
+
                         function_call = part.get("functionCall")
                         if function_call:
                             name = function_call.get("name", "")
@@ -1431,19 +1465,27 @@ class GeminiClient(LLMClient):
                             args_str = json.dumps(args if isinstance(args, dict) else {}, ensure_ascii=False)
                             dedup_key = f"{name}:{args_str}"
                             if dedup_key in seen_tool_calls:
+                                pending_thought_sigs.clear()
                                 continue
                             seen_tool_calls.add(dedup_key)
-                            tool_calls.append({
+                            tc_entry: dict[str, Any] = {
                                 "id": f"call_{len(tool_calls) + 1}",
                                 "type": "function",
                                 "function": {
                                     "name": name,
                                     "arguments": args_str,
                                 },
-                            })
+                            }
+                            if pending_thought_sigs:
+                                tc_entry["_thought_signatures"] = list(pending_thought_sigs)
+                                pending_thought_sigs.clear()
+                            tool_calls.append(tc_entry)
+                            logger.debug(f"[Gemini-Debug] Tool call '{name}' has {len(tc_entry.get('_thought_signatures', []))} thought signatures")
 
         except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
             raise LLMError(f"Connection failed: {e}")
+
+        logger.debug(f"[Gemini-Debug] Stream result: {len(tool_calls)} tool_calls, pending_sigs={len(pending_thought_sigs)}")
 
         return LLMResponse(
             content=full_text,
