@@ -1190,19 +1190,13 @@ class GeminiClient(LLMClient):
                 continue
 
             if msg.role == "tool":
-                name = tool_name_map.get(msg.tool_call_id or "", msg.tool_call_id or "tool_result")
+                tc_id = msg.tool_call_id or ""
+                name = tool_name_map.get(tc_id, tc_id or "tool_result")
                 response_content = msg.content or ""
                 if isinstance(response_content, str):
-                    try:
-                        parsed = json.loads(response_content)
-                        if isinstance(parsed, dict):
-                            response_obj: dict[str, Any] = parsed
-                        else:
-                            response_obj = {"result": parsed}
-                    except json.JSONDecodeError:
-                        response_obj = {"result": response_content}
+                    response_obj: dict[str, Any] = {"result": response_content}
                 elif isinstance(response_content, dict):
-                    response_obj = response_content
+                    response_obj = {"result": json.dumps(response_content, ensure_ascii=False)}
                 else:
                     response_obj = {"result": str(response_content)}
 
