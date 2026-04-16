@@ -1210,6 +1210,13 @@ class GeminiClient(LLMClient):
                     }],
                 })
 
+        content_summary = []
+        for i, c in enumerate(contents):
+            role = c.get("role", "?")
+            part_keys_list = [sorted(p.keys()) for p in c.get("parts", [])]
+            content_summary.append(f"  [{i}] {role}: {part_keys_list}")
+        logger.info(f"[Gemini-Debug] Final contents ({len(contents)} entries):\n" + "\n".join(content_summary))
+
         payload: dict[str, Any] = {
             "contents": contents or [{"role": "user", "parts": [{"text": ""}]}],
             "generationConfig": {
@@ -1437,6 +1444,11 @@ class GeminiClient(LLMClient):
                         elif "thought_signature" in part:
                             pending_thought_sigs.append(part["thought_signature"])
 
+                        part_keys = set(part.keys())
+                        non_standard_keys = part_keys - {"text", "functionCall", "functionResponse"}
+                        if non_standard_keys or part.get("functionCall"):
+                            logger.info(f"[Gemini-Debug] Part keys: {sorted(part_keys)}")
+
                         function_call = part.get("functionCall")
                         if function_call:
                             name = function_call.get("name", "")
@@ -1459,9 +1471,12 @@ class GeminiClient(LLMClient):
                                 tc_entry["_thought_signatures"] = list(pending_thought_sigs)
                                 pending_thought_sigs.clear()
                             tool_calls.append(tc_entry)
+                            logger.info(f"[Gemini-Debug] Tool call '{name}' has {len(tc_entry.get('_thought_signatures', []))} thought signatures")
 
         except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
             raise LLMError(f"Connection failed: {e}")
+
+        logger.info(f"[Gemini-Debug] Stream result: {len(tool_calls)} tool_calls, pending_sigs={len(pending_thought_sigs)}")
 
         return LLMResponse(
             content=full_text,
