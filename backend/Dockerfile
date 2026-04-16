@@ -25,7 +25,7 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libpq5 curl shadowsocks-libev gosu nodejs npm && \
     rm -rf /var/lib/apt/lists/* && \
-    npm install -g @googleworkspace/cli && \
+    npm install -g @googleworkspace/cli pptxgenjs docx && \
     rm -rf /root/.npm/_cacache
 
 # Copy installed packages from deps stage

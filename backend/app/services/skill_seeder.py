@@ -5,6 +5,12 @@ from sqlalchemy import select
 from app.database import async_session
 from app.models.skill import Skill, SkillFile
 
+# ── Seeder version config ──────────────────────────────────
+# Bump these when the skill registry changes (new skills, file
+# updates, etc.) so the seeder re-runs on existing deployments.
+SEEDER_SKILLS_VERSION = 2       # "seeder:skills" — controls seed_skills()
+SEEDER_SKILLS_PUSH_VERSION = 2  # "seeder:skills-push" — controls push_default_skills_to_existing_agents()
+
 
 BUILTIN_SKILLS = [
     {
@@ -596,8 +602,8 @@ async def seed_skills():
     from app.services.seeder_state import is_seeder_done, mark_seeder_done
     from pathlib import Path as _Path
 
-    if await is_seeder_done("seeder:skills", 1):
-        logger.info("[SkillSeeder] Already seeded (seeder:skills v1), skipping")
+    if await is_seeder_done("seeder:skills", SEEDER_SKILLS_VERSION):
+        logger.info(f"[SkillSeeder] Already seeded (seeder:skills v{SEEDER_SKILLS_VERSION}), skipping")
         return
 
     _files_dir = _Path(__file__).parent / "skill_creator_files"
@@ -681,7 +687,7 @@ async def seed_skills():
         await db.commit()
         logger.info("[SkillSeeder] Skills seeded")
 
-    await mark_seeder_done("seeder:skills", 1, {"count": len(BUILTIN_SKILLS)})
+    await mark_seeder_done("seeder:skills", SEEDER_SKILLS_VERSION, {"count": len(BUILTIN_SKILLS)})
 
 
 async def push_default_skills_to_existing_agents():
@@ -700,7 +706,7 @@ async def push_default_skills_to_existing_agents():
     current_backend = storage.backend_name
 
     state = await get_seeder_state("seeder:skills-push")
-    if state and state.get("version", 0) >= 1:
+    if state and state.get("version", 0) >= SEEDER_SKILLS_PUSH_VERSION:
         stored_backend = state.get("backend", "")
         if stored_backend == current_backend:
             logger.info(f"[SkillSeeder] Skills push already done for backend '{current_backend}', skipping")
@@ -744,4 +750,4 @@ async def push_default_skills_to_existing_agents():
         else:
             logger.info("[SkillSeeder] All existing agents already have up-to-date default skills")
 
-    await mark_seeder_done("seeder:skills-push", 1, {"backend": current_backend})
+    await mark_seeder_done("seeder:skills-push", SEEDER_SKILLS_PUSH_VERSION, {"backend": current_backend})

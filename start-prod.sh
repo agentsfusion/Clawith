@@ -13,6 +13,11 @@ if ! command -v gws &>/dev/null; then
     npm install -g @googleworkspace/cli 2>/dev/null || true
 fi
 
+if ! command -v pptxgenjs &>/dev/null; then
+    echo "=== Installing pptxgenjs (PPTX skill dependency) ==="
+    npm install -g pptxgenjs 2>/dev/null || true
+fi
+
 cd "$ROOT/backend"
 
 echo "=== Updating database ==="
