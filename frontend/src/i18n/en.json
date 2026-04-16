@@ -206,7 +206,11 @@
       "chat": "Chat",
       "activityLog": "Activity Log",
       "approvals": "Approvals",
-      "settings": "Settings"
+      "settings": "Settings",
+      "feedback": "Feedback",
+      "health": "Health",
+      "script": "Script",
+      "jobs": "Jobs"
     },
     "fields": {
       "name": "Name",
@@ -1526,6 +1530,8 @@
     "setupInstructionDesc": "Copy and send this to your AgentsFusion agent. It will configure itself automatically.",
     "keyNote": "This key is already embedded in the instruction above. Save it separately if needed for manual configuration.",
     "goToAgent": "Go to Agent Page",
+    "evolverTitle": "Evolver Agent",
+    "evolverDesc": "Self-evolving agent with Agent Script",
     "lastSeen": "Last Seen",
     "notConnected": "Not connected",
     "connection": "AgentsFusion Connection",
