@@ -94,6 +94,12 @@ class AgentManager:
             soul_content = soul_content.replace("{{role_description}}", agent.role_description or "General Assistant")
             soul_content = soul_content.replace("{{creator_name}}", creator_name)
             soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        elif agent.template_id:
+            from app.models.template import AgentTemplate
+            tmpl_result = await db.execute(select(AgentTemplate).where(AgentTemplate.id == agent.template_id))
+            tmpl = tmpl_result.scalar_one_or_none()
+            if tmpl and tmpl.soul_template:
+                soul_content = tmpl.soul_template
 
         # Helper function to replace or append sections
         def replace_or_append_section(content: str, section_name: str, section_content: str) -> str:
