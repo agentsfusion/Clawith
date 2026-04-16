@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.agent import Agent
 from app.models.llm import LLMModel
-from app.services.llm_utils import get_model_api_key
+from app.services.llm.utils import get_model_api_key
 from app.services.storage.factory import get_storage
 
 settings = get_settings()
