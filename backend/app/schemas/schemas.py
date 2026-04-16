@@ -204,7 +204,7 @@ class UserUpdate(BaseModel):
 
 class AgentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100, description="Agent name, 2-100 characters")
-    agent_type: str = "native"  # native | openclaw
+    agent_type: str = "native"  # native | evolver | openclaw
     role_description: str = Field(default="", max_length=500, description="Role description, max 500 characters")
     bio: str | None = None
     welcome_message: str | None = None
@@ -571,3 +571,34 @@ class GatewaySendMessageRequest(BaseModel):
     target: str  # Name of target person or agent
     content: str = Field(min_length=1)
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
+
+
+# ─── Script Builder ──────────────────────────────────
+
+class ScriptConversationCreate(BaseModel):
+    title: str = Field(default="New Session", min_length=1, max_length=200)
+
+
+class ScriptConversationOut(BaseModel):
+    id: int
+    title: str
+    createdAt: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ScriptMessageSend(BaseModel):
+    content: str = Field(min_length=1, max_length=50000)
+
+
+class ScriptMessageOut(BaseModel):
+    id: int
+    role: str
+    content: str
+    createdAt: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ScriptAnalyzeRequest(BaseModel):
+    script: str = Field(min_length=1, max_length=100000)
