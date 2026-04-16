@@ -1,7 +1,7 @@
 """Seed default agent templates into the database on startup."""
 
 from loguru import logger
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from app.database import async_session
 from app.models.agent import AgentTemplate
 
@@ -161,8 +161,8 @@ async def seed_agent_templates():
     """Insert default agent templates if they don't exist. Update stale ones."""
     from app.services.seeder_state import is_seeder_done, mark_seeder_done
 
-    if await is_seeder_done("seeder:templates", 1):
-        logger.info("[TemplateSeeder] Already seeded (seeder:templates v1), skipping")
+    if await is_seeder_done("seeder:templates", 5):
+        logger.info("[TemplateSeeder] Already seeded (seeder:templates v5), skipping")
         return
 
     async with async_session() as db:
@@ -170,7 +170,6 @@ async def seed_agent_templates():
             # Remove old builtin templates that are no longer in our list
             # BUT skip templates that are still referenced by agents
             from app.models.agent import Agent
-            from sqlalchemy import func
 
             current_names = {t["name"] for t in DEFAULT_TEMPLATES}
             result = await db.execute(
@@ -221,4 +220,4 @@ async def seed_agent_templates():
             await db.commit()
             logger.info("[TemplateSeeder] Agent templates seeded")
 
-    await mark_seeder_done("seeder:templates", 1)
+    await mark_seeder_done("seeder:templates", 5)
