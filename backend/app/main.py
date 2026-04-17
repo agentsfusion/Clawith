@@ -275,6 +275,15 @@ async def lifespan(app: FastAPI):
         await _deferred_task
     except asyncio.CancelledError:
         pass
+
+    try:
+        from app.services.workspace_sync import get_sync_manager
+        _sync_mgr = get_sync_manager()
+        if _sync_mgr is not None:
+            await _sync_mgr.stop_all()
+    except Exception as e:
+        logger.warning(f"[shutdown] Workspace sync cleanup failed: {e}")
+
     await close_redis()
 
 
