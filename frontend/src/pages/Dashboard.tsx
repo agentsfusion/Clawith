@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { agentApi, taskApi, activityApi } from '../services/api';
+import CloneAgentModal from '../components/CloneAgentModal';
 import type { Agent, Task } from '../types';
 
 /* ────── Inline SVG Icons (monochrome) ────── */
@@ -168,6 +169,8 @@ function AgentRow({ agent, tasks, recentActivity }: {
 }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
+    const queryClient = useQueryClient();
+    const [cloneModalOpen, setCloneModalOpen] = useState(false);
     const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'doing');
     const latestActivity = recentActivity[0];
 
@@ -181,7 +184,7 @@ function AgentRow({ agent, tasks, recentActivity }: {
             onClick={() => navigate(`/agents/${agent.id}`)}
             style={{
                 display: 'grid',
-                gridTemplateColumns: '220px 1fr 150px 100px',
+                gridTemplateColumns: '220px 1fr 150px 100px 40px',
                 alignItems: 'center', gap: '16px',
                 padding: '12px 16px',
                 borderRadius: 'var(--radius-md)',
@@ -293,6 +296,34 @@ function AgentRow({ agent, tasks, recentActivity }: {
             <div style={{ textAlign: 'right', fontSize: '12px', color: 'var(--text-tertiary)' }}>
                 {timeAgo(agent.last_active_at, t)}
             </div>
+
+            {/* Clone Button */}
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <button
+                    onClick={(e) => { e.stopPropagation(); setCloneModalOpen(true); }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '4px', borderRadius: 'var(--radius-sm)' }}
+                    onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
+                    onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-tertiary)')}
+                    title={t('agent.clone.button')}
+                >
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="5" y="5" width="9" height="9" rx="1.5" />
+                        <path d="M5 11H3.5A1.5 1.5 0 012 9.5v-7A1.5 1.5 0 013.5 1h7A1.5 1.5 0 0112 2.5V5" />
+                    </svg>
+                </button>
+            </div>
+
+            <CloneAgentModal
+                agentId={agent.id}
+                agentName={agent.name}
+                open={cloneModalOpen}
+                onClose={() => setCloneModalOpen(false)}
+                onSuccess={(newAgent) => {
+                    setCloneModalOpen(false);
+                    queryClient.invalidateQueries({ queryKey: ['agents'] });
+                    navigate(`/agents/${newAgent.id}`);
+                }}
+            />
         </div>
     );
 }

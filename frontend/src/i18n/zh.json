@@ -250,6 +250,45 @@
       "chat": "对话",
       "talkToMe": "与我对话"
     },
+    "clone": {
+      "button": "克隆",
+      "title": "克隆智能体",
+      "description": "创建一个配置相同的智能体副本。",
+      "nameLabel": "智能体名称",
+      "namePlaceholder": "输入克隆智能体的名称",
+      "nameSuffix": " (副本)",
+      "cloning": "正在克隆...",
+      "success": "智能体克隆成功！",
+      "errorPrefix": "克隆失败：",
+      "filesLabel": "复制文件",
+      "files": {
+        "soul.md": {
+          "name": "人格 (soul.md)",
+          "description": "核心身份与人格定义"
+        },
+        "memory": {
+          "name": "记忆",
+          "description": "长期记忆与反思日志"
+        },
+        "skills": {
+          "name": "技能",
+          "description": "智能体技能定义与脚本"
+        },
+        "HEARTBEAT.md": {
+          "name": "心跳 (HEARTBEAT.md)",
+          "description": "定期感知检查指令"
+        },
+        "workspace": {
+          "name": "工作区",
+          "description": "知识库与上传的文件"
+        }
+      },
+      "validation": {
+        "nameRequired": "名称不能为空",
+        "nameTooShort": "名称至少需要2个字符",
+        "nameTooLong": "名称不能超过100个字符"
+      }
+    },
     "detail": {
       "loading": "加载中...",
       "notFound": "找不到此数字员工",
