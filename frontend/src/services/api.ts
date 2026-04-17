@@ -254,6 +254,9 @@ export const agentApi = {
     generateApiKey: (id: string) =>
         request<{ api_key: string; message: string }>(`/agents/${id}/api-key`, { method: 'POST' }),
 
+    clone: (id: string, data: { name: string }) =>
+        request<any>(`/agents/${id}/clone`, { method: 'POST', body: JSON.stringify(data) }),
+
     gatewayMessages: (id: string) =>
         request<any[]>(`/agents/${id}/gateway-messages`),
 

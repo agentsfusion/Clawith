@@ -232,6 +232,10 @@ class AgentCreate(BaseModel):
     skill_ids: list[uuid.UUID] = []
 
 
+class AgentCloneRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=100, description="Name for the cloned agent")
+
+
 class AgentOut(BaseModel):
     id: uuid.UUID
     name: str
@@ -262,6 +266,7 @@ class AgentOut(BaseModel):
     timezone: str | None = None
     expires_at: datetime | None = None
     is_expired: bool = False
+    source_agent_id: uuid.UUID | None = None
     llm_calls_today: int = 0
     max_llm_calls_per_day: int = 100
     agent_type: str = "native"

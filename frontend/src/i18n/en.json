@@ -243,6 +243,22 @@
       "chat": "Chat",
       "talkToMe": "Talk to me"
     },
+    "clone": {
+      "button": "Clone",
+      "title": "Clone Agent",
+      "description": "Create a copy of this agent with the same configuration.",
+      "nameLabel": "Agent Name",
+      "namePlaceholder": "Enter a name for the cloned agent",
+      "nameSuffix": " (Copy)",
+      "cloning": "Cloning...",
+      "success": "Agent cloned successfully!",
+      "errorPrefix": "Clone failed: ",
+      "validation": {
+        "nameRequired": "Name is required",
+        "nameTooShort": "Name must be at least 2 characters",
+        "nameTooLong": "Name must be at most 100 characters"
+      }
+    },
     "detail": {
       "loading": "Loading...",
       "notFound": "Digital employee not found",
