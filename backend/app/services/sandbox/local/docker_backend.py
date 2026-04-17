@@ -151,10 +151,12 @@ class DockerBackend(BaseSandboxBackend):
                 cmd,
                 detach=False,
                 mem_limit=memory_limit,
-                cpu_period=100000,  # Docker default
+                cpu_period=100000,
                 cpu_quota=int(float(cpu_limit) * 100000),
                 network_mode=network,
                 environment=env_dict,
+                volumes={str(Path(work_dir)): {"bind": "/workspace", "mode": "rw"}} if work_dir else None,
+                working_dir="/workspace" if work_dir else None,
                 remove=True,
                 stdout=True,
                 stderr=True,
