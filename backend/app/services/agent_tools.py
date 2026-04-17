@@ -5956,6 +5956,14 @@ async def _execute_code(
     extra_env: dict[str, str] = {}
 
     try:
+        from app.services.workspace_sync import get_sync_manager
+        _sync_mgr = get_sync_manager()
+        if _sync_mgr is not None and agent_id is not None:
+            await _sync_mgr.ensure_watcher(agent_id, ws)
+    except Exception as _se:
+        logger.debug(f"[StorageSync] ensure_watcher skipped: {_se}")
+
+    try:
         # Import here to avoid circular imports
         from app.config import get_sandbox_config
         from app.services.sandbox.config import SandboxConfig
@@ -6039,7 +6047,14 @@ async def _execute_code_legacy(ws: Path, arguments: dict, env: dict[str, str] | 
     if language not in ("python", "bash", "node"):
         return f"❌ Unsupported language: {language}. Use: python, bash, or node"
 
-    # Security check
+    try:
+        from app.services.workspace_sync import get_sync_manager
+        _sync_mgr = get_sync_manager()
+        if _sync_mgr is not None:
+            await _sync_mgr.ensure_watcher(uuid.UUID(ws.name), ws)
+    except Exception:
+        pass
+
     safety_error = _check_code_safety(language, code)
     if safety_error:
         return safety_error
