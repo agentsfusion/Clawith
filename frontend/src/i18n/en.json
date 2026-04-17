@@ -243,6 +243,45 @@
       "chat": "Chat",
       "talkToMe": "Talk to me"
     },
+    "clone": {
+      "button": "Clone",
+      "title": "Clone Agent",
+      "description": "Create a copy of this agent with the same configuration.",
+      "nameLabel": "Agent Name",
+      "namePlaceholder": "Enter a name for the cloned agent",
+      "nameSuffix": " (Copy)",
+      "cloning": "Cloning...",
+      "success": "Agent cloned successfully!",
+      "errorPrefix": "Clone failed: ",
+      "filesLabel": "Files to Copy",
+      "files": {
+        "soul.md": {
+          "name": "Personality (soul.md)",
+          "description": "Core identity and personality definition"
+        },
+        "memory": {
+          "name": "Memory",
+          "description": "Long-term memory and reflections"
+        },
+        "skills": {
+          "name": "Skills",
+          "description": "Agent skill definitions and scripts"
+        },
+        "HEARTBEAT.md": {
+          "name": "Heartbeat (HEARTBEAT.md)",
+          "description": "Periodic awareness check instructions"
+        },
+        "workspace": {
+          "name": "Workspace",
+          "description": "Knowledge base and uploaded files"
+        }
+      },
+      "validation": {
+        "nameRequired": "Name is required",
+        "nameTooShort": "Name must be at least 2 characters",
+        "nameTooLong": "Name must be at most 100 characters"
+      }
+    },
     "detail": {
       "loading": "Loading...",
       "notFound": "Digital employee not found",

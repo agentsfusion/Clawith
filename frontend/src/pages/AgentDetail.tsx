@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import ConfirmModal from '../components/ConfirmModal';
+import CloneAgentModal from '../components/CloneAgentModal';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import FileBrowser from '../components/FileBrowser';
 import ChannelConfig from '../components/ChannelConfig';
@@ -2986,6 +2987,7 @@ function AgentDetailInner() {
     const [roleInput, setRoleInput] = useState('');
     const [editingName, setEditingName] = useState(false);
     const [nameInput, setNameInput] = useState('');
+    const [cloneModalOpen, setCloneModalOpen] = useState(false);
     const showToast = (message: string, type: 'success' | 'error' = 'success') => {
         setUploadToast({ message, type });
         setTimeout(() => setUploadToast(null), 3000);
@@ -3208,6 +3210,7 @@ function AgentDetailInner() {
                     </div>
                     <div style={{ display: 'flex', gap: '8px' }}>
                         <button className="btn btn-primary" onClick={() => setActiveTab('chat')}>{t('agent.actions.chat')}</button>
+                        <button className="btn btn-secondary" onClick={() => setCloneModalOpen(true)}>{t('agent.clone.button')}</button>
                         {(agent as any)?.agent_type !== 'openclaw' && (
                             <>
                                 {agent.status === 'stopped' ? (
@@ -6279,6 +6282,18 @@ function AgentDetailInner() {
                     {activeTab === 'jobs' && id && (
                         <JobDashboard agentId={id} />
                     )}
+
+            <CloneAgentModal
+                agentId={id!}
+                agentName={agent.name}
+                open={cloneModalOpen}
+                onClose={() => setCloneModalOpen(false)}
+                onSuccess={(newAgent) => {
+                    setCloneModalOpen(false);
+                    queryClient.invalidateQueries({ queryKey: ['agents'] });
+                    navigate(`/agents/${newAgent.id}`);
+                }}
+            />
 
         </>
     );

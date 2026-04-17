@@ -1,9 +1,10 @@
-"""Agent lifecycle manager — Docker container management for OpenClaw Gateway instances."""
+from __future__ import annotations
 
 import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -16,6 +17,9 @@ from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.services.llm.utils import get_model_api_key
 from app.services.storage.factory import get_storage
+
+if TYPE_CHECKING:
+    from app.models.user import User
 
 settings = get_settings()
 
@@ -337,6 +341,174 @@ class AgentManager:
             return {"running": False, "status": "not_found"}
         except DockerException:
             return {"running": False, "status": "error"}
+
+
+    async def clone_agent(self, db: AsyncSession, source: Agent, cloner: "User", name: str, copy_files: list[str] | None = None) -> Agent:
+        """Clone an existing agent's configuration into a new agent owned by cloner.
+
+        Args:
+            copy_files: List of file categories to copy. Options: soul.md, memory, skills, workspace, HEARTBEAT.md.
+                        Defaults to ["soul.md", "memory", "skills", "HEARTBEAT.md"].
+        """
+        from fastapi import HTTPException
+
+        if source.agent_type == "openclaw":
+            raise HTTPException(status_code=400, detail="Cannot clone openclaw-type agents")
+
+        _valid_categories = {"soul.md", "memory", "skills", "workspace", "HEARTBEAT.md"}
+        if copy_files is None:
+            copy_files = ["soul.md", "memory", "skills", "HEARTBEAT.md"]
+        invalid = set(copy_files) - _valid_categories
+        if invalid:
+            raise HTTPException(status_code=422, detail=f"Invalid file categories: {', '.join(sorted(invalid))}")
+
+        from app.services.quota_guard import check_agent_creation_quota, QuotaExceeded
+        try:
+            await check_agent_creation_quota(cloner.id)
+        except QuotaExceeded as e:
+            raise HTTPException(status_code=403, detail=e.message)
+
+        from datetime import timedelta, timezone as tz
+        expires_at = datetime.now(tz.utc) + timedelta(hours=cloner.quota_agent_ttl_hours or 48)
+
+        target_tenant_id = cloner.tenant_id
+
+        max_llm_calls = 100
+        default_max_triggers = 20
+        default_min_poll = 5
+        default_webhook_rate = 5
+        default_heartbeat_interval = 240
+        if target_tenant_id:
+            from app.models.tenant import Tenant
+            tenant_result = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
+            tenant = tenant_result.scalar_one_or_none()
+            if tenant:
+                max_llm_calls = tenant.default_max_llm_calls_per_day or 100
+                default_max_triggers = tenant.default_max_triggers or 20
+                default_min_poll = tenant.min_poll_interval_floor or 5
+                default_webhook_rate = tenant.max_webhook_rate_ceiling or 5
+                if tenant.min_heartbeat_interval_minutes and tenant.min_heartbeat_interval_minutes > default_heartbeat_interval:
+                    default_heartbeat_interval = tenant.min_heartbeat_interval_minutes
+
+        cloned = Agent(
+            name=name,
+            role_description=source.role_description,
+            bio=source.bio,
+            avatar_url=source.avatar_url,
+            welcome_message=source.welcome_message,
+            creator_id=cloner.id,
+            tenant_id=target_tenant_id,
+            agent_type=source.agent_type,
+            primary_model_id=source.primary_model_id,
+            fallback_model_id=source.fallback_model_id,
+            autonomy_policy=dict(source.autonomy_policy) if source.autonomy_policy else None,
+            max_tokens_per_day=source.max_tokens_per_day,
+            max_tokens_per_month=source.max_tokens_per_month,
+            context_window_size=source.context_window_size,
+            max_tool_rounds=source.max_tool_rounds,
+            max_triggers=default_max_triggers,
+            min_poll_interval_min=default_min_poll,
+            webhook_rate_limit=default_webhook_rate,
+            heartbeat_enabled=source.heartbeat_enabled,
+            heartbeat_interval_minutes=default_heartbeat_interval,
+            heartbeat_active_hours=source.heartbeat_active_hours,
+            timezone=source.timezone,
+            template_id=source.template_id,
+            source_agent_id=source.id,
+            status="creating",
+            expires_at=expires_at,
+            max_llm_calls_per_day=max_llm_calls,
+        )
+        db.add(cloned)
+        await db.flush()
+
+        from app.models.participant import Participant
+        db.add(Participant(
+            type="agent", ref_id=cloned.id,
+            display_name=cloned.name, avatar_url=cloned.avatar_url,
+        ))
+
+        from app.models.agent import AgentPermission
+        db.add(AgentPermission(agent_id=cloned.id, scope_type="company", access_level="use"))
+        await db.flush()
+
+        await self.initialize_agent_files(db, cloned, personality="", boundaries="")
+
+        storage = get_storage()
+        src_aid = str(source.id)
+        dst_aid = str(cloned.id)
+
+        # Copy soul.md
+        if "soul.md" in copy_files:
+            source_soul_key = f"{src_aid}/soul.md"
+            if await storage.exists(source_soul_key):
+                soul_content = await storage.read(source_soul_key)
+                await storage.write(f"{dst_aid}/soul.md", soul_content)
+
+        # Copy memory/ directory
+        if "memory" in copy_files:
+            source_mem_prefix = f"{src_aid}/memory/"
+            source_mem_keys = await _collect_storage_keys(source_mem_prefix)
+            cloned_mem_dir = self._agent_dir(cloned.id) / "memory"
+            for key in source_mem_keys:
+                content = await storage.read(key)
+                target_key = f"{dst_aid}/{key[len(src_aid) + 1:]}"
+                rel = key[len(source_mem_prefix):]
+                local_path = cloned_mem_dir / rel
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                await storage.write(target_key, content)
+
+        # Copy skills/ directory
+        if "skills" in copy_files:
+            source_skills_prefix = f"{src_aid}/skills/"
+            source_skill_keys = await _collect_storage_keys(source_skills_prefix)
+            cloned_skills_dir = self._agent_dir(cloned.id) / "skills"
+            for key in source_skill_keys:
+                content = await storage.read(key)
+                target_key = f"{dst_aid}/{key[len(src_aid) + 1:]}"
+                rel = key[len(source_skills_prefix):]
+                local_path = cloned_skills_dir / rel
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                await storage.write(target_key, content)
+
+        # Copy workspace/ directory
+        if "workspace" in copy_files:
+            source_ws_prefix = f"{src_aid}/workspace/"
+            source_ws_keys = await _collect_storage_keys(source_ws_prefix)
+            cloned_ws_dir = self._agent_dir(cloned.id) / "workspace"
+            for key in source_ws_keys:
+                content = await storage.read(key)
+                target_key = f"{dst_aid}/{key[len(src_aid) + 1:]}"
+                rel = key[len(source_ws_prefix):]
+                local_path = cloned_ws_dir / rel
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                await storage.write(target_key, content)
+
+        # Copy HEARTBEAT.md
+        if "HEARTBEAT.md" in copy_files:
+            source_hb_key = f"{src_aid}/HEARTBEAT.md"
+            if await storage.exists(source_hb_key):
+                hb_content = await storage.read(source_hb_key)
+                await storage.write(f"{dst_aid}/HEARTBEAT.md", hb_content)
+
+        from app.models.tool import AgentTool
+        tool_result = await db.execute(select(AgentTool).where(AgentTool.agent_id == source.id))
+        for at in tool_result.scalars().all():
+            db.add(AgentTool(
+                agent_id=cloned.id,
+                tool_id=at.tool_id,
+                enabled=at.enabled,
+                config=at.config,
+                source=at.source,
+                installed_by_agent_id=None,
+            ))
+        await db.flush()
+
+        await self.start_container(db, cloned)
+        await db.flush()
+
+        logger.info(f"Cloned agent {source.name} ({source.id}) -> {cloned.name} ({cloned.id})")
+        return cloned
 
 
 agent_manager = AgentManager()
