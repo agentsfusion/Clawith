@@ -142,6 +142,11 @@ class Settings(BaseSettings):
     EXA_API_KEY: str = ""
 
 
+    # Workspace Sync (file watcher for S3/OBS upload after execute_code)
+    WORKSPACE_SYNC_IDLE_TIMEOUT: int = 300  # seconds; stop watcher after this idle period
+    WORKSPACE_SYNC_DEBOUNCE_MS: int = 500   # milliseconds; debounce uploads per file path
+    WORKSPACE_SYNC_MAX_WATCHERS: int = 100  # max concurrent per-agent watchers
+
     # Sandbox configuration
     SANDBOX_TYPE: SandboxType = SandboxType.SUBPROCESS
     SANDBOX_API_KEY: str = ""
