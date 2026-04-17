@@ -16,7 +16,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission
 from app.models.user import User
-from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
+from app.schemas.schemas import AgentCreate, AgentCloneRequest, AgentOut, AgentUpdate
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -352,6 +352,20 @@ async def create_agent(
     await db.flush()
 
     return AgentOut.model_validate(agent)
+
+
+@router.post("/{agent_id}/clone", status_code=status.HTTP_201_CREATED)
+async def clone_agent(
+    agent_id: uuid.UUID,
+    data: AgentCloneRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    source_agent, _ = await check_agent_access(db, current_user, agent_id)
+
+    from app.services.agent_manager import agent_manager
+    new_agent = await agent_manager.clone_agent(db, source_agent, current_user, data.name, data.copy_files)
+    return AgentOut.model_validate(new_agent)
 
 
 @router.get("/{agent_id}")
