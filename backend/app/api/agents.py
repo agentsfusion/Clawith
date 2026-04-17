@@ -364,7 +364,7 @@ async def clone_agent(
     source_agent, _ = await check_agent_access(db, current_user, agent_id)
 
     from app.services.agent_manager import agent_manager
-    new_agent = await agent_manager.clone_agent(db, source_agent, current_user, data.name)
+    new_agent = await agent_manager.clone_agent(db, source_agent, current_user, data.name, data.copy_files)
     return AgentOut.model_validate(new_agent)
 
 

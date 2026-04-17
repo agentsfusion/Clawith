@@ -343,12 +343,24 @@ class AgentManager:
             return {"running": False, "status": "error"}
 
 
-    async def clone_agent(self, db: AsyncSession, source: Agent, cloner: "User", name: str) -> Agent:
-        """Clone an existing agent's configuration into a new agent owned by cloner."""
+    async def clone_agent(self, db: AsyncSession, source: Agent, cloner: "User", name: str, copy_files: list[str] | None = None) -> Agent:
+        """Clone an existing agent's configuration into a new agent owned by cloner.
+
+        Args:
+            copy_files: List of file categories to copy. Options: soul.md, memory, skills, workspace, HEARTBEAT.md.
+                        Defaults to ["soul.md", "memory", "skills", "HEARTBEAT.md"].
+        """
         from fastapi import HTTPException
 
         if source.agent_type == "openclaw":
             raise HTTPException(status_code=400, detail="Cannot clone openclaw-type agents")
+
+        _valid_categories = {"soul.md", "memory", "skills", "workspace", "HEARTBEAT.md"}
+        if copy_files is None:
+            copy_files = ["soul.md", "memory", "skills", "HEARTBEAT.md"]
+        invalid = set(copy_files) - _valid_categories
+        if invalid:
+            raise HTTPException(status_code=422, detail=f"Invalid file categories: {', '.join(sorted(invalid))}")
 
         from app.services.quota_guard import check_agent_creation_quota, QuotaExceeded
         try:
@@ -426,21 +438,58 @@ class AgentManager:
         src_aid = str(source.id)
         dst_aid = str(cloned.id)
 
-        source_soul_key = f"{src_aid}/soul.md"
-        if await storage.exists(source_soul_key):
-            soul_content = await storage.read(source_soul_key)
-            await storage.write(f"{dst_aid}/soul.md", soul_content)
+        # Copy soul.md
+        if "soul.md" in copy_files:
+            source_soul_key = f"{src_aid}/soul.md"
+            if await storage.exists(source_soul_key):
+                soul_content = await storage.read(source_soul_key)
+                await storage.write(f"{dst_aid}/soul.md", soul_content)
 
-        source_skills_prefix = f"{src_aid}/skills/"
-        source_skill_keys = await _collect_storage_keys(source_skills_prefix)
-        cloned_skills_dir = self._agent_dir(cloned.id) / "skills"
-        for key in source_skill_keys:
-            content = await storage.read(key)
-            target_key = f"{dst_aid}/{key[len(src_aid) + 1:]}"
-            rel = key[len(source_skills_prefix):]
-            local_path = cloned_skills_dir / rel
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            await storage.write(target_key, content)
+        # Copy memory/ directory
+        if "memory" in copy_files:
+            source_mem_prefix = f"{src_aid}/memory/"
+            source_mem_keys = await _collect_storage_keys(source_mem_prefix)
+            cloned_mem_dir = self._agent_dir(cloned.id) / "memory"
+            for key in source_mem_keys:
+                content = await storage.read(key)
+                target_key = f"{dst_aid}/{key[len(src_aid) + 1:]}"
+                rel = key[len(source_mem_prefix):]
+                local_path = cloned_mem_dir / rel
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                await storage.write(target_key, content)
+
+        # Copy skills/ directory
+        if "skills" in copy_files:
+            source_skills_prefix = f"{src_aid}/skills/"
+            source_skill_keys = await _collect_storage_keys(source_skills_prefix)
+            cloned_skills_dir = self._agent_dir(cloned.id) / "skills"
+            for key in source_skill_keys:
+                content = await storage.read(key)
+                target_key = f"{dst_aid}/{key[len(src_aid) + 1:]}"
+                rel = key[len(source_skills_prefix):]
+                local_path = cloned_skills_dir / rel
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                await storage.write(target_key, content)
+
+        # Copy workspace/ directory
+        if "workspace" in copy_files:
+            source_ws_prefix = f"{src_aid}/workspace/"
+            source_ws_keys = await _collect_storage_keys(source_ws_prefix)
+            cloned_ws_dir = self._agent_dir(cloned.id) / "workspace"
+            for key in source_ws_keys:
+                content = await storage.read(key)
+                target_key = f"{dst_aid}/{key[len(src_aid) + 1:]}"
+                rel = key[len(source_ws_prefix):]
+                local_path = cloned_ws_dir / rel
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                await storage.write(target_key, content)
+
+        # Copy HEARTBEAT.md
+        if "HEARTBEAT.md" in copy_files:
+            source_hb_key = f"{src_aid}/HEARTBEAT.md"
+            if await storage.exists(source_hb_key):
+                hb_content = await storage.read(source_hb_key)
+                await storage.write(f"{dst_aid}/HEARTBEAT.md", hb_content)
 
         from app.models.tool import AgentTool
         tool_result = await db.execute(select(AgentTool).where(AgentTool.agent_id == source.id))

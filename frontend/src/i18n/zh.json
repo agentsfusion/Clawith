@@ -260,6 +260,29 @@
       "cloning": "正在克隆...",
       "success": "智能体克隆成功！",
       "errorPrefix": "克隆失败：",
+      "filesLabel": "复制文件",
+      "files": {
+        "soul.md": {
+          "name": "人格 (soul.md)",
+          "description": "核心身份与人格定义"
+        },
+        "memory": {
+          "name": "记忆",
+          "description": "长期记忆与反思日志"
+        },
+        "skills": {
+          "name": "技能",
+          "description": "智能体技能定义与脚本"
+        },
+        "HEARTBEAT.md": {
+          "name": "心跳 (HEARTBEAT.md)",
+          "description": "定期感知检查指令"
+        },
+        "workspace": {
+          "name": "工作区",
+          "description": "知识库与上传的文件"
+        }
+      },
       "validation": {
         "nameRequired": "名称不能为空",
         "nameTooShort": "名称至少需要2个字符",

@@ -69,6 +69,9 @@ class _FakeDB:
         return _FakeResult([])
 
     async def flush(self):
+        for obj in self.added:
+            if hasattr(obj, 'id') and getattr(obj, 'id') is None:
+                obj.id = uuid.uuid4()
         self.flush_count += 1
 
     async def commit(self):
@@ -351,3 +354,124 @@ async def test_clone_expires_from_cloner_quota():
     assert result.expires_at is not None
     delta = (result.expires_at - datetime.now(timezone.utc)).total_seconds() / 3600
     assert 71 <= delta <= 73
+
+
+@pytest.mark.asyncio
+async def test_clone_selective_copy_only_soul():
+    source = _make_agent()
+    cloner = SimpleNamespace(id=uuid.uuid4(), tenant_id=source.tenant_id, quota_agent_ttl_hours=48, quota_max_agents=5, role="member")
+    db = _FakeDB()
+
+    storage = _FakeStorage()
+    storage.files[f"{source.id}/soul.md"] = "# Personality\nI am a test agent."
+    storage.files[f"{source.id}/memory/memory.md"] = "# Memory\nSecret info"
+    storage.files[f"{source.id}/skills/test.md"] = "# Skill\nDo stuff"
+
+    patches = _patches()
+    patches[0] = patch("app.services.agent_manager.get_storage", return_value=storage)
+    patches[1] = patch("app.services.agent_manager._collect_storage_keys", side_effect=lambda p: [
+        k for k in storage.files if k.startswith(p)
+    ])
+    for p in patches:
+        p.start()
+    try:
+        mgr = AgentManager.__new__(AgentManager)
+        mgr.docker_client = None
+        result = await mgr.clone_agent(db, source, cloner, "Cloned Agent", copy_files=["soul.md"])
+    finally:
+        for p in patches:
+            p.stop()
+
+    dst_prefix = str(result.id)
+    assert f"{dst_prefix}/soul.md" in storage.files
+    assert storage.files[f"{dst_prefix}/soul.md"] == "# Personality\nI am a test agent."
+    assert not any(k.startswith(f"{dst_prefix}/memory/") for k in storage.files)
+    assert not any(k.startswith(f"{dst_prefix}/skills/") for k in storage.files)
+
+
+@pytest.mark.asyncio
+async def test_clone_selective_copy_memory_and_workspace():
+    source = _make_agent()
+    cloner = SimpleNamespace(id=uuid.uuid4(), tenant_id=source.tenant_id, quota_agent_ttl_hours=48, quota_max_agents=5, role="member")
+    db = _FakeDB()
+
+    storage = _FakeStorage()
+    storage.files[f"{source.id}/soul.md"] = "# Personality"
+    storage.files[f"{source.id}/memory/memory.md"] = "# Memory\nImportant stuff"
+    storage.files[f"{source.id}/memory/reflections.md"] = "# Reflections"
+    storage.files[f"{source.id}/workspace/knowledge_base/doc.md"] = "# Doc"
+    storage.files[f"{source.id}/skills/coding.md"] = "# Coding Skill"
+
+    patches = _patches()
+    patches[0] = patch("app.services.agent_manager.get_storage", return_value=storage)
+    patches[1] = patch("app.services.agent_manager._collect_storage_keys", side_effect=lambda p: [
+        k for k in storage.files if k.startswith(p)
+    ])
+    for p in patches:
+        p.start()
+    try:
+        mgr = AgentManager.__new__(AgentManager)
+        mgr.docker_client = None
+        result = await mgr.clone_agent(db, source, cloner, "Cloned Agent", copy_files=["memory", "workspace"])
+    finally:
+        for p in patches:
+            p.stop()
+
+    dst_prefix = str(result.id)
+    assert not any(k == f"{dst_prefix}/soul.md" for k in storage.files)
+    assert f"{dst_prefix}/memory/memory.md" in storage.files
+    assert f"{dst_prefix}/memory/reflections.md" in storage.files
+    assert f"{dst_prefix}/workspace/knowledge_base/doc.md" in storage.files
+    assert not any(k.startswith(f"{dst_prefix}/skills/") for k in storage.files)
+
+
+@pytest.mark.asyncio
+async def test_clone_copy_files_default_includes_all_except_workspace():
+    source = _make_agent()
+    cloner = SimpleNamespace(id=uuid.uuid4(), tenant_id=source.tenant_id, quota_agent_ttl_hours=48, quota_max_agents=5, role="member")
+    db = _FakeDB()
+
+    storage = _FakeStorage()
+    storage.files[f"{source.id}/soul.md"] = "# Soul"
+    storage.files[f"{source.id}/memory/memory.md"] = "# Memory"
+    storage.files[f"{source.id}/skills/test.md"] = "# Skill"
+    storage.files[f"{source.id}/HEARTBEAT.md"] = "# Heartbeat"
+    storage.files[f"{source.id}/workspace/doc.md"] = "# Workspace doc"
+
+    patches = _patches()
+    patches[0] = patch("app.services.agent_manager.get_storage", return_value=storage)
+    patches[1] = patch("app.services.agent_manager._collect_storage_keys", side_effect=lambda p: [
+        k for k in storage.files if k.startswith(p)
+    ])
+    for p in patches:
+        p.start()
+    try:
+        mgr = AgentManager.__new__(AgentManager)
+        mgr.docker_client = None
+        result = await mgr.clone_agent(db, source, cloner, "Cloned Agent")
+    finally:
+        for p in patches:
+            p.stop()
+
+    dst_prefix = str(result.id)
+    assert f"{dst_prefix}/soul.md" in storage.files
+    assert f"{dst_prefix}/memory/memory.md" in storage.files
+    assert f"{dst_prefix}/skills/test.md" in storage.files
+    assert f"{dst_prefix}/HEARTBEAT.md" in storage.files
+    assert not any(k.startswith(f"{dst_prefix}/workspace/") for k in storage.files)
+
+
+@pytest.mark.asyncio
+async def test_clone_rejects_invalid_copy_files():
+    from fastapi import HTTPException
+
+    source = _make_agent()
+    cloner = SimpleNamespace(id=uuid.uuid4(), tenant_id=source.tenant_id, quota_agent_ttl_hours=48, quota_max_agents=5, role="member")
+    db = _FakeDB()
+
+    mgr = AgentManager.__new__(AgentManager)
+    mgr.docker_client = None
+    with pytest.raises(HTTPException) as exc_info:
+        await mgr.clone_agent(db, source, cloner, "Clone", copy_files=["soul.md", "invalid_category"])
+    assert exc_info.value.status_code == 422
+    assert "invalid_category" in exc_info.value.detail

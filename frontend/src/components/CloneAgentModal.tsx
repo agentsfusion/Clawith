@@ -11,16 +11,33 @@ interface CloneAgentModalProps {
     onSuccess: (newAgent: any) => void;
 }
 
+interface FileCategory {
+    key: string;
+    icon: string;
+}
+
+const FILE_CATEGORIES: FileCategory[] = [
+    { key: 'soul.md', icon: '🧬' },
+    { key: 'memory', icon: '🧠' },
+    { key: 'skills', icon: '🛠️' },
+    { key: 'HEARTBEAT.md', icon: '💓' },
+    { key: 'workspace', icon: '📁' },
+];
+
+const DEFAULT_CHECKED = ['soul.md', 'memory', 'skills', 'HEARTBEAT.md'];
+
 export default function CloneAgentModal({ agentId, agentName, open, onClose, onSuccess }: CloneAgentModalProps) {
     const { t } = useTranslation();
     const inputRef = useRef<HTMLInputElement>(null);
     const [name, setName] = useState('');
     const [validationError, setValidationError] = useState('');
+    const [checkedFiles, setCheckedFiles] = useState<Set<string>>(new Set(DEFAULT_CHECKED));
 
     useEffect(() => {
         if (open) {
             setName(agentName + t('agent.clone.nameSuffix', ' (Copy)'));
             setValidationError('');
+            setCheckedFiles(new Set(DEFAULT_CHECKED));
             setTimeout(() => inputRef.current?.focus(), 100);
         }
     }, [open, agentName, t]);
@@ -33,7 +50,10 @@ export default function CloneAgentModal({ agentId, agentName, open, onClose, onS
     };
 
     const cloneMutation = useMutation({
-        mutationFn: () => agentApi.clone(agentId, { name: name.trim() }),
+        mutationFn: () => agentApi.clone(agentId, {
+            name: name.trim(),
+            copy_files: Array.from(checkedFiles),
+        }),
         onSuccess: (data) => {
             onSuccess(data);
         },
@@ -58,6 +78,15 @@ export default function CloneAgentModal({ agentId, agentName, open, onClose, onS
         }
     };
 
+    const toggleFile = (key: string) => {
+        setCheckedFiles(prev => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+        });
+    };
+
     if (!open) return null;
 
     return (
@@ -72,8 +101,8 @@ export default function CloneAgentModal({ agentId, agentName, open, onClose, onS
         >
             <div style={{
                 background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px',
-                width: '400px', maxWidth: '90vw', border: '1px solid var(--border-subtle)',
-                boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+                width: '460px', maxWidth: '90vw', border: '1px solid var(--border-subtle)',
+                boxShadow: '0 20px 60px rgba(0,0,0,0.4)', maxHeight: '90vh', overflowY: 'auto',
             }}
                 onClick={e => e.stopPropagation()}
             >
@@ -105,12 +134,51 @@ export default function CloneAgentModal({ agentId, agentName, open, onClose, onS
                             {validationError}
                         </div>
                     )}
-                    {cloneMutation.error && (
-                        <div style={{ fontSize: '12px', color: 'var(--error)', marginTop: '4px' }}>
-                            {t('agent.clone.errorPrefix')}{(cloneMutation.error as any)?.message || 'Unknown error'}
-                        </div>
-                    )}
                 </div>
+
+                <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '10px' }}>
+                        {t('agent.clone.filesLabel')} <span style={{ color: 'var(--text-tertiary)' }}>({checkedFiles.size}/{FILE_CATEGORIES.length})</span>
+                    </label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {FILE_CATEGORIES.map(cat => {
+                            const isChecked = checkedFiles.has(cat.key);
+                            return (
+                                <label
+                                    key={cat.key}
+                                    style={{
+                                        display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px',
+                                        background: isChecked ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+                                        border: `1px solid ${isChecked ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                                        borderRadius: '8px', cursor: 'pointer', transition: 'all 0.15s ease',
+                                    }}
+                                >
+                                    <input
+                                        type="checkbox"
+                                        checked={isChecked}
+                                        onChange={() => toggleFile(cat.key)}
+                                        style={{ accentColor: 'var(--accent-primary)' }}
+                                    />
+                                    <span style={{ fontSize: '16px', lineHeight: 1 }}>{cat.icon}</span>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ fontWeight: 500, fontSize: '13px', color: 'var(--text-primary)' }}>
+                                            {t(`agent.clone.files.${cat.key}.name`)}
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '1px' }}>
+                                            {t(`agent.clone.files.${cat.key}.description`)}
+                                        </div>
+                                    </div>
+                                </label>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                {cloneMutation.error && (
+                    <div style={{ fontSize: '12px', color: 'var(--error)', marginBottom: '12px' }}>
+                        {t('agent.clone.errorPrefix')}{(cloneMutation.error as any)?.message || 'Unknown error'}
+                    </div>
+                )}
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
                     <button className="btn btn-secondary" onClick={onClose} disabled={cloneMutation.isPending}>
