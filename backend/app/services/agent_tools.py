@@ -2561,7 +2561,7 @@ async def execute_tool(
             pattern = arguments.get("pattern")
             if not pattern:
                 return "❌ Missing required argument 'pattern' for find_files"
-            result = _find_files(
+            result = await _find_files(
                 ws,
                 pattern,
                 path=arguments.get("path", "."),
@@ -3935,7 +3935,7 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
     ext = Path(rel_path).suffix.lower()
     try:
         if ext == ".pdf":
-            import pdfplumber
+            import pdfplumber  # type: ignore[import-untyped]
             data = await storage.read_bytes(key)
             text_parts = []
             with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -5411,7 +5411,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             # ── Feature flag: async A2A (tenant-level) ──
             _a2a_async = False
-            if source_agent.tenant_id:
+            if source_agent and source_agent.tenant_id:
                 try:
                     from app.models.tenant import Tenant
                     _t_r = await db.execute(select(Tenant).where(Tenant.id == source_agent.tenant_id))
