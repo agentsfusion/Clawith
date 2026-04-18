@@ -427,6 +427,7 @@ class LLMModelOut(BaseModel):
 
 class ChannelConfigCreate(BaseModel):
     channel_type: str = "feishu"
+    brand: str = "feishu"
     app_id: str
     app_secret: str
     encrypt_key: str | None = None
@@ -438,6 +439,7 @@ class ChannelConfigOut(BaseModel):
     id: uuid.UUID
     agent_id: uuid.UUID
     channel_type: str
+    brand: str = "feishu"
     app_id: str | None = None
     app_secret: str | None = None
     encrypt_key: str | None = None

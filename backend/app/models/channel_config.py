@@ -25,6 +25,9 @@ class ChannelConfig(Base):
 
     __table_args__ = (UniqueConstraint("agent_id", "channel_type", name="uq_channel_configs_agent_channel"),)
 
+    # Brand: "feishu" (China) or "lark" (International). Determines API domain.
+    brand: Mapped[str] = mapped_column(String(16), default="feishu", server_default="feishu")
+
     # Feishu specific config
     app_id: Mapped[str | None] = mapped_column(String(255))
     app_secret: Mapped[str | None] = mapped_column(String(512))
