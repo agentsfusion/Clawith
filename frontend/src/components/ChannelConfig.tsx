@@ -70,7 +70,7 @@ interface ChannelDef {
     editOnly?: boolean;
     // Custom fields for websocket mode (wecom)
     wsFields?: ChannelField[];
-    // Atlassian-specific test connection feature
+    hasBrand?: boolean;
     hasTestConnection?: boolean;
 }
 
@@ -162,6 +162,7 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         guide: { prefix: 'channelGuide.feishu', steps: 8 },
         wsGuide: { prefix: 'channelGuide.feishu', steps: 8 },
         showPermJson: true,
+        hasBrand: true,
         webhookLabel: 'Webhook URL',
     },
     {
@@ -305,6 +306,8 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
 
     // Feishu Permission Mode
     const [feishuPermMode, setFeishuPermMode] = useState<'basic' | 'full'>('basic');
+    // Feishu/Lark brand selector ('feishu' or 'lark')
+    const [feishuBrand, setFeishuBrand] = useState<string>('feishu');
 
     // Collapsible state per channel
     const [openChannels, setOpenChannels] = useState<Record<string, boolean>>({});
@@ -526,6 +529,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 app_id: form.app_id,
                 app_secret: form.app_secret,
                 encrypt_key: form.encrypt_key || undefined,
+                brand: feishuBrand,
                 extra_config: { connection_mode: connectionModes.feishu || 'websocket' },
             };
         }
@@ -566,6 +570,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
                 <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{ fontSize: '10px' }}>&#9654;</span> {t('channelGuide.setupGuide')}
+                    {ch.hasBrand && (
+                        <span style={{ marginLeft: '8px', fontSize: '10px', color: 'var(--accent-primary)' }}>
+                            <a href={feishuBrand === 'lark' ? 'https://open.larksuite.com/app' : 'https://open.feishu.cn/app'} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>
+                                {feishuBrand === 'lark' ? 'Lark Developer Console' : '飞书开发者后台'}
+                            </a>
+                        </span>
+                    )}
                 </summary>
                 <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
                     {Array.from({ length: stepCount }, (_, i) => (
@@ -708,6 +719,21 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px', cursor: 'pointer', marginLeft: '12px' }}>
                                     <input type="radio" checked={!isWs} onChange={() => setConnectionModes(p => ({ ...p, [ch.id]: 'webhook' }))} />
                                     {t('agent.settings.channel.modeWebhook', 'Webhook')}
+                                </label>
+                            </div>
+                        )}
+                        
+                        {/* Brand Selector (Feishu/Lark) */}
+                        {ch.hasBrand && (
+                            <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <label style={{ fontSize: '12px', fontWeight: 500, width: '120px' }}>{t('agent.settings.channel.brandSelector')}</label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px', cursor: 'pointer' }}>
+                                    <input type="radio" checked={feishuBrand === 'feishu'} onChange={() => { setFeishuBrand('feishu'); const newValues = { ...values, feishu_brand: 'feishu' }; onChange?.(newValues); }} />
+                                    {t('agent.settings.channel.brandFeishu')}
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px', cursor: 'pointer', marginLeft: '12px' }}>
+                                    <input type="radio" checked={feishuBrand === 'lark'} onChange={() => { setFeishuBrand('lark'); const newValues = { ...values, feishu_brand: 'lark' }; onChange?.(newValues); }} />
+                                    {t('agent.settings.channel.brandLark')}
                                 </label>
                             </div>
                         )}
@@ -947,6 +973,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 prefill.app_secret = config.app_secret || '';
                                                 prefill.encrypt_key = config.encrypt_key || '';
                                                 setConnectionModes(prev => ({ ...prev, feishu: config.extra_config?.connection_mode || 'websocket' }));
+                                                setFeishuBrand(config.brand || 'feishu');
                                             } else if (ch.id === 'wecom') {
                                                 const cm = config.extra_config?.connection_mode === 'websocket' ? 'websocket' : 'webhook';
                                                 setConnectionModes(prev => ({ ...prev, wecom: cm }));
@@ -1013,6 +1040,25 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 <input type="radio" name={`${ch.id}_connection_mode`} value="webhook" checked={connMode === 'webhook'}
                                                     onChange={() => setConnectionModes(prev => ({ ...prev, [ch.id]: 'webhook' }))} />
                                                 {t('wizard.step5.modeWebhook')}
+                                            </label>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Brand selector (feishu/lark) */}
+                                {ch.hasBrand && (
+                                    <div style={{ marginBottom: '8px' }}>
+                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '8px' }}>{t('agent.settings.channel.brandSelector')}</label>
+                                        <div style={{ display: 'flex', gap: '16px', marginBottom: '8px' }}>
+                                            <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                                                <input type="radio" name="feishu_brand" value="feishu" checked={feishuBrand === 'feishu'}
+                                                    onChange={() => setFeishuBrand('feishu')} />
+                                                {t('agent.settings.channel.brandFeishu')}
+                                            </label>
+                                            <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                                                <input type="radio" name="feishu_brand" value="lark" checked={feishuBrand === 'lark'}
+                                                    onChange={() => setFeishuBrand('lark')} />
+                                                {t('agent.settings.channel.brandLark')}
                                             </label>
                                         </div>
                                     </div>

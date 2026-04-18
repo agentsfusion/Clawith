@@ -136,6 +136,7 @@ export default function AgentCreate() {
                         app_id: channelValues.feishu_app_id,
                         app_secret: channelValues.feishu_app_secret,
                         encrypt_key: channelValues.feishu_encrypt_key || undefined,
+                        brand: channelValues.feishu_brand || 'feishu',
                         extra_config: {
                             connection_mode: channelValues.feishu_connection_mode || 'websocket'
                         }

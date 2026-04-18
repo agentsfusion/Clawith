@@ -1171,7 +1171,7 @@ function OrgTab({ tenant }: { tenant: any }) {
             setForm({ ...existingProvider, ...(type === 'oauth2' ? initOAuth2FromConfig(existingProvider.config) : {}) });
         } else {
             const defaults: any = {
-                feishu: { app_id: '', app_secret: '', corp_id: '' },
+                feishu: { app_id: '', app_secret: '', corp_id: '', brand: 'feishu' },
                 dingtalk: { app_key: '', app_secret: '', corp_id: '' },
                 wecom: { corp_id: '', secret: '', agent_id: '', app_secret: '', bot_id: '', bot_secret: '', verify_token: '', verify_aes_key: '' },
             };
@@ -1200,6 +1200,16 @@ function OrgTab({ tenant }: { tenant: any }) {
                         <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                             {type === 'feishu' && (
                                 <>
+                                    <div style={{ marginBottom: '12px' }}>
+                                        <a
+                                            href={(form.config.brand || 'feishu') === 'lark' ? 'https://open.larksuite.com/app' : 'https://open.feishu.cn/app'}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            style={{ color: 'var(--accent-primary)', fontSize: '12px' }}
+                                        >
+                                            {(form.config.brand || 'feishu') === 'lark' ? 'Lark Developer Console →' : '飞书开发者后台 →'}
+                                        </a>
+                                    </div>
                                     {Array.from({ length: 7 }).map((_, i) => (
                                         <div key={i} style={{ marginBottom: '6px' }}>
                                             {i + 1}. {t(`enterprise.org.syncGuide.feishu.step${i + 1}`)}
@@ -1336,6 +1346,17 @@ function OrgTab({ tenant }: { tenant: any }) {
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                         <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('enterprise.identity.providerHints.feishu')}</div>
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">{t('agent.settings.channel.brandSelector', 'Select Platform Brand')}</label>
+                            <select
+                                className="form-input"
+                                value={form.config.brand || 'feishu'}
+                                onChange={e => setForm({ ...form, config: { ...form.config, brand: e.target.value } })}
+                            >
+                                <option value="feishu">{t('agent.settings.channel.brandFeishu', 'Feishu (China)')}</option>
+                                <option value="lark">{t('agent.settings.channel.brandLark', 'Lark (International)')}</option>
+                            </select>
                         </div>
                         <div className="form-group">
                             <label className="form-label">App ID</label>
