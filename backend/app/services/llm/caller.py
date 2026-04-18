@@ -342,6 +342,23 @@ async def call_llm(
                         logger.exception("[EvolverRuntime] failed to emit missing_tool event")
             except Exception:
                 logger.exception("[EvolverRuntime] failed to collect missing_tool events")
+
+        try:
+            from app.services.evolver_runtime import collect_skill_failure_events
+            for ev in collect_skill_failure_events(_evolver_ctx):
+                try:
+                    await on_tool_call({
+                        "status": "skill_failure",
+                        "skill_name": ev["skill_name"],
+                        "action": ev["action"],
+                        "agent_id": ev["agent_id"],
+                        "kind": ev["kind"],
+                        "error": ev.get("error", ""),
+                    })
+                except Exception:
+                    logger.exception("[EvolverRuntime] failed to emit skill_failure event")
+        except Exception:
+            logger.exception("[EvolverRuntime] failed to collect skill_failure events")
     else:
         # Build rich prompt with soul, memory, skills, relationships
         from app.services.agent_context import build_agent_context
@@ -584,7 +601,7 @@ async def call_llm_with_failover(
 
     # Check if we need to failover
     if not is_retryable_error(primary_result):
-        logger.warning(f"[Failover] Canceled: Primary model returned a non-retryable error: {primary_result[:150]}")
+        logger.debug(f"[Failover] Skipped: primary model returned normally (no failover needed)")
         return primary_result
 
     # Check guard conditions

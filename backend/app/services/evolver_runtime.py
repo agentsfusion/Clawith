@@ -154,8 +154,15 @@ async def prepare_evolver_turn(
         logger.exception(f"[EvolverRuntime] execute_script_logic failed for agent {agent_id}: {e}")
         return None
 
+    skills_index_text = ""
     try:
-        system_prompt = build_execution_prompt(parsed, state, exec_result)
+        from app.services.agent_context import _load_skills_index
+        skills_index_text = await _load_skills_index(aid)
+    except Exception as e:
+        logger.warning(f"[EvolverRuntime] _load_skills_index failed for agent {agent_id}: {e}")
+
+    try:
+        system_prompt = build_execution_prompt(parsed, state, exec_result, skills_index_text=skills_index_text)
     except Exception as e:
         logger.exception(f"[EvolverRuntime] build_execution_prompt failed for agent {agent_id}: {e}")
         return None

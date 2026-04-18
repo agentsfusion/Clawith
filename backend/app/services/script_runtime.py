@@ -1719,6 +1719,7 @@ def build_execution_prompt(
     parsed: ParsedScript,
     state: ScriptState,
     exec_result: ScriptExecutionResult,
+    skills_index_text: str = "",
 ) -> str:
     parts: list[str] = []
 
@@ -1758,6 +1759,9 @@ def build_execution_prompt(
             asec = _render_actions_section(shim, state)
             if asec:
                 parts.append(f"\n{asec}")
+
+    if skills_index_text:
+        parts.append(f"\n## Workspace Skills (Auto-Discovered)\n{skills_index_text}")
 
     if exec_result.llm_instructions:
         parts.append("\n## Your Task for This Turn")
@@ -1970,6 +1974,14 @@ def process_response_v2(
     for m in _DIRECTIVE_MEM_RE.finditer(response_text):
         mk = m.group(1)
         mv = _unquote(m.group(2).strip())
+        _guarded_suffixes = ("_is_configured", "_is_enabled", "_is_ready")
+        if mk.endswith(_guarded_suffixes) and mv.strip().lower() == "true":
+            logger.warning(
+                f"[ScriptRuntime] MEM {mk}=true blocked — "
+                f"infrastructure confirmation must come from system checks, not LLM assertions"
+            )
+            clean = clean.replace(m.group(0), "").strip()
+            continue
         state.mem[mk] = mv
         changes.append(f"MEM {mk} = {mv}")
         clean = clean.replace(m.group(0), "").strip()
