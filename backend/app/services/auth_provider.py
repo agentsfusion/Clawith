@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import create_access_token, hash_password
 from app.models.identity import IdentityProvider
 from app.models.user import User, Identity
+from app.services.feishu_utils import resolve_base_url
 from loguru import logger
 
 
@@ -270,21 +271,19 @@ class FeishuAuthProvider(BaseAuthProvider):
 
     provider_type = "feishu"
 
-    FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token"
-    FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
-    FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
-
     def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None):
         super().__init__(provider, config)
         self.app_id = self.config.get("app_id")
         self.app_secret = self.config.get("app_secret")
         self._app_access_token: str | None = None
+        self.brand = self.config.get("brand", "feishu")
+        self._base_url = resolve_base_url(self.brand)
 
     async def get_authorization_url(self, redirect_uri: str, state: str) -> str:
         app_id = self.app_id or ""
-        base_url = "https://open.feishu.cn/open-apis/authen/v1/authorize"
+        auth_url = f"{self._base_url}/open-apis/authen/v1/authorize"
         params = f"app_id={app_id}&redirect_uri={redirect_uri}&state={state}"
-        return f"{base_url}?{params}"
+        return f"{auth_url}?{params}"
 
     async def get_app_access_token(self) -> str:
         if self._app_access_token:
@@ -292,7 +291,7 @@ class FeishuAuthProvider(BaseAuthProvider):
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                self.FEISHU_APP_TOKEN_URL,
+                f"{self._base_url}/open-apis/auth/v3/app_access_token/internal",
                 json={"app_id": self.app_id, "app_secret": self.app_secret},
             )
             data = resp.json()
@@ -304,7 +303,7 @@ class FeishuAuthProvider(BaseAuthProvider):
 
         async with httpx.AsyncClient() as client:
             token_resp = await client.post(
-                self.FEISHU_TOKEN_URL,
+                f"{self._base_url}/open-apis/authen/v1/oidc/access_token",
                 json={"grant_type": "authorization_code", "code": code},
                 headers={"Authorization": f"Bearer {app_token}"},
             )
@@ -314,7 +313,7 @@ class FeishuAuthProvider(BaseAuthProvider):
     async def get_user_info(self, access_token: str) -> ExternalUserInfo:
         async with httpx.AsyncClient() as client:
             info_resp = await client.get(
-                self.FEISHU_USER_INFO_URL, headers={"Authorization": f"Bearer {access_token}"}
+                f"{self._base_url}/open-apis/authen/v1/user_info", headers={"Authorization": f"Bearer {access_token}"}
             )
             info_data = info_resp.json().get("data", {})
             logger.info(f"Feishu user info: {info_data}")

@@ -189,6 +189,7 @@ async def configure_channel(
         existing.encrypt_key = data.encrypt_key
         existing.verification_token = data.verification_token
         existing.extra_config = data.extra_config or {}
+        existing.brand = data.brand
         existing.is_configured = True
         await db.flush()
         
@@ -197,7 +198,8 @@ async def configure_channel(
         import asyncio
         mode = existing.extra_config.get("connection_mode", "webhook")
         if mode == "websocket":
-            asyncio.create_task(feishu_ws_manager.start_client(agent_id, existing.app_id, existing.app_secret))
+            _brand = existing.brand or data.brand
+            asyncio.create_task(feishu_ws_manager.start_client(agent_id, existing.app_id, existing.app_secret, brand=_brand))
         else:
             asyncio.create_task(feishu_ws_manager.stop_client(agent_id))
         
@@ -206,6 +208,7 @@ async def configure_channel(
     config = ChannelConfig(
         agent_id=agent_id,
         channel_type=data.channel_type,
+        brand=data.brand,
         app_id=data.app_id,
         app_secret=data.app_secret,
         encrypt_key=data.encrypt_key,
@@ -221,7 +224,8 @@ async def configure_channel(
     import asyncio
     mode = config.extra_config.get("connection_mode", "webhook")
     if mode == "websocket":
-        asyncio.create_task(feishu_ws_manager.start_client(agent_id, config.app_id, config.app_secret))
+        _brand = config.brand or data.brand
+        asyncio.create_task(feishu_ws_manager.start_client(agent_id, config.app_id, config.app_secret, brand=_brand))
 
     return ChannelConfigOut.model_validate(config)
 
@@ -317,6 +321,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
     if not config:
         return {"code": 1, "msg": "Channel not found"}
 
+    brand = getattr(config, 'brand', 'feishu') or 'feishu'
+
     # Mark event as processed after config is loaded successfully
     if event_id:
         _processed_events.add(event_id)
@@ -384,8 +390,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 for _ik in _post_image_keys:
                     try:
                         _img_bytes = await feishu_service.download_message_resource(
-                            config.app_id, config.app_secret, _msg_id, _ik, "image"
-                        )
+                            config.app_id, config.app_secret, _msg_id, _ik, "image", brand=brand)
                         # Save to workspace
                         _save_key = f"{_uploads_prefix}image_{_ik[-8:]}.jpg"
                         await storage.write_bytes(_save_key, _img_bytes)
@@ -651,8 +656,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         config.app_id, config.app_secret,
                         _reply_to_id, file_path,
                         receive_id_type=_rid_type,
-                        accompany_msg=msg,
-                    )
+                        accompany_msg=msg, brand=brand)
                 except Exception as _upload_err:
                     # Fallback: send a download link when upload permission is not granted
                     from pathlib import Path as _P
@@ -681,8 +685,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         config.app_id, config.app_secret,
                         _reply_to_id, "text",
                         _json.dumps({"text": "\n\n".join(_fallback_parts)}),
-                        receive_id_type=_rid_type,
-                    )
+                        receive_id_type=_rid_type, brand=brand)
             _cfs_token = _cfs.set(_feishu_file_sender)
 
             # Set up streaming response via CardKit (primary) or IM patch (fallback)
@@ -712,13 +715,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             try:
                 cardkit_card_id = await feishu_service.create_card_entity(
-                    config.app_id, config.app_secret, init_card
-                )
+                    config.app_id, config.app_secret, init_card, brand=brand)
                 cardkit_sequence = 1
                 await feishu_service.send_card_by_card_id(
                     config.app_id, config.app_secret, _reply_target, cardkit_card_id,
-                    receive_id_type=_rid_type,
-                )
+                    receive_id_type=_rid_type, brand=brand)
                 logger.info(f"[Feishu] CardKit card created and sent: card_id={cardkit_card_id}")
             except Exception as e:
                 logger.warning(f"[Feishu] CardKit flow failed, falling back to IM patch: {e}")
@@ -731,8 +732,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 try:
                     init_resp = await feishu_service.send_message(
                         config.app_id, config.app_secret, _reply_target, "interactive",
-                        _json_card.dumps(init_card_fallback), receive_id_type=_rid_type, stage="stream_init_card",
-                    )
+                        _json_card.dumps(init_card_fallback), receive_id_type=_rid_type, stage="stream_init_card", brand=brand)
                     msg_id_for_patch = init_resp.get("data", {}).get("message_id")
                 except Exception as e2:
                     logger.error(f"[Feishu] Fallback init card also failed: {e2}")
@@ -853,8 +853,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             config.app_secret,
                             msg_id_for_patch,
                             payload,
-                            stage=stage,
-                        )
+                            stage=stage, brand=brand)
                     except Exception as e:
                         logger.warning(f"[Feishu] Patch failed (stage={stage}, message_id={msg_id_for_patch}): {e}")
 
@@ -891,8 +890,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                                     feishu_service.stream_card_content(
                                         config.app_id, config.app_secret,
                                         cardkit_card_id, "streaming_content",
-                                        cardkit_text, cardkit_sequence,
-                                    ),
+                                        cardkit_text, cardkit_sequence, brand=brand),
                                     timeout=5.0,
                                 )
                                 _last_flushed_text = cardkit_text
@@ -985,8 +983,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     await asyncio.wait_for(
                         feishu_service.set_card_streaming_mode(
                             config.app_id, config.app_secret,
-                            cardkit_card_id, 0, cardkit_sequence,
-                        ),
+                            cardkit_card_id, 0, cardkit_sequence, brand=brand),
                         timeout=10.0,
                     )
                     cardkit_sequence += 1
@@ -994,8 +991,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     await asyncio.wait_for(
                         feishu_service.update_cardkit_card(
                             config.app_id, config.app_secret,
-                            cardkit_card_id, final_card, cardkit_sequence,
-                        ),
+                            cardkit_card_id, final_card, cardkit_sequence, brand=brand),
                         timeout=10.0,
                     )
                 except Exception as e:
@@ -1004,8 +1000,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         await feishu_service.send_message(
                             config.app_id, config.app_secret, _reply_target, "text",
                             _json.dumps({"text": reply_text}), receive_id_type=_rid_type,
-                            stage="stream_final_fallback_text",
-                        )
+                            stage="stream_final_fallback_text", brand=brand)
                     except Exception as e2:
                         logger.error(f"[Feishu] CardKit fallback text also failed: {e2}")
             elif msg_id_for_patch:
@@ -1024,16 +1019,14 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         config.app_secret,
                         msg_id_for_patch,
                         _json_card.dumps(final_card),
-                        stage="stream_final",
-                    )
+                        stage="stream_final", brand=brand)
                 except Exception as e:
                     logger.error(f"[Feishu] Final card patch failed: {e}")
                     try:
                         await feishu_service.send_message(
                             config.app_id, config.app_secret, _reply_target, "text",
                             _json.dumps({"text": reply_text}), receive_id_type=_rid_type,
-                            stage="stream_final_fallback_text",
-                        )
+                            stage="stream_final_fallback_text", brand=brand)
                     except Exception as e2:
                         logger.error(f"[Feishu] Fallback text also failed: {e2}")
             else:
@@ -1041,8 +1034,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     await feishu_service.send_message(
                         config.app_id, config.app_secret, _reply_target, "text",
                         _json.dumps({"text": reply_text}), receive_id_type=_rid_type,
-                        stage="stream_no_card_fallback_text",
-                    )
+                        stage="stream_no_card_fallback_text", brand=brand)
                 except Exception as e:
                     logger.error(f"[Feishu] Failed to send fallback message: {e}")
 
@@ -1141,8 +1133,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
     # Download the file
     try:
         file_bytes = await feishu_service.download_message_resource(
-            config.app_id, config.app_secret, message_id, file_key, res_type
-        )
+            config.app_id, config.app_secret, message_id, file_key, res_type, brand=brand)
         save_path.write_bytes(file_bytes)
         logger.info(f"[Feishu] Saved {msg_type} to {save_path} ({len(file_bytes)} bytes)")
     except Exception as e:
@@ -1151,9 +1142,9 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         try:
             import json as _j
             if chat_type == "group" and chat_id:
-                await feishu_service.send_message(config.app_id, config.app_secret, chat_id, "text", _j.dumps({"text": err_tip}), receive_id_type="chat_id")
+                await feishu_service.send_message(config.app_id, config.app_secret, chat_id, "text", _j.dumps({"text": err_tip}), receive_id_type="chat_id", brand=brand)
             else:
-                await feishu_service.send_message(config.app_id, config.app_secret, sender_open_id, "text", _j.dumps({"text": err_tip}))
+                await feishu_service.send_message(config.app_id, config.app_secret, sender_open_id, "text", _j.dumps({"text": err_tip}), brand=brand)
         except Exception as e2:
             logger.error(f"[Feishu] Also failed to send error tip: {e2}")
         return
@@ -1285,8 +1276,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         try:
             _init_resp = await feishu_service.send_message(
                 config.app_id, config.app_secret, _reply_to, "interactive",
-                _json_card_img.dumps(_init_card), receive_id_type=_rid_type, stage="image_stream_init_card"
-            )
+                _json_card_img.dumps(_init_card), receive_id_type=_rid_type, stage="image_stream_init_card", brand=brand)
             _patch_msg_id = _init_resp.get("data", {}).get("message_id")
         except Exception as _e_init:
             logger.error(f"[Feishu] Failed to send init card for image: {_e_init}")
@@ -1312,8 +1302,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
                         config.app_secret,
                         _patch_msg_id,
                         _payload,
-                        stage=_stage,
-                    )
+                        stage=_stage, brand=brand)
                 except Exception as _e_patch:
                     logger.warning(f"[Feishu] Image patch failed (stage={_stage}, message_id={_patch_msg_id}): {_e_patch}")
 
@@ -1390,14 +1379,12 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
                 agent_name=_agent_name,
             )
             await feishu_service.patch_message(
-                config.app_id, config.app_secret, _patch_msg_id, _json_card_img.dumps(_final_card), stage="image_stream_final"
-            )
+                config.app_id, config.app_secret, _patch_msg_id, _json_card_img.dumps(_final_card), stage="image_stream_final", brand=brand)
         else:
             try:
                 await feishu_service.send_message(
                     config.app_id, config.app_secret, _reply_to, "text",
-                    json.dumps({"text": reply_text}), receive_id_type=_rid_type, stage="image_stream_fallback_text",
-                )
+                    json.dumps({"text": reply_text}), receive_id_type=_rid_type, stage="image_stream_fallback_text", brand=brand)
             except Exception as _e_fb:
                 logger.error(f"[Feishu] Failed to send image reply: {_e_fb}")
 
@@ -1420,13 +1407,11 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         if chat_type == "group" and chat_id:
             await feishu_service.send_message(
                 config.app_id, config.app_secret, chat_id, "text",
-                json.dumps({"text": ack}), receive_id_type="chat_id",
-            )
+                json.dumps({"text": ack}), receive_id_type="chat_id", brand=brand)
         else:
             await feishu_service.send_message(
                 config.app_id, config.app_secret, sender_open_id, "text",
-                json.dumps({"text": ack}),
-            )
+                json.dumps({"text": ack}), brand=brand)
     except Exception as e:
         logger.error(f"[Feishu] Failed to send ack: {e}")
 
@@ -1449,8 +1434,7 @@ async def _download_post_images(agent_id, config, message_id, image_keys):
     for ik in image_keys:
         try:
             file_bytes = await feishu_service.download_message_resource(
-                config.app_id, config.app_secret, message_id, ik, "image"
-            )
+                config.app_id, config.app_secret, message_id, ik, "image", brand=brand)
             save_path = upload_dir / f"image_{ik[-8:]}.jpg"
             save_path.write_bytes(file_bytes)
             logger.info(f"[Feishu] Saved post image to {save_path} ({len(file_bytes)} bytes)")
