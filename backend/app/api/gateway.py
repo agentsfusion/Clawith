@@ -21,7 +21,9 @@ from app.models.user import User
 from app.schemas.schemas import (
     GatewayPollResponse, GatewayMessageOut, GatewayReportRequest,
     GatewayHistoryItem, GatewayRelationshipItem, GatewaySendMessageRequest,
+    GatewaySkillJobOut, GatewaySkillPollResponse, GatewaySkillReportRequest,
 )
+import json as _json
 
 router = APIRouter(prefix="/gateway", tags=["gateway"])
 
@@ -266,6 +268,145 @@ async def report_result(
             await reply_db.commit()
             logger.info(f"[Gateway] Reply routed back to sender agent {msg.sender_agent_id}")
 
+    return {"status": "ok"}
+
+
+# ─── Skill execution worker endpoints ──────────────────────────────────
+
+@router.post("/poll-skill", response_model=GatewaySkillPollResponse)
+async def poll_skill_job(
+    x_api_key: str = Header(..., alias="X-Api-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Any authenticated openclaw worker may claim the oldest pending
+    broadcast skill_exec job. Returns at most one job per call; the row
+    is atomically marked `delivered` so concurrent workers don't double-claim.
+
+    A separate endpoint from `/poll` because skill jobs are broadcast
+    (`agent_id IS NULL`) and any openclaw worker can run them, whereas
+    `/poll` is per-agent addressed chat.
+    """
+    agent = await _get_agent_by_key(x_api_key, db)
+    agent.openclaw_last_seen = datetime.now(timezone.utc)
+
+    # Atomic claim via UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)
+    # Using raw SQL for SKIP LOCKED semantics on Postgres.
+    from sqlalchemy import text
+    claimed = await db.execute(
+        text(
+            """
+            UPDATE gateway_messages
+            SET status = 'delivered', delivered_at = NOW(), agent_id = :worker_id
+            WHERE id = (
+                SELECT id FROM gateway_messages
+                WHERE kind = 'skill_exec' AND status = 'pending'
+                ORDER BY created_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            RETURNING id, content, conversation_id
+            """
+        ),
+        {"worker_id": agent.id},
+    )
+    row = claimed.first()
+    await db.commit()
+    if not row:
+        return GatewaySkillPollResponse(job=None)
+
+    try:
+        payload = _json.loads(row.content)
+    except Exception:
+        logger.warning(f"[Gateway] skill job {row.id} has malformed payload")
+        return GatewaySkillPollResponse(job=None)
+
+    job = GatewaySkillJobOut(
+        id=row.id,
+        skill=str(payload.get("skill", "")),
+        params=payload.get("params") or {},
+        requesting_agent_id=payload.get("requesting_agent_id"),
+        conversation_id=row.conversation_id,
+    )
+    logger.info(
+        f"[Gateway] worker={agent.id} claimed skill job {row.id} "
+        f"skill={job.skill}"
+    )
+    return GatewaySkillPollResponse(job=job)
+
+
+@router.post("/report-skill")
+async def report_skill_result(
+    body: GatewaySkillReportRequest,
+    x_api_key: str = Header(..., alias="X-Api-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Openclaw worker reports the result of a skill_exec job.
+
+    Authorization: only the worker that previously claimed this job (its
+    `agent_id` was set by `/poll-skill`) may report a result, and only
+    while the job is still in the `delivered` state. Done as a single
+    conditional UPDATE to avoid races.
+    """
+    agent = await _get_agent_by_key(x_api_key, db)
+
+    envelope: dict = {"ok": bool(body.ok)}
+    if body.ok:
+        envelope["outputs"] = body.outputs or {}
+    else:
+        envelope["error"] = body.error or "skill execution failed"
+
+    from sqlalchemy import text
+    upd = await db.execute(
+        text(
+            """
+            UPDATE gateway_messages
+            SET status = 'completed', result = :result, completed_at = NOW()
+            WHERE id = :id
+              AND kind = 'skill_exec'
+              AND status = 'delivered'
+              AND agent_id = :worker_id
+            RETURNING id
+            """
+        ),
+        {
+            "id": body.message_id,
+            "result": _json.dumps(envelope, ensure_ascii=False),
+            "worker_id": agent.id,
+        },
+    )
+    hit = upd.first()
+
+    if not hit:
+        # Distinguish 404 / 409 / 403 with a follow-up read for clearer ops.
+        check = await db.execute(
+            select(GatewayMessage).where(
+                GatewayMessage.id == body.message_id,
+                GatewayMessage.kind == "skill_exec",
+            )
+        )
+        existing = check.scalar_one_or_none()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Skill job not found")
+        if existing.status == "completed":
+            return {"status": "already_completed"}
+        if existing.agent_id != agent.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Skill job is not assigned to this worker",
+            )
+        # Pending (never claimed) or some other unexpected status.
+        raise HTTPException(
+            status_code=409,
+            detail=f"Skill job in unexpected state: {existing.status}",
+        )
+
+    agent.openclaw_last_seen = datetime.now(timezone.utc)
+    await db.commit()
+
+    logger.info(
+        f"[Gateway] worker={agent.id} reported skill job {body.message_id} "
+        f"ok={body.ok}"
+    )
     return {"status": "ok"}
 
 

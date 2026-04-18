@@ -2074,7 +2074,7 @@ function AgentDetailInner() {
         } catch (e) { alert('Failed: ' + e); }
         setExpirySaving(false);
     };
-    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
+    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call' | 'missing_tool'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; missingToolName?: string; missingActionName?: string; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
     // Stable expanded-state map for tool groups — keyed by groupStartIndex.
     // Stored in a ref so it survives parent re-renders without causing extra renders.
@@ -2377,6 +2377,24 @@ function AgentDetailInner() {
                         if (last && last.role === 'tool_call' && last.toolName === d.name && last.toolStatus === 'running') return [...prev.slice(0, lastIdx), toolMsg];
                     }
                     return [...prev, toolMsg];
+                });
+            } else if (d.type === 'missing_tool') {
+                // Script asked for a tool the agent doesn't have wired up.
+                // Render as a chip in the chat with a link to Tools settings.
+                if (import.meta.env.DEV) {
+                    console.warn('[MissingTool]', d.tool_name, 'in action', d.action);
+                }
+                setChatMessages(prev => {
+                    const chip: ChatMsg = {
+                        role: 'missing_tool',
+                        content: '',
+                        missingToolName: d.tool_name || '',
+                        missingActionName: d.action || '',
+                    };
+                    // De-dupe consecutive identical chips for the same tool.
+                    const last = prev[prev.length - 1];
+                    if (last && last.role === 'missing_tool' && last.missingToolName === chip.missingToolName) return prev;
+                    return [...prev, chip];
                 });
             } else if (d.type === 'chunk') {
                 setChatMessages(prev => {
@@ -4991,6 +5009,59 @@ function AgentDetailInner() {
                                                         );
                                                     }
                                                     const { msg, i } = entry;
+                                                    if (msg.role === 'missing_tool') {
+                                                        const tName = msg.missingToolName || 'unknown';
+                                                        const actName = msg.missingActionName || '';
+                                                        const settingsHref = id ? `/agents/${id}#tools` : '#tools';
+                                                        return (
+                                                            <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
+                                                                <div style={{
+                                                                    display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
+                                                                    padding: '7px 10px', borderRadius: '8px',
+                                                                    background: 'rgba(245,158,11,0.08)',
+                                                                    border: '1px solid rgba(245,158,11,0.30)',
+                                                                    fontSize: '12px',
+                                                                }}>
+                                                                    <span style={{ fontSize: '14px', flexShrink: 0 }}>⚠️</span>
+                                                                    <span style={{ color: 'var(--text-secondary)' }}>
+                                                                        {t('agent.chat.missingToolPrefix') !== 'agent.chat.missingToolPrefix'
+                                                                            ? t('agent.chat.missingToolPrefix')
+                                                                            : 'Script needs tool'}
+                                                                    </span>
+                                                                    <span style={{
+                                                                        fontFamily: 'var(--font-mono)', fontSize: '11px',
+                                                                        background: 'rgba(245,158,11,0.20)',
+                                                                        color: 'rgb(180,100,0)',
+                                                                        padding: '1px 6px', borderRadius: '4px', fontWeight: 600,
+                                                                    }}>{tName}</span>
+                                                                    {actName && (
+                                                                        <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
+                                                                            · @actions.{actName}
+                                                                        </span>
+                                                                    )}
+                                                                    <a
+                                                                        href={settingsHref}
+                                                                        onClick={(e) => {
+                                                                            if (!id) return;
+                                                                            if (window.location.pathname === `/agents/${id}`) {
+                                                                                e.preventDefault();
+                                                                                window.location.hash = 'tools';
+                                                                            }
+                                                                        }}
+                                                                        style={{
+                                                                            marginLeft: 'auto', fontSize: '11px',
+                                                                            color: 'rgb(180,100,0)', textDecoration: 'underline',
+                                                                            cursor: 'pointer',
+                                                                        }}
+                                                                    >
+                                                                        {t('agent.chat.openToolSettings') !== 'agent.chat.openToolSettings'
+                                                                            ? t('agent.chat.openToolSettings')
+                                                                            : 'Open tool settings'}
+                                                                    </a>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    }
                                                     // All remaining messages have real content; render as chat bubbles
                                                     return (
                                                         <ChatMessageItem

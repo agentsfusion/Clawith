@@ -582,6 +582,26 @@ class GatewaySendMessageRequest(BaseModel):
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
 
 
+class GatewaySkillJobOut(BaseModel):
+    """A broadcast skill_exec job available for an openclaw worker to claim."""
+    id: uuid.UUID
+    skill: str
+    params: dict
+    requesting_agent_id: str | None = None
+    conversation_id: str | None = None
+
+
+class GatewaySkillPollResponse(BaseModel):
+    job: GatewaySkillJobOut | None = None
+
+
+class GatewaySkillReportRequest(BaseModel):
+    message_id: uuid.UUID
+    ok: bool = True
+    outputs: dict | None = None
+    error: str | None = None
+
+
 # ─── Script Builder ──────────────────────────────────
 
 class ScriptConversationCreate(BaseModel):

@@ -18,6 +18,27 @@ from loguru import logger
 
 
 # ============================================================================
+# OpenAI quirks
+# ============================================================================
+
+# Models that require `max_completion_tokens` instead of the legacy `max_tokens`
+# field. Includes the o-series reasoning models (o1, o3, o4-*) and the gpt-5
+# family. Match by lowercase prefix on the model id (works for variants like
+# `o3-mini`, `o4-mini-2025-...`, `gpt-5.4`, `gpt-5o`, etc.).
+_OPENAI_MAX_COMPLETION_PREFIXES = ("o1", "o3", "o4", "gpt-5", "gpt-6")
+
+
+def _openai_uses_max_completion_tokens(model: str | None) -> bool:
+    if not model:
+        return False
+    name = model.strip().lower()
+    # Strip optional `openai/` provider prefix used by some routers.
+    if name.startswith("openai/"):
+        name = name[len("openai/"):]
+    return name.startswith(_OPENAI_MAX_COMPLETION_PREFIXES)
+
+
+# ============================================================================
 # Data Models
 # ============================================================================
 
@@ -308,7 +329,14 @@ class OpenAICompatibleClient(LLMClient):
             payload["stream_options"] = {"include_usage": True}
 
         if max_tokens:
-            payload["max_tokens"] = max_tokens
+            # Newer OpenAI models (o1/o3/o4 reasoning series and gpt-5+)
+            # rejected the legacy `max_tokens` field — they require
+            # `max_completion_tokens`. Detect by model name and route the
+            # value to the correct field.
+            if _openai_uses_max_completion_tokens(self.model):
+                payload["max_completion_tokens"] = max_tokens
+            else:
+                payload["max_tokens"] = max_tokens
 
         if tools:
             payload["tools"] = tools

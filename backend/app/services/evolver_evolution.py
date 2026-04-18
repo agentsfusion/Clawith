@@ -9,7 +9,7 @@ from sqlalchemy import select, desc, func, and_
 from app.database import async_session
 from app.models.evolver import AgentFeedback, AgentScriptVersion
 from app.models.llm import LLMModel
-from app.services.llm_client import create_llm_client, LLMMessage, get_max_tokens
+from app.services.llm.client import create_llm_client, LLMMessage, get_max_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +73,43 @@ async def _get_agent_available_skills(agent_id: str) -> list[dict]:
     return skills
 
 
-def _build_available_resources_section(tools: list[dict], skills: list[dict]) -> str:
-    if not tools and not skills:
-        return ""
+_TOOL_REF_RE = re.compile(r'tool://([A-Za-z0-9_\-]+)')
+_SKILL_REF_RE = re.compile(r'skill://([A-Za-z0-9_\-]+)')
 
+
+def _extract_resource_refs(script: str) -> tuple[set[str], set[str]]:
+    """Return (tool_names, skill_folders) referenced in the script."""
+    return (
+        set(_TOOL_REF_RE.findall(script or "")),
+        set(_SKILL_REF_RE.findall(script or "")),
+    )
+
+
+def _validate_resource_refs(
+    script: str,
+    available_tools: list[dict],
+    available_skills: list[dict],
+) -> list[str]:
+    """Return a list of human-readable problems. Empty list = valid."""
+    tool_refs, skill_refs = _extract_resource_refs(script)
+    avail_tool_names = {t["name"] for t in available_tools}
+    avail_skill_folders = {s["folder"] for s in available_skills}
+
+    problems: list[str] = []
+    for ref in sorted(tool_refs - avail_tool_names):
+        problems.append(
+            f"`tool://{ref}` is not installed for this agent. "
+            f"Either install the tool or use one of the available tools."
+        )
+    for ref in sorted(skill_refs - avail_skill_folders):
+        problems.append(
+            f"`skill://{ref}` is not installed for this agent. "
+            f"Either install the skill or use a different action target."
+        )
+    return problems
+
+
+def _build_available_resources_section(tools: list[dict], skills: list[dict]) -> str:
     lines = ["\n## Available Tools & Skills (STRICT CONSTRAINT)"]
     lines.append("The evolved script MUST ONLY reference tools and skills from the lists below.")
     lines.append("Do NOT invent, assume, or reference any tool or skill not listed here.")
@@ -143,8 +176,13 @@ def build_evolution_prompt(
 3. Analyze the current script against the evolution direction: "{direction}"
 4. Make targeted improvements that align with the evolution direction
 5. Preserve all existing functionality unless it conflicts with the direction
-6. ONLY use tools and skills listed in "Available Tools & Skills" — never reference unlisted ones
-7. Explain your reasoning and what you changed
+6. ONLY use tools and skills listed in "Available Tools & Skills" — never reference unlisted ones.
+   The output is **strictly validated**: any `tool://X` or `skill://Y` reference that is not in the
+   available lists will cause this evolution to be REJECTED and discarded.
+7. If a previously-used `skill://X` reference points to a skill that is no longer in the available
+   list, you MUST replace it with a valid `tool://` or `skill://` from the lists above (or remove
+   the action entirely). Prefer `tool://` over `skill://` when both can perform the same job.
+8. Explain your reasoning and what you changed
 
 ## Output Format
 First, explain what you analyzed from past knowledge and what improvements you're making and why.
@@ -272,6 +310,45 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
         if not evolved_script:
             return {"status": "error", "detail": "AI response did not contain a valid ascript block"}
 
+        # ── HARD CONSTRAINT: every tool://X / skill://Y in the evolved script
+        #    must exist in this agent's available resources. If not, reject the
+        #    evolution and persist a knowledge note so the next cycle learns.
+        problems = _validate_resource_refs(evolved_script, available_tools, available_skills)
+        if problems:
+            problem_text = "\n".join(f"- {p}" for p in problems)
+            logger.warning(
+                f"[Evolution] Rejecting evolved script for agent {agent_id}: "
+                f"invalid resource references:\n{problem_text}"
+            )
+            # Save a learning so the LLM sees why its previous attempt was rejected.
+            max_knowledge_ver = await db.execute(
+                select(func.coalesce(func.max(AgentScriptVersion.version), 0))
+                .where(
+                    AgentScriptVersion.agent_id == agent_id,
+                    AgentScriptVersion.folder == "evolution_knowledge",
+                )
+            )
+            next_knowledge_version = max_knowledge_ver.scalar() + 1
+            db.add(AgentScriptVersion(
+                agent_id=agent_id,
+                version=next_knowledge_version,
+                folder="evolution_knowledge",
+                content=(
+                    "PREVIOUS EVOLUTION ATTEMPT REJECTED — invalid resource references.\n"
+                    "The script generated in the prior cycle referenced tools or skills that\n"
+                    "are NOT installed for this agent. Future evolutions MUST only reference\n"
+                    "items present in the 'Available Tools & Skills' lists.\n\n"
+                    "Specific problems:\n" + problem_text
+                ),
+                source=f"evolution-rejected-{direction[:50]}",
+            ))
+            await db.commit()
+            return {
+                "status": "rejected",
+                "detail": "evolved script references unavailable tools/skills",
+                "problems": problems,
+            }
+
         max_evolved_ver = await db.execute(
             select(func.coalesce(func.max(AgentScriptVersion.version), 0))
             .where(
@@ -324,6 +401,13 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
             await storage.write(f"{agent_id}/soul.md", evolved_script)
         except Exception as e:
             logger.warning(f"[Evolution] Failed to sync soul.md for {agent_id}: {e}")
+
+        # Invalidate cached parsed scripts so the new version takes effect immediately
+        try:
+            from app.services.evolver_runtime import invalidate_parse_cache
+            invalidate_parse_cache()
+        except Exception:
+            pass
 
         logger.info(f"[Evolution] Agent {agent_id} evolved to v{next_evolved_version}")
         return {

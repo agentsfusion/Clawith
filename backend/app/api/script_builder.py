@@ -38,45 +38,110 @@ router = APIRouter(prefix="/script-builder", tags=["script-builder"])
 
 
 async def _build_tools_skills_context(db: AsyncSession, tenant_id) -> str:
-    """Build a context string listing available tools and skills for the tenant."""
+    """Build a context string listing available tools and skills for the tenant.
+
+    Both queries are scoped to the caller's tenant (plus global rows where
+    ``tenant_id IS NULL``), so the LLM only sees capabilities the resulting
+    agent can actually be granted.
+    """
     tool_result = await db.execute(
-        select(Tool).where(Tool.enabled == True).order_by(Tool.category, Tool.name)
+        select(Tool)
+        .where(
+            Tool.enabled == True,
+            (Tool.tenant_id == tenant_id) | (Tool.tenant_id.is_(None)),
+        )
+        .order_by(Tool.category, Tool.name)
     )
     tools = tool_result.scalars().all()
 
     skill_result = await db.execute(
-        select(Skill).where(
-            (Skill.tenant_id == tenant_id) | (Skill.tenant_id.is_(None))
-        ).order_by(Skill.name)
+        select(Skill)
+        .where((Skill.tenant_id == tenant_id) | (Skill.tenant_id.is_(None)))
+        .order_by(Skill.category, Skill.folder_name)
     )
     skills = skill_result.scalars().all()
 
-    if not tools and not skills:
-        return ""
+    tool_names = {t.name for t in tools}
+    skill_names = {s.folder_name for s in skills}
 
-    lines = ["\n\n# Available Platform Tools & Skills",
-             "When generating Agent Scripts, reference these REAL tools and skills that are installed in this company's platform.",
-             "Use their exact names as action targets in the Agent Script.\n"]
+    if not tools and not skills:
+        return (
+            "\n\n# Available Platform Tools & Skills\n"
+            "**This company has NO tools or skills installed.** Do not emit any "
+            "`tool://` or `skill://` references — instead, tell the user which "
+            "capabilities they need to install in Settings → Tools / Skills "
+            "before this agent can be built.\n"
+        )
+
+    lines = [
+        "\n\n# Available Platform Tools & Skills (Authoritative Registry)",
+        "",
+        "The following are the **only** tools and skills installed in this "
+        "company's platform. They are two **separate registries**: a name in "
+        "the Tools list is NOT a skill, and a name in the Skills list is NOT "
+        "a tool.",
+        "",
+        "## ABSOLUTE RULES",
+        "1. For every action `target:` you emit, the value MUST be either "
+        "`tool://<name>` where `<name>` is in the Tools list below, OR "
+        "`skill://<folder>` where `<folder>` is in the Skills list below.",
+        "2. If a name appears in the Skills list, you MUST use `skill://<that name>`. "
+        "Using `tool://<that name>` is wrong because it does not exist as a tool.",
+        "3. If a name appears in the Tools list, you MUST use `tool://<that name>`. "
+        "Using `skill://<that name>` is wrong because it does not exist as a skill.",
+        "4. Never invent a name that is not in either list. If the user asks for "
+        "a capability that isn't installed, say so explicitly and stop — do not "
+        "fabricate a `tool://` or `skill://` reference.",
+        "5. Never use `flow://`, `apex://`, or `generatePromptResponse://`. Those "
+        "are not supported on this platform.",
+        "",
+    ]
 
     if tools:
-        lines.append("## Available Tools")
+        lines.append(f"## Available Tools ({len(tools)} total) — use as `tool://<name>`")
+        lines.append("")
         for t in tools:
             desc = f" — {t.description[:120]}" if t.description else ""
-            lines.append(f"- **{t.name}** ({t.category}){desc}")
+            lines.append(f"- `tool://{t.name}` (category: {t.category}){desc}")
+        lines.append("")
+    else:
+        lines.append("## Available Tools")
+        lines.append("_(none — do not emit any `tool://` references)_")
         lines.append("")
 
     if skills:
-        lines.append("## Available Skills")
+        lines.append(f"## Available Skills ({len(skills)} total) — use as `skill://<folder_name>`")
+        lines.append("")
         for s in skills:
             desc = f" — {s.description[:120]}" if s.description else ""
-            lines.append(f"- **{s.folder_name}** ({s.category}){desc}")
+            lines.append(f"- `skill://{s.folder_name}` (category: {s.category}){desc}")
+        lines.append("")
+    else:
+        lines.append("## Available Skills")
+        lines.append("_(none — do not emit any `skill://` references)_")
         lines.append("")
 
-    lines.append("## Integration Guidelines")
-    lines.append("- In `actions:` blocks, use `target: \"tool://<tool_name>\"` to reference platform tools")
-    lines.append("- In `actions:` blocks, use `target: \"skill://<skill_folder_name>\"` to reference platform skills")
-    lines.append("- Only reference tools/skills from the lists above — do not invent non-existent ones")
-    lines.append("- If a user's requirement needs a tool that isn't available, mention it and suggest alternatives\n")
+    # Targeted disambiguation when names look similar across the two lists or
+    # share a common prefix (the most common LLM mix-up — e.g. emitting
+    # `tool://gws-sheets-read` when only `skill://gws-sheets-read` exists).
+    overlap = tool_names & skill_names
+    if overlap:
+        lines.append("## ⚠ Names that exist in BOTH registries")
+        lines.append("These names exist as *both* a tool and a skill. Pick the "
+                     "registry that matches the capability you actually want:")
+        for n in sorted(overlap):
+            lines.append(f"- `{n}` — exists as both `tool://{n}` AND `skill://{n}`")
+        lines.append("")
+
+    skill_only_examples = sorted(skill_names - tool_names)[:5]
+    tool_only_examples = sorted(tool_names - skill_names)[:5]
+    if skill_only_examples or tool_only_examples:
+        lines.append("## Quick correctness check (worked examples)")
+        for n in skill_only_examples:
+            lines.append(f"- `{n}` is a SKILL → write `skill://{n}` ✅  (writing `tool://{n}` is WRONG ❌ — not in Tools list)")
+        for n in tool_only_examples:
+            lines.append(f"- `{n}` is a TOOL → write `tool://{n}` ✅  (writing `skill://{n}` is WRONG ❌ — not in Skills list)")
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -109,7 +174,12 @@ async def get_tools_skills_context(
 ):
     """Return available tools and skills for the current tenant."""
     tool_result = await db.execute(
-        select(Tool).where(Tool.enabled == True).order_by(Tool.category, Tool.name)
+        select(Tool)
+        .where(
+            Tool.enabled == True,
+            (Tool.tenant_id == current_user.tenant_id) | (Tool.tenant_id.is_(None)),
+        )
+        .order_by(Tool.category, Tool.name)
     )
     tools = tool_result.scalars().all()
 
@@ -411,10 +481,69 @@ async def apply_as_agent(
     agent_name = "".join(p[0].upper() + p[1:] for p in parts if p) if parts else "EvolverAgent"
     agent_desc = meta["description"]
 
+    target_tenant_id = current_user.tenant_id
+
+    # ── Pre-flight validation: every tool:// and skill:// referenced in the
+    # script must resolve to a real, enabled, tenant-visible row. We refuse to
+    # create the agent if anything is missing, so the user gets a clear error
+    # instead of a silently broken agent. ──────────────────────────────────
+    ref_tool_names, ref_skill_names = _extract_referenced_targets(body.script)
+
+    missing_tools: list[str] = []
+    missing_skills: list[str] = []
+
+    if ref_tool_names:
+        t_check = await db.execute(
+            select(Tool.name).where(
+                Tool.enabled == True,
+                Tool.name.in_(ref_tool_names),
+                (Tool.tenant_id == target_tenant_id) | (Tool.tenant_id.is_(None)),
+            )
+        )
+        existing_tools = {row[0] for row in t_check.all()}
+        missing_tools = sorted(ref_tool_names - existing_tools)
+
+    if ref_skill_names:
+        s_check = await db.execute(
+            select(Skill.folder_name).where(
+                Skill.folder_name.in_(ref_skill_names),
+                (Skill.tenant_id == target_tenant_id) | (Skill.tenant_id.is_(None)),
+            )
+        )
+        existing_skills = {row[0] for row in s_check.all()}
+        missing_skills = sorted(ref_skill_names - existing_skills)
+
+    if missing_tools or missing_skills:
+        parts_msg = []
+        if missing_tools:
+            parts_msg.append(
+                f"Tools not installed for this company: "
+                + ", ".join(f"tool://{n}" for n in missing_tools)
+            )
+        if missing_skills:
+            parts_msg.append(
+                f"Skills not installed for this company: "
+                + ", ".join(f"skill://{n}" for n in missing_skills)
+            )
+        detail = (
+            "Cannot create agent — the script references capabilities that "
+            "do not exist in this company's platform. "
+            + " | ".join(parts_msg)
+            + ". Install them in Settings → Tools / Skills, or edit the script "
+            "to remove the missing references, then try again."
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": detail,
+                "missing_tools": missing_tools,
+                "missing_skills": missing_skills,
+            },
+        )
+
     llm_model = await _get_llm_model(db, current_user)
 
     from app.models.tenant import Tenant
-    target_tenant_id = current_user.tenant_id
     max_llm_calls = 100
     default_heartbeat_interval = 240
     if target_tenant_id:
