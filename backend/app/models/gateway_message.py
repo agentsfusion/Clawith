@@ -19,8 +19,11 @@ class GatewayMessage(Base):
     __tablename__ = "gateway_messages"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # Target OpenClaw agent
-    agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    # Message kind: 'chat' (addressed to one openclaw agent) or 'skill_exec'
+    # (broadcast skill execution job, claimable by any openclaw worker).
+    kind: Mapped[str] = mapped_column(String(20), default="chat", nullable=False)
+    # Target OpenClaw agent. NULL for broadcast skill_exec jobs.
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"))
     # Sender (one of these may be None)
     sender_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"))
     sender_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
