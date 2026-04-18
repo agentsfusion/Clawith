@@ -188,6 +188,32 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_weather",
+            "description": (
+                "Get current weather and a 3-day forecast for any city. "
+                "Uses Open-Meteo (free, no API key). Returns JSON with "
+                "current temperature, wind, weather condition, and forecast."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "City name, e.g. 'Tokyo', 'San Francisco', 'London'",
+                    },
+                    "units": {
+                        "type": "string",
+                        "enum": ["celsius", "fahrenheit"],
+                        "description": "Temperature units (default: celsius)",
+                    },
+                },
+                "required": ["city"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_files",
             "description": "List files and folders in a directory within my workspace. Can also list enterprise_info/ for shared company information.",
             "parameters": {
@@ -2347,7 +2373,9 @@ async def _execute_tool_direct(
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
     ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
     try:
-        if tool_name == "delete_file":
+        if tool_name == "get_weather":
+            return await _get_weather(arguments)
+        elif tool_name == "delete_file":
             return await _delete_file(ws, arguments.get("path", ""))
         elif tool_name == "write_file":
             path = arguments.get("path")
@@ -2383,6 +2411,35 @@ async def _execute_tool_direct(
     except Exception as e:
         logger.exception(f"[DirectTool] Error executing {tool_name}: {e}")
         return f"Error executing {tool_name}: {e}"
+
+
+async def is_tool_enabled_for_agent(agent_id: uuid.UUID, tool_name: str) -> bool:
+    """Check whether `tool_name` is exposed to `agent_id` per current allowlist.
+
+    Mirrors the allowlist semantics of `get_agent_tools_for_llm` so that
+    direct (non-LLM) execution paths cannot bypass per-agent tool exposure.
+
+    Returns True for always-on core tools, channel tools the agent has a
+    matching channel for, and DB-registered tools whose `AgentTool.enabled`
+    (or default) flag is True for this agent.
+    """
+    if not tool_name:
+        return False
+    try:
+        tools = await get_agent_tools_for_llm(agent_id)
+        for t in tools:
+            try:
+                if t.get("function", {}).get("name") == tool_name:
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception as e:
+        logger.warning(
+            f"[Tools] is_tool_enabled_for_agent({agent_id}, {tool_name}) "
+            f"check failed, denying by default: {e}"
+        )
+        return False
 
 
 async def execute_tool(
@@ -2444,7 +2501,9 @@ async def execute_tool(
             )
 
     try:
-        if tool_name == "list_files":
+        if tool_name == "get_weather":
+            result = await _get_weather(arguments)
+        elif tool_name == "list_files":
             result = await _list_files(ws, arguments.get("path", ""), tenant_id=_agent_tenant_id)
         elif tool_name == "read_file":
             path = arguments.get("path")
@@ -2498,7 +2557,7 @@ async def execute_tool(
             pattern = arguments.get("pattern")
             if not pattern:
                 return "❌ Missing required argument 'pattern' for find_files"
-            result = _find_files(
+            result = await _find_files(
                 ws,
                 pattern,
                 path=arguments.get("path", "."),
@@ -3630,6 +3689,108 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
         return f"❌ Auto-recovery failed: {str(e)[:200]}"
 
 
+_WEATHER_CODE_MAP = {
+    0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Depositing rime fog",
+    51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+    56: "Light freezing drizzle", 57: "Dense freezing drizzle",
+    61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+    66: "Light freezing rain", 67: "Heavy freezing rain",
+    71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow",
+    77: "Snow grains",
+    80: "Slight rain showers", 81: "Moderate rain showers", 82: "Violent rain showers",
+    85: "Slight snow showers", 86: "Heavy snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm with slight hail", 99: "Thunderstorm with heavy hail",
+}
+
+
+async def _get_weather(arguments: dict) -> str:
+    """Fetch current weather + 3-day forecast via Open-Meteo (free, no API key).
+
+    Returns a JSON string so callers (LLM tool-call loop or Agent Script
+    runtime) can parse and use it directly.
+    """
+    import json as _json
+    import httpx
+
+    city = (arguments.get("city") or "").strip()
+    if not city:
+        return _json.dumps({"error": "missing required argument 'city'"})
+    units = (arguments.get("units") or "celsius").lower()
+    temp_unit = "fahrenheit" if units == "fahrenheit" else "celsius"
+    wind_unit = "mph" if units == "fahrenheit" else "kmh"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # 1. Geocode city → lat/lon
+            geo = await client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": city, "count": 1, "language": "en", "format": "json"},
+            )
+            geo.raise_for_status()
+            geo_data = geo.json()
+            results = geo_data.get("results") or []
+            if not results:
+                return _json.dumps({
+                    "error": f"city not found: {city!r}",
+                    "hint": "try a more common spelling or a larger nearby city",
+                })
+            place = results[0]
+            lat, lon = place["latitude"], place["longitude"]
+            resolved_name = ", ".join(
+                p for p in [place.get("name"), place.get("admin1"), place.get("country")] if p
+            )
+
+            # 2. Fetch current + 3-day daily forecast
+            wx = await client.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "current": "temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m",
+                    "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum",
+                    "timezone": "auto",
+                    "temperature_unit": temp_unit,
+                    "wind_speed_unit": wind_unit,
+                    "forecast_days": 3,
+                },
+            )
+            wx.raise_for_status()
+            wx_data = wx.json()
+            cur = wx_data.get("current", {})
+            daily = wx_data.get("daily", {})
+            cur_code = int(cur.get("weather_code", -1))
+            forecast = []
+            for i in range(min(3, len(daily.get("time", [])))):
+                code = int(daily["weather_code"][i])
+                forecast.append({
+                    "date": daily["time"][i],
+                    "high": daily["temperature_2m_max"][i],
+                    "low": daily["temperature_2m_min"][i],
+                    "precipitation": daily["precipitation_sum"][i],
+                    "condition": _WEATHER_CODE_MAP.get(code, f"code {code}"),
+                })
+
+            return _json.dumps({
+                "location": resolved_name,
+                "units": {"temperature": temp_unit, "wind": wind_unit},
+                "temp": cur.get("temperature_2m"),
+                "humidity": cur.get("relative_humidity_2m"),
+                "wind_speed": cur.get("wind_speed_10m"),
+                "condition": _WEATHER_CODE_MAP.get(cur_code, f"code {cur_code}"),
+                "forecast": forecast,
+            }, ensure_ascii=False)
+    except httpx.HTTPError as e:
+        logger.warning(f"[get_weather] HTTP error for city={city!r}: {e}")
+        return _json.dumps({
+            "error": "weather service unavailable",
+            "hint": "the upstream weather API could not be reached; please try again later",
+        })
+    except Exception as e:
+        logger.exception(f"[get_weather] unexpected error for city={city!r}: {e}")
+        return _json.dumps({"error": "unexpected error while fetching weather"})
+
+
 async def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     storage = _storage()
 
@@ -3770,7 +3931,7 @@ async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_
     ext = Path(rel_path).suffix.lower()
     try:
         if ext == ".pdf":
-            import pdfplumber
+            import pdfplumber  # type: ignore[import-untyped]
             data = await storage.read_bytes(key)
             text_parts = []
             with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -5244,7 +5405,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             # ── Feature flag: async A2A (tenant-level) ──
             _a2a_async = False
-            if source_agent.tenant_id:
+            if source_agent and source_agent.tenant_id:
                 try:
                     from app.models.tenant import Tenant
                     _t_r = await db.execute(select(Tenant).where(Tenant.id == source_agent.tenant_id))

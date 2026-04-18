@@ -84,7 +84,7 @@ topic order_management:
           description: "Current order status"
         tracking: string
           description: "Tracking number if shipped"
-      target: "flow://GetOrderStatus"
+      target: "tool://get_order_status"
   reasoning:
     instructions:->
       if not @variables.order_id:
@@ -154,9 +154,17 @@ if @variables.cart_total > @variables.budget:
 - Null check: is None, is not None
 
 ## Action Target Types
-- `target: "flow://FlowName"` — Salesforce Flow (most common)
-- `target: "apex://ClassName"` — Apex class
-- `target: "generatePromptResponse://TemplateName"` — Prompt template
+
+This platform supports exactly two action target schemes. **You MUST use one of these for every executable action**:
+
+- `target: "tool://<tool_name>"` — A platform Tool (built-in capability registered in the company's Tools registry).
+- `target: "skill://<skill_folder_name>"` — A platform Skill (a SKILL.md-driven capability registered in the company's Skills registry).
+
+CRITICAL RULES:
+1. **`tool://` and `skill://` are different namespaces.** A name that exists as a Skill MUST NOT be referenced with `tool://`, and vice versa. They are separate registries.
+2. **Never invent names.** Only use exact `tool_name` / `skill_folder_name` values that appear in the "Available Platform Tools & Skills" section the user provides at runtime (see appendix at the end of this prompt).
+3. If the user requests a capability that has no matching tool or skill in the available list, say so explicitly and ask the user to install the missing one — do NOT fabricate a `tool://` or `skill://` reference.
+4. Salesforce-style targets (`flow://`, `apex://`, `generatePromptResponse://`) are NOT supported on this platform. Do not emit them.
 
 ## Naming Rules
 - snake_case for all names
@@ -181,7 +189,7 @@ When generating Agent Scripts:
 1. Ask about the agent's purpose and main use cases first
 2. Identify the topics (main tasks) the agent needs to handle
 3. Identify any required workflows (e.g., identity verification before order management)
-4. Identify what actions/API calls are needed (suggest flow:// or apex:// targets)
+4. Identify what actions/API calls are needed and map each one to either a `tool://<name>` or `skill://<folder>` from the runtime "Available Platform Tools & Skills" appendix. Never invent names that aren't in that list.
 5. Identify what variables are needed for state
 6. Generate a complete script with all blocks properly structured
 
