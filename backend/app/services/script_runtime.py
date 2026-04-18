@@ -1290,11 +1290,10 @@ async def _exec_run_action(stmt: RunActionStmt, ctx: _ExecCtx) -> None:
 
     For `tool://` targets → invoke directly via execute_tool, parse result,
         apply output_mappings to state, mark `executed=True`.
-    For `skill://` targets → enqueue a broadcast skill_exec job on the
-        gateway message bus and synchronously wait for an openclaw worker
-        to claim, run, and report the result. Output is parsed and bound
-        to `@outputs` exactly like a tool call. Marks `executed=True` on
-        success or `executed=False` with an error on timeout/failure.
+    For `skill://` targets → load the SKILL.md content from storage and
+        inject it as LLM instructions (via ctx.prompts). The LLM then
+        follows the skill instructions using its available tools.
+        Marks `executed=False`; the LLM handles execution.
     For other targets (flow://, apex://, plain) or missing exec context →
         collect as pending action for the LLM to invoke via tool calling.
     """
@@ -1370,8 +1369,8 @@ async def _exec_run_action(stmt: RunActionStmt, ctx: _ExecCtx) -> None:
             skill_key = f"{ctx.agent_id}/skills/{skill_name}/SKILL.md"
             skill_found = await storage.exists(skill_key)
             if not skill_found:
-                skill_key_lower = f"{ctx.agent_id}/skills/{skill_name}/skill.md"
-                skill_found = await storage.exists(skill_key_lower)
+                skill_key = f"{ctx.agent_id}/skills/{skill_name}/skill.md"
+                skill_found = await storage.exists(skill_key)
             if not skill_found:
                 info["error"] = f"skill not found: skills/{skill_name}/SKILL.md"
                 info["missing_skill"] = True
@@ -1379,45 +1378,28 @@ async def _exec_run_action(stmt: RunActionStmt, ctx: _ExecCtx) -> None:
                 info["executed"] = False
                 logger.warning(
                     f"[ScriptRuntime] skill://{skill_name} not found "
-                    f"(checked storage keys: {skill_key}, "
+                    f"(checked storage keys: "
+                    f"{ctx.agent_id}/skills/{skill_name}/SKILL.md, "
                     f"{ctx.agent_id}/skills/{skill_name}/skill.md)"
                 )
             else:
-                # Enqueue broadcast skill_exec job on the gateway bus and wait
-                # synchronously for an openclaw worker to report back.
-                raw = await _exec_skill_via_gateway(
-                    skill_name=skill_name,
-                    params=info["params"],
-                    agent_id=ctx.agent_id,
-                    session_id=ctx.session_id or "",
+                skill_content = await storage.read(skill_key)
+                info["skill_name"] = skill_name
+                info["skill_content"] = skill_content
+                info["executed"] = False
+                ctx.prompts.append(
+                    f"Action `{stmt.action_name}` requires skill "
+                    f"`{skill_name}`. Follow the instructions below to "
+                    f"complete this action using your available tools:\n\n"
+                    f"<skill name=\"{skill_name}\">\n"
+                    f"{skill_content}\n"
+                    f"</skill>"
                 )
-                if isinstance(raw, dict) and raw.get("__error__"):
-                    info["error"] = raw["__error__"]
-                    info["executed"] = False
-                    if raw.get("__timeout__"):
-                        info["skill_timeout"] = True
-                        info["skill_name"] = skill_name
-                    else:
-                        info["skill_failed"] = True
-                        info["skill_name"] = skill_name
-                else:
-                    # Worker may have returned a structured dict or a string.
-                    # Pass dicts through directly so per-field output_mappings
-                    # work; only stringified results need the JSON-or-text
-                    # parser fallback.
-                    if isinstance(raw, dict):
-                        parsed_out = raw
-                        raw_str = json.dumps(raw, ensure_ascii=False, default=str)
-                    else:
-                        raw_str = raw if isinstance(raw, str) else str(raw)
-                        parsed_out = _parse_tool_result(raw_str)
-                    info["outputs"] = _apply_output_mappings(info, parsed_out, ctx)
-                    info["executed"] = True
-                    info["raw_output"] = raw_str
-                    logger.info(
-                        f"[ScriptRuntime] Direct-executed skill://{skill_name} "
-                        f"for agent={ctx.agent_id} session={ctx.session_id or '-'}"
-                    )
+                logger.info(
+                    f"[ScriptRuntime] Loaded skill://{skill_name} "
+                    f"for LLM execution, agent={ctx.agent_id} "
+                    f"session={ctx.session_id or '-'}"
+                )
         except Exception as e:
             logger.exception(f"[ScriptRuntime] skill://{skill_name} failed: {e}")
             info["error"] = str(e)
@@ -1819,7 +1801,7 @@ def build_execution_prompt(
                     )
                 ) if out_map else ""
                 err = act.get("error")
-                err_desc = f"  [previous attempt error: {err}]" if err else ""
+                err_desc = f"  [error: {err}]" if err else ""
                 if target:
                     parts.append(
                         f"- Call `{act['name']}` (target: `{target}`)"
@@ -1835,13 +1817,10 @@ def build_execution_prompt(
                     )
             if has_skill:
                 parts.append(
-                    "\n**Note**: `skill://` targets are executed by the "
-                    "platform — do not try to read or follow SKILL.md "
-                    "yourself. If you see a skill action listed here, "
-                    "the system attempted to run it but it failed or "
-                    "timed out (see the error in the action above). "
-                    "Report the failure honestly; do not substitute "
-                    "another tool to fake the result."
+                    "\n**Skill Execution**: `skill://` targets above have their "
+                    "full instructions included in the task section of this "
+                    "prompt. Read and follow those instructions using your "
+                    "available tools to complete the action."
                 )
             if has_tool:
                 parts.append(
@@ -1896,9 +1875,9 @@ def build_execution_prompt(
     parts.append("3. Stay in character as defined by the script.")
     parts.append(
         "4. **Action Execution**: When an action maps to a tool (`tool://`), "
-        "call it via standard tool-calling. `skill://` targets are executed "
-        "by the platform automatically — never read or follow SKILL.md "
-        "yourself, and never substitute another tool when a skill fails."
+        "call it via standard tool-calling. For `skill://` targets, the full "
+        "skill instructions are provided in the task section — follow them "
+        "using your available tools to complete the action."
     )
     parts.append(
         "5. **Missing Capability**: If you cannot fulfill the user's request "
