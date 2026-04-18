@@ -481,10 +481,69 @@ async def apply_as_agent(
     agent_name = "".join(p[0].upper() + p[1:] for p in parts if p) if parts else "EvolverAgent"
     agent_desc = meta["description"]
 
+    target_tenant_id = current_user.tenant_id
+
+    # ── Pre-flight validation: every tool:// and skill:// referenced in the
+    # script must resolve to a real, enabled, tenant-visible row. We refuse to
+    # create the agent if anything is missing, so the user gets a clear error
+    # instead of a silently broken agent. ──────────────────────────────────
+    ref_tool_names, ref_skill_names = _extract_referenced_targets(body.script)
+
+    missing_tools: list[str] = []
+    missing_skills: list[str] = []
+
+    if ref_tool_names:
+        t_check = await db.execute(
+            select(Tool.name).where(
+                Tool.enabled == True,
+                Tool.name.in_(ref_tool_names),
+                (Tool.tenant_id == target_tenant_id) | (Tool.tenant_id.is_(None)),
+            )
+        )
+        existing_tools = {row[0] for row in t_check.all()}
+        missing_tools = sorted(ref_tool_names - existing_tools)
+
+    if ref_skill_names:
+        s_check = await db.execute(
+            select(Skill.folder_name).where(
+                Skill.folder_name.in_(ref_skill_names),
+                (Skill.tenant_id == target_tenant_id) | (Skill.tenant_id.is_(None)),
+            )
+        )
+        existing_skills = {row[0] for row in s_check.all()}
+        missing_skills = sorted(ref_skill_names - existing_skills)
+
+    if missing_tools or missing_skills:
+        parts_msg = []
+        if missing_tools:
+            parts_msg.append(
+                f"Tools not installed for this company: "
+                + ", ".join(f"tool://{n}" for n in missing_tools)
+            )
+        if missing_skills:
+            parts_msg.append(
+                f"Skills not installed for this company: "
+                + ", ".join(f"skill://{n}" for n in missing_skills)
+            )
+        detail = (
+            "Cannot create agent — the script references capabilities that "
+            "do not exist in this company's platform. "
+            + " | ".join(parts_msg)
+            + ". Install them in Settings → Tools / Skills, or edit the script "
+            "to remove the missing references, then try again."
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": detail,
+                "missing_tools": missing_tools,
+                "missing_skills": missing_skills,
+            },
+        )
+
     llm_model = await _get_llm_model(db, current_user)
 
     from app.models.tenant import Tenant
-    target_tenant_id = current_user.tenant_id
     max_llm_calls = 100
     default_heartbeat_interval = 240
     if target_tenant_id:

@@ -166,7 +166,7 @@ function Sidebar({
 }
 
 function CodePanel({
-  script, onAnalyze, analyzeResult, isAnalyzing, platformContext, onApplyAsAgent, applyResult, isApplying
+  script, onAnalyze, analyzeResult, isAnalyzing, platformContext, onApplyAsAgent, applyResult, applyError, isApplying
 }: {
   script: string | null;
   onAnalyze: () => void;
@@ -175,6 +175,7 @@ function CodePanel({
   platformContext: ScriptBuilderContext | null;
   onApplyAsAgent: () => void;
   applyResult: { agent_id: string; agent_name: string; installed_tools: string[]; installed_skills: string[] } | null;
+  applyError: { message: string; missing_tools: string[]; missing_skills: string[] } | null;
   isApplying: boolean;
 }) {
   const [copied, setCopied] = useState(false);
@@ -347,7 +348,7 @@ function CodePanel({
           <div className="sb-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '420px' }}>
             <div className="sb-modal-header">
               <h3 style={{ margin: 0, fontSize: '16px' }}>
-                {isApplying ? 'Creating Agent...' : applyResult ? 'Agent Created' : 'Error'}
+                {isApplying ? 'Creating Agent...' : applyResult ? 'Agent Created' : applyError ? 'Cannot Create Agent' : 'Error'}
               </h3>
               {!isApplying && (
                 <button className="sb-modal-close" onClick={() => setShowApplyResult(false)}>✕</button>
@@ -400,6 +401,40 @@ function CodePanel({
                     Open Agent
                   </button>
                 </div>
+              ) : applyError ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ padding: '12px 14px', borderRadius: '10px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', color: 'var(--text-secondary)', fontSize: '13px', lineHeight: 1.5 }}>
+                    {applyError.message}
+                  </div>
+                  {applyError.missing_tools.length > 0 && (
+                    <div style={{ fontSize: '12px' }}>
+                      <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                        Missing tools ({applyError.missing_tools.length})
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {applyError.missing_tools.map((n) => (
+                          <code key={n} style={{ padding: '3px 7px', borderRadius: '4px', background: 'rgba(239,68,68,0.12)', color: '#ef4444', fontSize: '11px' }}>
+                            tool://{n}
+                          </code>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {applyError.missing_skills.length > 0 && (
+                    <div style={{ fontSize: '12px' }}>
+                      <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                        Missing skills ({applyError.missing_skills.length})
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {applyError.missing_skills.map((n) => (
+                          <code key={n} style={{ padding: '3px 7px', borderRadius: '4px', background: 'rgba(239,68,68,0.12)', color: '#ef4444', fontSize: '11px' }}>
+                            skill://{n}
+                          </code>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div style={{ padding: '24px', textAlign: 'center', color: 'var(--danger, #ef4444)' }}>
                   Failed to create agent. Please try again.
@@ -428,6 +463,7 @@ export default function ScriptBuilder() {
   const [error, setError] = useState<string | null>(null);
   const [platformContext, setPlatformContext] = useState<ScriptBuilderContext | null>(null);
   const [applyResult, setApplyResult] = useState<{ agent_id: string; agent_name: string; installed_tools: string[]; installed_skills: string[] } | null>(null);
+  const [applyError, setApplyError] = useState<{ message: string; missing_tools: string[]; missing_skills: string[] } | null>(null);
   const [isApplying, setIsApplying] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -610,11 +646,26 @@ export default function ScriptBuilder() {
     if (!currentScript) return;
     setIsApplying(true);
     setApplyResult(null);
+    setApplyError(null);
     try {
       const data = await scriptBuilderApi.applyAsAgent(currentScript);
       setApplyResult(data);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Apply as agent failed', e);
+      const detail = e?.detail;
+      if (detail && typeof detail === 'object' && (Array.isArray(detail.missing_tools) || Array.isArray(detail.missing_skills))) {
+        setApplyError({
+          message: detail.message || e?.message || 'Cannot create agent.',
+          missing_tools: Array.isArray(detail.missing_tools) ? detail.missing_tools : [],
+          missing_skills: Array.isArray(detail.missing_skills) ? detail.missing_skills : [],
+        });
+      } else {
+        setApplyError({
+          message: e?.message || 'Failed to create agent. Please try again.',
+          missing_tools: [],
+          missing_skills: [],
+        });
+      }
     } finally {
       setIsApplying(false);
     }
@@ -723,6 +774,7 @@ export default function ScriptBuilder() {
           platformContext={platformContext}
           onApplyAsAgent={handleApplyAsAgent}
           applyResult={applyResult}
+          applyError={applyError}
           isApplying={isApplying}
         />
       </div>
