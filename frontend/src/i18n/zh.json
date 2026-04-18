@@ -533,7 +533,10 @@
         "websocketDisconnected": "已配置为 WebSocket，但当前未连接",
         "websocketDisconnectedHint": "重新保存一次企业微信 WebSocket 配置即可重新连接。",
         "saveChannel": "保存配置",
-        "syncHint": "在配置飞书机器人之前，请先在企业设置 → 组织架构中同步您的组织结构。这确保机器人能够识别消息发送者。"
+        "syncHint": "在配置飞书机器人之前，请先在企业设置 → 组织架构中同步您的组织结构。这确保机器人能够识别消息发送者。",
+        "brandSelector": "选择平台",
+        "brandFeishu": "飞书（国内）",
+        "brandLark": "Lark（国际版）"
       },
       "danger": {
         "title": "危险操作",

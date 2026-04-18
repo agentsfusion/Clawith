@@ -521,7 +521,10 @@
         "websocketDisconnected": "Configured for WebSocket, but currently disconnected",
         "websocketDisconnectedHint": "Reconnect by saving the WeCom WebSocket configuration again.",
         "saveChannel": "Save Config",
-        "syncHint": "Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders."
+        "syncHint": "Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders.",
+        "brandSelector": "Select Platform Brand",
+        "brandFeishu": "Feishu (China)",
+        "brandLark": "Lark (International)"
       },
       "danger": {
         "title": "Danger Zone",

@@ -82,6 +82,41 @@ For local development with the Desktop OAuth flow, set:
 LARK_OAUTH_REDIRECT_URI=http://localhost:8008/api/lark/auth/callback
 ```
 
+## Bot Channel Setup (IM Messaging)
+
+Agents can also receive and respond to messages via Feishu/Lark bot channels. The channel configuration now supports brand selection.
+
+### Step 1: Configure Channel Brand
+
+1. Go to the agent's settings page
+2. Under **Channel Configuration**, select the **Feishu** channel type
+3. Choose the **Brand**:
+   - **Feishu (飞书)** — for China region (`open.feishu.cn`)
+   - **Lark (International)** — for international region (`open.larksuite.com`)
+4. Enter the **App ID** and **App Secret** for your bot
+5. Choose **Connection Mode**: Webhook or WebSocket
+
+### Step 2: Configure Event Subscription
+
+For **Webhook** mode:
+1. In the developer console, add an event subscription URL: `https://your-domain.com/api/channel/feishu/{agent_id}/webhook`
+2. Configure the verification token and encrypt key
+
+For **WebSocket** mode:
+1. Enable "Use WebSocket" in the channel settings
+2. The bot will connect automatically — no public URL needed
+
+### Bot Channel Brand Endpoints
+
+| Brand | Developer Console | Event Domain |
+|-------|-------------------|--------------|
+| Feishu | [open.feishu.cn/app](https://open.feishu.cn/app) | `open.feishu.cn` |
+| Lark | [open.larksuite.com/app](https://open.larksuite.com/app) | `open.larksuite.com` |
+
+## SSO Login Brand
+
+The Feishu SSO provider in **Enterprise Settings → Identity Providers** also supports brand selection. Choose the brand matching your organization so the OAuth login flow routes to the correct domain.
+
 ## Troubleshooting
 
 ### "Lark not configured for tenant"
