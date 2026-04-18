@@ -1364,18 +1364,23 @@ async def _exec_run_action(stmt: RunActionStmt, ctx: _ExecCtx) -> None:
     elif ctx.agent_id is not None and target.startswith("skill://"):
         skill_name = target[len("skill://"):].strip()
         try:
-            from pathlib import Path
+            from app.services.storage.factory import get_storage
 
-            from app.config import get_settings
-            ws_root = Path(get_settings().AGENT_DATA_DIR) / str(ctx.agent_id)
-            skill_path = ws_root / "skills" / skill_name / "SKILL.md"
-            if not skill_path.exists():
+            storage = get_storage()
+            skill_key = f"{ctx.agent_id}/skills/{skill_name}/SKILL.md"
+            skill_found = await storage.exists(skill_key)
+            if not skill_found:
+                skill_key_lower = f"{ctx.agent_id}/skills/{skill_name}/skill.md"
+                skill_found = await storage.exists(skill_key_lower)
+            if not skill_found:
                 info["error"] = f"skill not found: skills/{skill_name}/SKILL.md"
                 info["missing_skill"] = True
                 info["skill_name"] = skill_name
                 info["executed"] = False
                 logger.warning(
-                    f"[ScriptRuntime] skill://{skill_name} not found at {skill_path}"
+                    f"[ScriptRuntime] skill://{skill_name} not found "
+                    f"(checked storage keys: {skill_key}, "
+                    f"{ctx.agent_id}/skills/{skill_name}/skill.md)"
                 )
             else:
                 # Enqueue broadcast skill_exec job on the gateway bus and wait
