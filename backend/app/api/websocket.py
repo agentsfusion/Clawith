@@ -326,6 +326,18 @@ async def websocket_chat(
             conversation.append(entry)
 
     try:
+        # For evolver agents, prefer the Agent Script's `system.messages.welcome`
+        # over the agent.welcome_message DB column — the script is the source of
+        # truth for evolver behaviour.
+        if agent_type == "evolver":
+            try:
+                from app.services.script_runtime import get_evolver_welcome
+                _script_welcome = await get_evolver_welcome(agent_id)
+                if _script_welcome:
+                    welcome_message = _script_welcome
+            except Exception as _e:
+                logger.warning(f"[WS] Failed to load evolver welcome for {agent_id}: {_e}")
+
         # Send welcome message on new session (no history)
         if welcome_message and not history_messages:
             await websocket.send_json({"type": "done", "role": "assistant", "content": welcome_message})
@@ -454,6 +466,24 @@ async def websocket_chat(
                     
                     async def tool_call_to_ws(data: dict):
                         """Send tool call info to client and persist completed ones."""
+                        # Structured "missing tool" event from script runtime —
+                        # the script asked for `tool://X` that isn't enabled (or
+                        # doesn't exist) for this agent. Surface as its own event
+                        # type so the chat UI can render a chip linking to the
+                        # agent's Tools settings. Don't persist as a tool_call.
+                        if data.get("status") == "missing_tool":
+                            payload = {
+                                "type": "missing_tool",
+                                "tool_name": data.get("tool_name") or data.get("name") or "",
+                                "action": data.get("action") or "",
+                                "agent_id": data.get("agent_id") or (str(agent_id) if agent_id else ""),
+                            }
+                            logger.info(
+                                f"[WS][MissingTool] agent={payload['agent_id']} "
+                                f"tool={payload['tool_name']!r} action={payload['action']!r}"
+                            )
+                            await websocket.send_json(payload)
+                            return
                         if data.get("status") == "done":
                             try:
                                 from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
