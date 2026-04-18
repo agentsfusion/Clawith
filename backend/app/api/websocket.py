@@ -492,8 +492,19 @@ class WebSocketChatHandler:
                 conversation.append(entry)
         return conversation
 
-    async def message_loop(self):
-        """Core message processing loop."""
+    try:
+        # For evolver agents, prefer the Agent Script's `system.messages.welcome`
+        # over the agent.welcome_message DB column — the script is the source of
+        # truth for evolver behaviour.
+        if agent_type == "evolver":
+            try:
+                from app.services.script_runtime import get_evolver_welcome
+                _script_welcome = await get_evolver_welcome(agent_id)
+                if _script_welcome:
+                    welcome_message = _script_welcome
+            except Exception as _e:
+                logger.warning(f"[WS] Failed to load evolver welcome for {agent_id}: {_e}")
+
         # Send welcome message on new session (no history)
         if self.welcome_message and not self.history_messages:
             await self.websocket.send_json({"type": "done", "role": "assistant", "content": self.welcome_message})
@@ -851,13 +862,116 @@ class WebSocketChatHandler:
                 # Resolve onboarding prompt
                 skip_tools_for_greeting = False
                 try:
-                    async with async_session() as _ob_db:
-                        _onb = await resolve_onboarding_prompt(
-                            _ob_db,
-                            self.agent,
-                            self.user.id,
-                            user_name=self.user_display_name,
-                            user_locale=self.lang,
+                    logger.info(f"[WS] Calling LLM {llm_model.model} (streaming)...")
+                    
+                    # Accumulate partial content for abort handling
+                    partial_chunks: list[str] = []
+                    
+                    async def stream_to_ws(text: str):
+                        """Send each chunk to client in real-time."""
+                        partial_chunks.append(text)
+                        await websocket.send_json({"type": "chunk", "content": text})
+                    
+                    async def tool_call_to_ws(data: dict):
+                        """Send tool call info to client and persist completed ones."""
+                        # Structured "missing tool" event from script runtime —
+                        # the script asked for `tool://X` that isn't enabled (or
+                        # doesn't exist) for this agent. Surface as its own event
+                        # type so the chat UI can render a chip linking to the
+                        # agent's Tools settings. Don't persist as a tool_call.
+                        if data.get("status") == "missing_tool":
+                            payload = {
+                                "type": "missing_tool",
+                                "tool_name": data.get("tool_name") or data.get("name") or "",
+                                "action": data.get("action") or "",
+                                "agent_id": data.get("agent_id") or (str(agent_id) if agent_id else ""),
+                            }
+                            logger.info(
+                                f"[WS][MissingTool] agent={payload['agent_id']} "
+                                f"tool={payload['tool_name']!r} action={payload['action']!r}"
+                            )
+                            await websocket.send_json(payload)
+                            return
+                        if data.get("status") == "done":
+                            try:
+                                from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
+
+                                tool_name = data.get("name", "")
+                                env = detect_agentbay_env(tool_name)
+                                if env == "desktop":
+                                    b64_url = await get_desktop_screenshot(agent_id, session_id=conv_id)
+                                    if b64_url:
+                                        data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                        logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                elif env == "browser":
+                                    b64_url = await get_browser_snapshot(agent_id, session_id=conv_id)
+                                    if b64_url:
+                                        data["live_preview"] = {"env": env, "screenshot_url": b64_url}
+                                        logger.info(f"[WS][LivePreview] Embedded {env} base64 in tool_call")
+                                elif env == "code":
+                                    tool_result = data.get("result", "") or ""
+                                    data["live_preview"] = {"env": "code", "output": tool_result[:5000]}
+                            except Exception as _lp_err:
+                                logger.warning(f"[WS][LivePreview] Embed failed: {_lp_err}")
+
+                        await websocket.send_json({"type": "tool_call", **data})
+                        # Save completed tool calls to DB so they persist in chat history
+                        if data.get("status") == "done":
+                            try:
+                                import json as _json_tc
+                                async with async_session() as _tc_db:
+                                    tc_msg = ChatMessage(
+                                        agent_id=agent_id,
+                                        user_id=user_id,
+                                        role="tool_call",
+                                        content=_json_tc.dumps({
+                                            "name": data.get("name", ""),
+                                            "args": data.get("args"),
+                                            "status": "done",
+                                            "result": (data.get("result") or "")[:500],
+                                            "reasoning_content": data.get("reasoning_content"),
+                                        }),
+                                        conversation_id=conv_id,
+                                    )
+                                    _tc_db.add(tc_msg)
+                                    await _tc_db.commit()
+                            except Exception as _tc_err:
+                                logger.warning(f"[WS] Failed to save tool_call: {_tc_err}")
+                    
+                    # Track thinking content for storage
+                    thinking_content = []
+                    
+                    async def thinking_to_ws(text: str):
+                        """Send thinking chunks to client for collapsible display."""
+                        thinking_content.append(text)
+                        await websocket.send_json({"type": "thinking", "content": text})
+
+                    import asyncio as _aio
+
+                    # Run call_llm_with_failover as a cancellable task
+                    async def _call_with_failover():
+                        async def _on_failover(reason: str):
+                            await websocket.send_json({"type": "info", "content": f"Primary model error, {reason}"})
+
+                        # To prevent tool call message pairs(assistant + tool) from being broken down.
+                        _truncated = conversation[-ctx_size:]
+                        while _truncated and _truncated[0].get("role") == "tool":
+                            _truncated.pop(0)
+
+                        return await call_llm_with_failover(
+                            primary_model=llm_model,
+                            fallback_model=fallback_llm_model,
+                            messages=_truncated,
+                            agent_name=agent_name,
+                            role_description=role_description,
+                            agent_id=agent_id,
+                            user_id=user_id,
+                            session_id=conv_id,
+                            on_chunk=stream_to_ws,
+                            on_tool_call=tool_call_to_ws,
+                            on_thinking=thinking_to_ws,
+                            supports_vision=getattr(llm_model, 'supports_vision', False),
+                            on_failover=_on_failover,
                         )
                     if _onb:
                         _truncated = [{"role": "system", "content": _onb.prompt}] + _truncated

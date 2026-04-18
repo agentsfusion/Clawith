@@ -360,6 +360,50 @@ async def create_script_version(
     next_version = max_ver.scalar() + 1
 
     content = body.get("content", "")
+
+    if folder in ("initial", "evolved") and content.strip():
+        from app.services.script_runtime import parse_script
+        parsed = parse_script(content)
+        problems: list[str] = []
+
+        for topic_name, topic in parsed.topics.items():
+            for action_name, action in topic.actions.items():
+                target = action.target or ""
+                if target.startswith("tool://"):
+                    tool_name = target[len("tool://"):].strip()
+                    from app.models.tool import Tool as ToolModel
+                    t = await db.execute(select(ToolModel).where(ToolModel.name == tool_name))
+                    if not t.scalar_one_or_none():
+                        problems.append(
+                            f"Action '{action_name}' references tool://{tool_name} "
+                            f"which does not exist in tools table"
+                        )
+                elif target.startswith("skill://"):
+                    skill_name = target[len("skill://"):].strip()
+                    try:
+                        from app.services.storage.factory import get_storage
+                        storage = get_storage()
+                        skill_key = f"{agent_id}/skills/{skill_name}/SKILL.md"
+                        skill_found = await storage.exists(skill_key)
+                        if not skill_found:
+                            skill_key_lower = f"{agent_id}/skills/{skill_name}/skill.md"
+                            skill_found = await storage.exists(skill_key_lower)
+                        if not skill_found:
+                            problems.append(
+                                f"Action '{action_name}' references skill://{skill_name} "
+                                f"but no SKILL.md found in agent workspace"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"[Evolver] Skill validation skipped for {skill_name}: {e}"
+                        )
+
+        if problems:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Script references unavailable resources: {'; '.join(problems)}"
+            )
+
     sv = AgentScriptVersion(
         agent_id=agent_id,
         version=next_version,

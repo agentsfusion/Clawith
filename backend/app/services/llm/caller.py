@@ -465,10 +465,56 @@ async def call_llm(
                 )
         on_tool_call = _default_on_tool_call
 
-    # Build rich prompt with soul, memory, skills, relationships
-    from app.services.agent_context import build_agent_context
-    # Look up current user's display name so the agent knows who it's talking to
-    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_user_name)
+    # Evolver agents: try structured Agent Script execution. Falls back to
+    # legacy free-text soul.md prompt if not an evolver / no script / parse error.
+    from app.services.evolver_runtime import prepare_evolver_turn
+    _evolver_ctx = await prepare_evolver_turn(
+        agent_id, session_id=session_id, user_id=user_id,
+    )
+    if _evolver_ctx is not None:
+        static_prompt = _evolver_ctx.system_prompt
+        dynamic_prompt = ""
+        # Surface "missing tool" events from the script run as structured
+        # chat-UI chips so users see exactly which tool the script wanted
+        # but isn't wired up — instead of relying on the LLM to verbalize it.
+        if on_tool_call is not None:
+            try:
+                from app.services.evolver_runtime import collect_missing_tool_events
+                for ev in collect_missing_tool_events(_evolver_ctx):
+                    try:
+                        await on_tool_call({
+                            "status": "missing_tool",
+                            "name": ev["tool_name"],
+                            "tool_name": ev["tool_name"],
+                            "action": ev["action"],
+                            "agent_id": ev["agent_id"],
+                        })
+                    except Exception:
+                        logger.exception("[EvolverRuntime] failed to emit missing_tool event")
+            except Exception:
+                logger.exception("[EvolverRuntime] failed to collect missing_tool events")
+
+        try:
+            from app.services.evolver_runtime import collect_skill_failure_events
+            for ev in collect_skill_failure_events(_evolver_ctx):
+                try:
+                    await on_tool_call({
+                        "status": "skill_failure",
+                        "skill_name": ev["skill_name"],
+                        "action": ev["action"],
+                        "agent_id": ev["agent_id"],
+                        "kind": ev["kind"],
+                        "error": ev.get("error", ""),
+                    })
+                except Exception:
+                    logger.exception("[EvolverRuntime] failed to emit skill_failure event")
+        except Exception:
+            logger.exception("[EvolverRuntime] failed to collect skill_failure events")
+    else:
+        # Build rich prompt with soul, memory, skills, relationships
+        from app.services.agent_context import build_agent_context
+        # Look up current user's display name so the agent knows who it's talking to
+        static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_user_name)
 
     # Load tools dynamically from DB. `skip_tools=True` is set by the WS
     # handler on the onboarding greeting turn; keep the runtime-level `finish`
@@ -510,6 +556,15 @@ async def call_llm(
     _recent_tool_calls: list[str] = []
     _DUPLICATE_TOOL_CALL_LIMIT = 3
 
+    async def _persist_evolver_on_exit():
+        """Persist evolver state on any exit path (error / too-many-rounds / success)."""
+        if _evolver_ctx is not None:
+            try:
+                from app.services.evolver_runtime import finalize_evolver_turn
+                await finalize_evolver_turn(_evolver_ctx, None)
+            except Exception:
+                logger.exception("[EvolverRuntime] failed to persist state on exit")
+
     # Tool-calling loop
     for round_i in range(_max_tool_rounds):
         # Dynamic tool-call limit warning
@@ -547,14 +602,16 @@ async def call_llm(
             )
         except LLMError as e:
             logger.error(f"[LLM] LLMError: provider={getattr(model, 'provider', '?')} model={getattr(model, 'model', '?')} {e}")
-            if agent_id and _accumulated_usage.total_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_usage)
+            if agent_id and _accumulated_tokens > 0:
+                await record_token_usage(agent_id, _accumulated_tokens)
+            await _persist_evolver_on_exit()
             await client.close()
             return f"[LLM Error] {e}"
         except Exception as e:
             logger.exception(f"[LLM] Unexpected error: {type(e).__name__}: {str(e)[:300]}")
-            if agent_id and _accumulated_usage.total_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_usage)
+            if agent_id and _accumulated_tokens > 0:
+                await record_token_usage(agent_id, _accumulated_tokens)
+            await _persist_evolver_on_exit()
             await client.close()
             return f"[LLM call error] {type(e).__name__}: {str(e)[:200]}"
 
@@ -564,10 +621,16 @@ async def call_llm(
         # Plain assistant text is not a stop condition. The model must finish
         # explicitly via finish(content=...).
         if not response.tool_calls:
-            if response.content:
-                api_messages.append(LLMMessage(role="assistant", content=response.content))
-            api_messages.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
-            continue
+            if agent_id and _accumulated_tokens > 0:
+                await record_token_usage(agent_id, _accumulated_tokens)
+            await client.close()
+            # Evolver: always run finalize so state mutations from execute_script_logic
+            # are persisted (even when LLM returned empty content).
+            if _evolver_ctx is not None:
+                from app.services.evolver_runtime import finalize_evolver_turn
+                cleaned = await finalize_evolver_turn(_evolver_ctx, response.content)
+                return cleaned or "[LLM returned empty content]"
+            return response.content or "[LLM returned empty content]"
 
         # Execute tool calls
         logger.info(f"[LLM] Round {round_i+1}: {len(response.tool_calls)} tool call(s)")
@@ -661,8 +724,9 @@ async def call_llm(
                 ))
 
     # Record tokens even on "too many rounds" exit
-    if agent_id and _accumulated_usage.total_tokens > 0:
-        await record_token_usage(agent_id, _accumulated_usage)
+    if agent_id and _accumulated_tokens > 0:
+        await record_token_usage(agent_id, _accumulated_tokens)
+    await _persist_evolver_on_exit()
     await client.close()
     return "[Error] Too many tool call rounds"
 
@@ -731,7 +795,7 @@ async def call_llm_with_failover(
 
     # Check if we need to failover
     if not is_retryable_error(primary_result):
-        logger.warning(f"[Failover] Canceled: Primary model returned a non-retryable error: {primary_result[:150]}")
+        logger.debug(f"[Failover] Skipped: primary model returned normally (no failover needed)")
         return primary_result
 
     # Check guard conditions

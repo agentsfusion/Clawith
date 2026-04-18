@@ -62,8 +62,38 @@ def _global_builtin_config(tool_data: dict) -> dict:
     return tool_data.get("config", {})
 
 # Builtin tool definitions — these map to the hardcoded AGENT_TOOLS
+WEATHER_TOOL = {
+    "name": "get_weather",
+    "display_name": "Get Weather",
+    "description": (
+        "Get current weather and a short forecast for any city worldwide. "
+        "Uses the free Open-Meteo API (no API key required). "
+        "Returns temperature, wind speed, weather condition, and a 3-day forecast."
+    ),
+    "category": "data",
+    "icon": "🌤️",
+    "is_default": True,
+    "parameters_schema": {
+        "type": "object",
+        "properties": {
+            "city": {
+                "type": "string",
+                "description": "City name (e.g., 'Tokyo', 'San Francisco', 'London', '北京')",
+            },
+            "units": {
+                "type": "string",
+                "enum": ["celsius", "fahrenheit"],
+                "description": "Temperature units, defaults to celsius",
+            },
+        },
+        "required": ["city"],
+    },
+    "config": {},
+    "config_schema": {},
+}
+
 BUILTIN_TOOLS = [
-    FINISH_TOOL_SEED,
+    WEATHER_TOOL,
     {
         "name": "list_files",
         "display_name": "List Files",
@@ -3419,8 +3449,8 @@ async def seed_builtin_tools():
     from app.models.agent import Agent
     from app.services.seeder_state import is_seeder_done, mark_seeder_done
 
-    if await is_seeder_done("seeder:tools", 2):
-        logger.info("[ToolSeeder] Already seeded (seeder:tools v2), skipping")
+    if await is_seeder_done("seeder:tools", 3):
+        logger.info("[ToolSeeder] Already seeded (seeder:tools v3), skipping")
         return
 
 
@@ -3716,7 +3746,7 @@ async def seed_builtin_tools():
         await db.commit()
         logger.info("[ToolSeeder] Builtin tools seeded")
 
-    await mark_seeder_done("seeder:tools", 2, {"count": len(BUILTIN_TOOLS)})
+    await mark_seeder_done("seeder:tools", 3, {"count": len(BUILTIN_TOOLS)})
 
 
 async def clean_orphaned_mcp_tools():
