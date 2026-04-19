@@ -138,7 +138,7 @@ export default function JobDashboard({ agentId }: Props) {
     const activeCount = jobs.filter(j => j.active).length;
     const runningCount = jobs.filter(j => j.last_run_status === 'running').length;
 
-    const s: Record<string, React.CSSProperties> = {
+    const staticStyles: Record<string, React.CSSProperties> = {
         root: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' },
         header: {
             height: '48px', borderBottom: '1px solid rgba(255,255,255,0.06)', padding: '0 16px',
@@ -173,13 +173,6 @@ export default function JobDashboard({ agentId }: Props) {
             background: 'rgba(255,255,255,0.03)', padding: '8px 12px', fontSize: '13px',
             color: '#fff', outline: 'none', fontFamily: 'monospace',
         },
-        presetBtn: (active: boolean) => ({
-            padding: '4px 8px', fontSize: '11px', borderRadius: '8px', cursor: 'pointer',
-            border: `1px solid ${active ? 'rgba(59,130,246,0.3)' : 'rgba(255,255,255,0.1)'}`,
-            background: active ? 'rgba(59,130,246,0.1)' : 'transparent',
-            color: active ? '#60a5fa' : 'rgba(255,255,255,0.5)',
-            transition: 'all 0.15s',
-        }),
         primaryBtn: {
             flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
             padding: '8px 12px', fontSize: '13px', fontWeight: 500, borderRadius: '8px',
@@ -190,17 +183,6 @@ export default function JobDashboard({ agentId }: Props) {
             border: '1px solid rgba(255,255,255,0.1)', background: 'transparent',
             color: 'rgba(255,255,255,0.5)', cursor: 'pointer',
         },
-        card: (active: boolean) => ({
-            borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)',
-            background: 'rgba(255,255,255,0.03)', padding: '14px',
-            display: 'flex', flexDirection: 'column' as const, gap: '10px',
-            opacity: active ? 1 : 0.5, transition: 'opacity 0.2s',
-        }),
-        iconBtn: (hoverColor: string) => ({
-            padding: '4px', borderRadius: '6px', background: 'transparent', border: 'none',
-            color: 'rgba(255,255,255,0.35)', cursor: 'pointer', fontSize: '14px',
-            transition: 'color 0.15s',
-        }),
         emptyState: {
             display: 'flex', flexDirection: 'column' as const, alignItems: 'center',
             justifyContent: 'center', padding: '64px 0', textAlign: 'center' as const,
@@ -212,62 +194,83 @@ export default function JobDashboard({ agentId }: Props) {
         },
     };
 
+    const presetBtn = (active: boolean): React.CSSProperties => ({
+        padding: '4px 8px', fontSize: '11px', borderRadius: '8px', cursor: 'pointer',
+        border: `1px solid ${active ? 'rgba(59,130,246,0.3)' : 'rgba(255,255,255,0.1)'}`,
+        background: active ? 'rgba(59,130,246,0.1)' : 'transparent',
+        color: active ? '#60a5fa' : 'rgba(255,255,255,0.5)',
+        transition: 'all 0.15s',
+    });
+
+    const card = (active: boolean): React.CSSProperties => ({
+        borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)',
+        background: 'rgba(255,255,255,0.03)', padding: '14px',
+        display: 'flex', flexDirection: 'column' as const, gap: '10px',
+        opacity: active ? 1 : 0.5, transition: 'opacity 0.2s',
+    });
+
+    const iconBtn = (hoverColor: string): React.CSSProperties => ({
+        padding: '4px', borderRadius: '6px', background: 'transparent', border: 'none',
+        color: 'rgba(255,255,255,0.35)', cursor: 'pointer', fontSize: '14px',
+        transition: 'color 0.15s',
+    });
+
     return (
-        <div style={s.root}>
-            <div style={s.header}>
-                <span style={s.headerIcon}>⚡</span>
-                <span style={s.headerTitle}>Evolution Jobs</span>
-                <div style={s.headerBadge}>
+        <div style={staticStyles.root}>
+            <div style={staticStyles.header}>
+                <span style={staticStyles.headerIcon}>⚡</span>
+                <span style={staticStyles.headerTitle}>Evolution Jobs</span>
+                <div style={staticStyles.headerBadge}>
                     <span>{jobs.length} job{jobs.length !== 1 ? 's' : ''}</span>
                     {activeCount > 0 && <span style={{ color: '#4ade80' }}>{activeCount} active</span>}
                     {runningCount > 0 && <span style={{ color: '#60a5fa' }}>{runningCount} running</span>}
                 </div>
             </div>
 
-            <div style={s.body}>
+            <div style={staticStyles.body}>
                 {!showForm ? (
-                    <button style={s.addBtn} onClick={() => setShowForm(true)}
+                    <button style={staticStyles.addBtn} onClick={() => setShowForm(true)}
                         onMouseEnter={e => (e.currentTarget.style.background = 'rgba(251,191,36,0.15)')}
                         onMouseLeave={e => (e.currentTarget.style.background = 'rgba(251,191,36,0.08)')}>
                         + Schedule New Evolution Job
                     </button>
                 ) : (
-                    <div style={s.formCard}>
+                    <div style={staticStyles.formCard}>
                         <div style={{ fontSize: '13px', fontWeight: 500, color: 'rgba(255,255,255,0.85)' }}>New Evolution Job</div>
 
                         <div>
-                            <div style={s.label}>Evolution Direction</div>
-                            <textarea style={s.textarea} rows={2} value={form.direction}
+                            <div style={staticStyles.label}>Evolution Direction</div>
+                            <textarea style={staticStyles.textarea} rows={2} value={form.direction}
                                 onChange={e => setForm(f => ({ ...f, direction: e.target.value }))}
                                 placeholder="e.g., Improve error handling and edge case coverage" />
                         </div>
 
                         <div>
-                            <div style={s.label}>Schedule (Cron)</div>
+                            <div style={staticStyles.label}>Schedule (Cron)</div>
                             <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
                                 {[
                                     { label: 'Daily midnight', value: '0 0 * * *' },
                                     { label: 'Every 6h', value: '0 */6 * * *' },
                                     { label: 'Every 12h', value: '0 */12 * * *' },
                                 ].map(p => (
-                                    <button key={p.value} style={s.presetBtn(form.cronSchedule === p.value)}
+                                    <button key={p.value} style={presetBtn(form.cronSchedule === p.value)}
                                         onClick={() => setForm(f => ({ ...f, cronSchedule: p.value }))}>
                                         {p.label}
                                     </button>
                                 ))}
                             </div>
-                            <input style={s.input} value={form.cronSchedule}
+                            <input style={staticStyles.input} value={form.cronSchedule}
                                 onChange={e => setForm(f => ({ ...f, cronSchedule: e.target.value }))}
                                 placeholder="0 0 * * *" />
                         </div>
 
                         <div style={{ display: 'flex', gap: '8px', paddingTop: '4px' }}>
-                            <button style={{ ...s.primaryBtn, opacity: (!form.direction.trim() || createMut.isPending) ? 0.4 : 1 }}
+                            <button style={{ ...staticStyles.primaryBtn, opacity: (!form.direction.trim() || createMut.isPending) ? 0.4 : 1 }}
                                 disabled={!form.direction.trim() || createMut.isPending}
                                 onClick={() => createMut.mutate()}>
                                 {createMut.isPending ? '⟳' : '+'} Create Job
                             </button>
-                            <button style={s.cancelBtn} onClick={() => setShowForm(false)}>Cancel</button>
+                            <button style={staticStyles.cancelBtn} onClick={() => setShowForm(false)}>Cancel</button>
                         </div>
                     </div>
                 )}
@@ -279,8 +282,8 @@ export default function JobDashboard({ agentId }: Props) {
                 )}
 
                 {!isLoading && jobs.length === 0 && !showForm && (
-                    <div style={s.emptyState}>
-                        <div style={s.emptyIcon}>⚡</div>
+                    <div style={staticStyles.emptyState}>
+                        <div style={staticStyles.emptyIcon}>⚡</div>
                         <div style={{ fontSize: '16px', fontWeight: 500, color: 'rgba(255,255,255,0.7)', marginBottom: '8px' }}>
                             No Evolution Jobs
                         </div>
@@ -292,12 +295,12 @@ export default function JobDashboard({ agentId }: Props) {
                 )}
 
                 {jobs.map(job => (
-                    <div key={job.id} style={s.card(job.active)}>
+                    <div key={job.id} style={card(job.active)}>
                         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
                             <div style={{ flex: 1, minWidth: 0 }}>
                                 {editingJob === job.id ? (
                                     <div style={{ display: 'flex', gap: '6px' }}>
-                                        <input style={{ ...s.input, flex: 1, fontFamily: 'inherit' }}
+                                        <input style={{ ...staticStyles.input, flex: 1, fontFamily: 'inherit' }}
                                             value={editDirection}
                                             onChange={e => setEditDirection(e.target.value)}
                                             onKeyDown={e => {
@@ -314,7 +317,7 @@ export default function JobDashboard({ agentId }: Props) {
                                         <span style={{ fontSize: '13px', fontWeight: 500, color: 'rgba(255,255,255,0.9)' }}>
                                             {job.direction}
                                         </span>
-                                        <button style={{ ...s.iconBtn('#fff'), fontSize: '11px', opacity: 0.3 }}
+                                        <button style={{ ...iconBtn('#fff'), fontSize: '11px', opacity: 0.3 }}
                                             onClick={() => { setEditingJob(job.id); setEditDirection(job.direction); }}
                                             title="Edit direction">✎</button>
                                     </div>
@@ -328,11 +331,11 @@ export default function JobDashboard({ agentId }: Props) {
                             </div>
 
                             <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
-                                <button style={s.iconBtn('#4ade80')} title="Run now"
+                                <button style={iconBtn('#4ade80')} title="Run now"
                                     onClick={() => triggerMut.mutate(job.id)}
                                     onMouseEnter={e => (e.currentTarget.style.color = '#4ade80')}
                                     onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.35)')}>▶</button>
-                                <button style={s.iconBtn('#fbbf24')} title={job.active ? 'Pause' : 'Resume'}
+                                <button style={iconBtn('#fbbf24')} title={job.active ? 'Pause' : 'Resume'}
                                     onClick={() => updateMut.mutate({ jobId: job.id, updates: { active: !job.active } })}
                                     onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')}
                                     onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.35)')}>
@@ -350,7 +353,7 @@ export default function JobDashboard({ agentId }: Props) {
                                             onClick={() => setConfirmDelete(null)}>Cancel</button>
                                     </div>
                                 ) : (
-                                    <button style={s.iconBtn('#f87171')} title="Delete"
+                                    <button style={iconBtn('#f87171')} title="Delete"
                                         onClick={() => setConfirmDelete(job.id)}
                                         onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
                                         onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.35)')}>🗑</button>
