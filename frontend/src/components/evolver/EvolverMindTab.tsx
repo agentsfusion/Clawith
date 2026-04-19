@@ -2,12 +2,18 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { evolverApi, fileApi, type EvolverScriptVersion } from '../../services/api';
+import ScriptValidationErrorDialog from './ScriptValidationErrorDialog';
 
 export default function EvolverMindTab({ agentId }: { agentId: string }) {
     const { t } = useTranslation();
     const qc = useQueryClient();
     const [isEditing, setIsEditing] = useState(false);
     const [editContent, setEditContent] = useState('');
+    const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+    const [validationError, setValidationError] = useState<{
+        missingSkills: { action: string; folder_name: string }[];
+        missingTools: { action: string; tool_name: string }[];
+    } | null>(null);
 
     const { data: versions = [], isLoading } = useQuery({
         queryKey: ['evolver-scripts', agentId, null],
@@ -25,6 +31,19 @@ export default function EvolverMindTab({ agentId }: { agentId: string }) {
             qc.invalidateQueries({ queryKey: ['evolver-scripts', agentId] });
             qc.invalidateQueries({ queryKey: ['file', agentId, 'soul.md'] });
             setIsEditing(false);
+            setToast({ message: t('common.saved', 'Saved successfully'), type: 'success' });
+            setTimeout(() => setToast(null), 3000);
+        },
+        onError: (err: any) => {
+            if (err.status === 422 && err.detail?.missing_skills?.length) {
+                setValidationError({
+                    missingSkills: err.detail.missing_skills,
+                    missingTools: err.detail.missing_tools || [],
+                });
+                return;
+            }
+            setToast({ message: err.message || t('common.error', 'Save failed'), type: 'error' });
+            setTimeout(() => setToast(null), 6000);
         },
     });
 
@@ -153,6 +172,31 @@ export default function EvolverMindTab({ agentId }: { agentId: string }) {
                     </div>
                 )}
             </div>
+
+            {toast && (
+                <div style={{
+                    position: 'fixed', bottom: '24px', right: '24px', zIndex: 9999,
+                    padding: '12px 20px', borderRadius: '10px', fontSize: '13px', fontWeight: 500,
+                    background: toast.type === 'success' ? 'rgba(34, 197, 94, 0.9)' : 'rgba(239, 68, 68, 0.9)',
+                    color: '#fff', maxWidth: '480px', boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+                    wordBreak: 'break-word',
+                }}>
+                    {toast.message}
+                </div>
+            )}
+
+            {validationError && (
+                <ScriptValidationErrorDialog
+                    agentId={agentId}
+                    missingSkills={validationError.missingSkills}
+                    missingTools={validationError.missingTools}
+                    onClose={() => setValidationError(null)}
+                    onRetry={() => {
+                        setValidationError(null);
+                        saveMutation.mutate();
+                    }}
+                />
+            )}
         </div>
     );
 }
