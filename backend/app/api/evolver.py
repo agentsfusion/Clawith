@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -365,6 +366,8 @@ async def create_script_version(
         from app.services.script_runtime import parse_script
         parsed = parse_script(content)
         problems: list[str] = []
+        missing_skills: list[dict] = []
+        missing_tools: list[dict] = []
 
         for topic_name, topic in parsed.topics.items():
             for action_name, action in topic.actions.items():
@@ -378,6 +381,7 @@ async def create_script_version(
                             f"Action '{action_name}' references tool://{tool_name} "
                             f"which does not exist in tools table"
                         )
+                        missing_tools.append({"action": action_name, "tool_name": tool_name})
                 elif target.startswith("skill://"):
                     skill_name = target[len("skill://"):].strip()
                     try:
@@ -393,6 +397,7 @@ async def create_script_version(
                                 f"Action '{action_name}' references skill://{skill_name} "
                                 f"but no SKILL.md found in agent workspace"
                             )
+                            missing_skills.append({"action": action_name, "folder_name": skill_name})
                     except Exception as e:
                         logger.warning(
                             f"[Evolver] Skill validation skipped for {skill_name}: {e}"
@@ -401,7 +406,11 @@ async def create_script_version(
         if problems:
             raise HTTPException(
                 status_code=422,
-                detail=f"Script references unavailable resources: {'; '.join(problems)}"
+                detail={
+                    "message": f"Script references unavailable resources: {'; '.join(problems)}",
+                    "missing_skills": missing_skills,
+                    "missing_tools": missing_tools,
+                },
             )
 
     sv = AgentScriptVersion(
