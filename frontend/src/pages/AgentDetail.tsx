@@ -3259,7 +3259,7 @@ function AgentDetailInner() {
                         }
                         const isEvolver = (agent as any)?.agent_type === 'evolver';
                         if (['feedback', 'health', 'script', 'jobs'].includes(tab)) return isEvolver;
-                        if (isEvolver && ['aware', 'workspace'].includes(tab)) return false;
+                        if (isEvolver && ['workspace'].includes(tab)) return false;
                         return true;
                     }).map((tab) => (
                         <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
