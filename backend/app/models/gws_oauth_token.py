@@ -60,6 +60,11 @@ class GwsOAuthToken(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    config_source: Mapped[str] = mapped_column(
+        String(20), default="tenant", nullable=False
+    )
+    used_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
