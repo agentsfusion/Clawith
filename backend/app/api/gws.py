@@ -29,6 +29,18 @@ def _oauth_popup_response(status: str, message: str = "") -> HTMLResponse:
     </script><p>{'Authorization successful. This window will close automatically.' if status == 'success' else f'Error: {message}'}</p></body></html>""")
 
 
+async def _require_manage_access(
+    db: AsyncSession, user: User, agent_id: uuid.UUID
+) -> tuple:
+    agent, access_level = await check_agent_access(db, user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(
+            status_code=403,
+            detail="Manage access required to manage Google Workspace connections for this agent",
+        )
+    return agent, access_level
+
+
 router = APIRouter(prefix="/gws", tags=["google-workspace"])
 
 settings = get_settings()
@@ -211,6 +223,24 @@ async def store_gws_credentials(
     return {"ok": True, "message": "Google Workspace credentials stored"}
 
 
+@router.get("/settings/status")
+async def get_gws_status(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if Google Workspace is configured for the tenant.
+
+    Any authenticated user can check — does NOT expose credentials.
+    Returns {configured: bool}.
+    """
+    tenant_id = current_user.tenant_id
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="User has no tenant")
+
+    config = await gws_service.get_tenant_gws_config(tenant_id, db)
+    return {"configured": bool(config and config.get("client_id"))}
+
+
 @router.get("/settings/credentials")
 async def get_gws_credentials(
     current_user: User = Depends(require_role("org_admin", "platform_admin")),
@@ -269,7 +299,7 @@ async def get_gws_authorize_url(
     
     Returns {authorize_url}.
     """
-    await check_agent_access(db, current_user, agent_id)
+    await _require_manage_access(db, current_user, agent_id)
     
     tenant_id = current_user.tenant_id
     if not tenant_id:
@@ -279,7 +309,7 @@ async def get_gws_authorize_url(
     if not config or not config.get("client_id"):
         raise HTTPException(
             status_code=400,
-            detail="Google Workspace not configured for tenant",
+            detail="Google Workspace not configured. Ask your org admin to configure it.",
         )
     
     resolved_scopes = _resolve_scopes(config)
@@ -402,7 +432,7 @@ async def revoke_gws_oauth(
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke Google Workspace OAuth token for current user."""
-    await check_agent_access(db, current_user, agent_id)
+    await _require_manage_access(db, current_user, agent_id)
     
     await gws_service.revoke_oauth_token(
         agent_id=agent_id,
@@ -420,7 +450,7 @@ async def list_gws_oauth_accounts(
     db: AsyncSession = Depends(get_db),
 ):
     """List all authorized Google Workspace accounts for an agent."""
-    await check_agent_access(db, current_user, agent_id)
+    await _require_manage_access(db, current_user, agent_id)
     
     accounts = await gws_service.list_agent_oauth_accounts(agent_id, db)
     

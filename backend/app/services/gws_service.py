@@ -112,10 +112,6 @@ async def save_tenant_gws_config(
 
 
 def generate_oauth_state(agent_id: uuid.UUID, user_id: uuid.UUID, tenant_id: uuid.UUID) -> str:
-    """Create encrypted OAuth state parameter.
-    
-    Returns base64-encoded encrypted JSON containing agent_id, user_id, tenant_id.
-    """
     state_data = json.dumps({
         "agent_id": str(agent_id),
         "user_id": str(user_id),
@@ -144,13 +140,7 @@ async def exchange_code_for_tokens(
     redirect_uri: str,
     db: AsyncSession | None = None,
 ) -> dict:
-    """Exchange OAuth authorization code for access and refresh tokens.
-    
-    POST to https://oauth2.googleapis.com/token with client credentials from TenantSetting.
-    Returns token response dict with access_token, refresh_token, expires_in, etc.
-    """
     config = await get_tenant_gws_config(tenant_id, db)
-    
     if not config.get("client_id") or not config.get("client_secret"):
         raise ValueError("Google Workspace not configured for tenant")
     
@@ -174,17 +164,13 @@ async def refresh_access_token(
     tenant_id: uuid.UUID,
     db: AsyncSession | None = None,
 ) -> str:
-    """Refresh expired access token using refresh_token.
-    
-    Returns new plaintext access_token and updates DB record.
-    """
     config = await get_tenant_gws_config(tenant_id, db)
-    
+
     if not config.get("client_id") or not config.get("client_secret"):
-        raise ValueError("Google Workspace not configured for tenant")
-    
+        raise ValueError("Google Workspace not configured")
+
     refresh_token = decrypt_data(token_record.refresh_token, settings.SECRET_KEY)
-    
+
     token_url = "https://oauth2.googleapis.com/token"
     data = {
         "client_id": config["client_id"],
