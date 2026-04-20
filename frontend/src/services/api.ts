@@ -565,6 +565,9 @@ export interface GwsScopeOptions {
 }
 
 export const gwsApi = {
+    getStatus: () =>
+        request<{ configured: boolean }>('/gws/settings/status'),
+
     getCredentials: () =>
         request<GwsCredentialStatus>('/gws/settings/credentials'),
 

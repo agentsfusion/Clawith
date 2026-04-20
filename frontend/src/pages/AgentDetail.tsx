@@ -763,15 +763,15 @@ function GoogleWorkspaceSection({ agentId }: { agentId: string }) {
     const [authorizing, setAuthorizing] = useState(false);
     const [revokingEmail, setRevokingEmail] = useState<string | null>(null);
 
-    const { data: credStatus } = useQuery({
-        queryKey: ['gws-credentials'],
-        queryFn: () => gwsApi.getCredentials(),
+    const { data: gwsStatus } = useQuery({
+        queryKey: ['gws-status'],
+        queryFn: () => gwsApi.getStatus(),
     });
 
     const { data: accounts = [], refetch: refetchAccounts } = useQuery({
         queryKey: ['gws-accounts', agentId],
         queryFn: () => gwsApi.listAccounts(agentId),
-        enabled: !!credStatus?.configured,
+        enabled: !!gwsStatus?.configured,
     });
 
     useEffect(() => {
@@ -823,7 +823,7 @@ function GoogleWorkspaceSection({ agentId }: { agentId: string }) {
     return (
         <div className="card" style={{ marginBottom: '12px' }}>
             <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                📧 {isChinese ? 'Google Workspace' : 'Google Workspace'}
+                📧 Google Workspace
             </h4>
             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
                 {isChinese
@@ -831,7 +831,7 @@ function GoogleWorkspaceSection({ agentId }: { agentId: string }) {
                     : 'Connect a Google account to access Gmail, Google Calendar, and Google Drive.'}
             </p>
 
-            {!credStatus?.configured ? (
+            {!gwsStatus?.configured ? (
                 <div style={{
                     padding: '16px', borderRadius: '8px',
                     background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
@@ -5786,7 +5786,7 @@ function AgentDetailInner() {
 
                                 {/* Google Workspace Integration */}
                                 <div style={{ marginBottom: '12px' }}>
-                                    <GoogleWorkspaceSection agentId={id!} />
+                                    {canManage && <GoogleWorkspaceSection agentId={id!} />}
                                 </div>
 
                                 <div style={{ marginBottom: '12px' }}>

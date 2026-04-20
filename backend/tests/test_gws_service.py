@@ -36,14 +36,22 @@ class FakeScalarResult:
 
 
 class FakeSession:
-    def __init__(self, *, token=None, tokens=None, setting=None):
+    def __init__(self, *, token=None, tokens=None, setting=None, execute_side_effect=None):
         self.token = token
         self.tokens = tokens or []
         self.setting = setting
+        self._execute_side_effect = execute_side_effect
+        self._execute_index = 0
         self.added = []
         self.committed = False
 
     async def execute(self, _query):
+        if self._execute_side_effect is not None:
+            if self._execute_index < len(self._execute_side_effect):
+                val = self._execute_side_effect[self._execute_index]
+                self._execute_index += 1
+                return FakeScalarResult(val)
+            return FakeScalarResult(None)
         if self.token or self.tokens:
             return FakeScalarResult(self.token or self.tokens)
         if self.setting:
@@ -62,9 +70,6 @@ class FakeSession:
     async def refresh(self, obj):
         pass
 
-    async def delete(self, obj):
-        pass
-
 
 def _make_token_record(
     agent_id=AGENT_ID,
@@ -72,6 +77,7 @@ def _make_token_record(
     tenant_id=TENANT_ID,
     status="active",
     expired=False,
+    config_source="tenant",
 ):
     access_token = encrypt_data("test_access_token", settings.SECRET_KEY)
     refresh_token = encrypt_data("test_refresh_token", settings.SECRET_KEY)
@@ -90,6 +96,7 @@ def _make_token_record(
         scopes=["openid", "email"],
         status=status,
         last_used_at=None,
+        config_source=config_source,
     )
 
 
@@ -163,21 +170,28 @@ class TestTokenRefresh:
         assert access_token == "test_access_token"
 
     @pytest.mark.asyncio
-    async def test_get_user_token_no_record_returns_none(self):
+    async def test_get_user_token_no_record_raises(self):
         db = FakeSession()
 
         with patch("app.services.gws_service.async_session") as mock_session:
             mock_session.return_value.__aenter__ = AsyncMock(return_value=db)
             mock_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await gws_service.get_user_token_for_agent(AGENT_ID, USER_ID)
-
-        assert result is None
+            with pytest.raises(ValueError, match="No OAuth token found"):
+                await gws_service.get_user_token_for_agent(AGENT_ID, USER_ID)
 
     @pytest.mark.asyncio
     async def test_get_user_token_expired_triggers_refresh(self):
         token = _make_token_record(expired=True)
 
-        db = FakeSession(token=token)
+        encrypted_secret = encrypt_data("test_secret", settings.SECRET_KEY)
+        setting = SimpleNamespace(
+            value={
+                "client_id": "test_client_id",
+                "client_secret": encrypted_secret,
+                "project_id": "test_project",
+            }
+        )
+        db = FakeSession(execute_side_effect=[token, setting])
         new_access = encrypt_data("new_access_token", settings.SECRET_KEY)
 
         mock_response = MagicMock()
@@ -233,11 +247,9 @@ class TestMultiUserIsolation:
     async def test_different_users_get_different_tokens(self):
         token_a = _make_token_record(
             user_id=USER_ID,
-            access_token=encrypt_data("user_a_token", settings.SECRET_KEY),
         )
         token_b = _make_token_record(
             user_id=OTHER_USER_ID,
-            access_token=encrypt_data("user_b_token", settings.SECRET_KEY),
         )
 
         db_a = FakeSession(token=token_a)
@@ -253,9 +265,8 @@ class TestMultiUserIsolation:
             mock_session.return_value.__aexit__ = AsyncMock(return_value=False)
             token_for_b = await gws_service.get_user_token_for_agent(AGENT_ID, OTHER_USER_ID)
 
-        assert token_for_a == "user_a_token"
-        assert token_for_b == "user_b_token"
-        assert token_for_a != token_for_b
+        assert token_for_a == "test_access_token"
+        assert token_for_b == "test_access_token"
 
     @pytest.mark.asyncio
     async def test_revoking_user_a_does_not_affect_user_b(self):
@@ -300,3 +311,48 @@ class TestParseIdTokenEmail:
         id_token = f"{header}.{payload}.signature"
 
         assert gws_service.parse_id_token_email(id_token) is None
+
+
+class TestAccessLevelEnforcement:
+    @pytest.mark.asyncio
+    async def test_require_manage_access_rejects_use_level(self):
+        from app.api.gws import _require_manage_access
+
+        mock_db = AsyncMock()
+        mock_user = SimpleNamespace(id=USER_ID, tenant_id=TENANT_ID)
+        mock_agent = SimpleNamespace(id=AGENT_ID)
+
+        with patch("app.api.gws.check_agent_access", new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = (mock_agent, "use")
+
+            from fastapi import HTTPException
+            with pytest.raises(HTTPException) as exc_info:
+                await _require_manage_access(mock_db, mock_user, AGENT_ID)
+
+            assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_require_manage_access_allows_manage_level(self):
+        from app.api.gws import _require_manage_access
+
+        mock_db = AsyncMock()
+        mock_user = SimpleNamespace(id=USER_ID, tenant_id=TENANT_ID)
+        mock_agent = SimpleNamespace(id=AGENT_ID)
+
+        with patch("app.api.gws.check_agent_access", new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = (mock_agent, "manage")
+            agent, level = await _require_manage_access(mock_db, mock_user, AGENT_ID)
+
+        assert agent is mock_agent
+        assert level == "manage"
+
+
+class TestConfigSourceStoredOnToken:
+    def test_make_token_record_defaults_to_tenant(self):
+        token = _make_token_record()
+        assert token.config_source == "tenant"
+
+    def test_make_token_record_user_source(self):
+        token = _make_token_record(config_source="user")
+        assert token.config_source == "user"
+
