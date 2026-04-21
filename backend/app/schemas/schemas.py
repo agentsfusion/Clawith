@@ -235,8 +235,8 @@ class AgentCreate(BaseModel):
 class AgentCloneRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100, description="Name for the cloned agent")
     copy_files: list[str] = Field(
-        default=["soul.md", "memory", "skills", "HEARTBEAT.md"],
-        description="List of file categories to copy. Options: soul.md, memory, skills, workspace, HEARTBEAT.md",
+        default=["soul.md", "skills", "HEARTBEAT.md"],
+        description="List of file categories to copy. Options: soul.md, skills, workspace, HEARTBEAT.md",
     )
 
 
