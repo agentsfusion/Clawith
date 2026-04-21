@@ -3283,8 +3283,8 @@ async def execute_tool(
             pattern = arguments.get("pattern")
             if not pattern:
                 return "❌ Missing required argument 'pattern' for search_files"
-            result = await _storage_search_files(
-                agent_id,
+            result = await _search_files(
+                ws,
                 pattern,
                 path=arguments.get("path", "."),
                 file_pattern=arguments.get("file_pattern", "*"),
