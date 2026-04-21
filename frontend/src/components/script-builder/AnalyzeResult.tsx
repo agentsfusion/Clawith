@@ -12,7 +12,7 @@ interface AnalysisData {
 }
 
 function getScoreColor(score: number) {
-  if (score >= 80) return 'var(--primary)';
+  if (score >= 80) return 'var(--accent-primary)';
   if (score >= 60) return '#facc15';
   return 'var(--danger)';
 }
