@@ -49,7 +49,7 @@ export function SyntaxHighlighter({ code, className }: SyntaxHighlighterProps) {
                   return <span key={j} style={{ color: 'var(--accent-primary)', fontWeight: 500 }}>{token}</span>;
                 }
                 if (KEYWORDS.includes(token)) {
-                  return <span key={j} style={{ color: 'var(--primary)', fontWeight: 500 }}>{token}</span>;
+                  return <span key={j} style={{ color: 'var(--accent-primary)', fontWeight: 500 }}>{token}</span>;
                 }
                 if (j < tokens.length - 1 && tokens[j + 1] === ':' && /^[a-zA-Z_]\w*$/.test(token)) {
                   return <span key={j} style={{ color: '#60a5fa' }}>{token}</span>;

@@ -233,7 +233,7 @@ function CodePanel({
             <button
               className="sb-code-action-btn"
               onClick={() => setShowContext(!showContext)}
-              style={{ color: showContext ? 'var(--primary)' : undefined }}
+              style={{ color: showContext ? 'var(--accent-primary)' : undefined }}
             >
               <IconTool size={14} />
               {platformContext.tools.length + platformContext.skills.length}
@@ -254,7 +254,7 @@ function CodePanel({
           </button>
           <div className="sb-code-divider" />
           <button className="sb-code-icon-btn" onClick={handleCopy} title="Copy">
-            {copied ? <IconCheck size={16} style={{ color: 'var(--primary)' }} /> : <IconCopy size={16} />}
+            {copied ? <IconCheck size={16} style={{ color: 'var(--accent-primary)' }} /> : <IconCopy size={16} />}
           </button>
           <button className="sb-code-icon-btn" onClick={handleDownload} title="Download .ascript">
             <IconDownload size={16} />
@@ -394,7 +394,7 @@ function CodePanel({
                     style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
                       padding: '10px 16px', borderRadius: '8px', border: 'none', cursor: 'pointer',
-                      background: 'var(--primary, #3b82f6)', color: '#fff', fontWeight: 600, fontSize: '13px',
+                      background: 'var(--accent-primary)', color: 'var(--text-inverse)', fontWeight: 600, fontSize: '13px',
                     }}
                   >
                     <IconExternalLink size={14} />
