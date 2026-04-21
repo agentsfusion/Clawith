@@ -18,13 +18,12 @@ interface FileCategory {
 
 const FILE_CATEGORIES: FileCategory[] = [
     { key: 'soul.md', icon: '🧬' },
-    { key: 'memory', icon: '🧠' },
     { key: 'skills', icon: '🛠️' },
     { key: 'HEARTBEAT.md', icon: '💓' },
     { key: 'workspace', icon: '📁' },
 ];
 
-const DEFAULT_CHECKED = ['soul.md', 'memory', 'skills', 'HEARTBEAT.md'];
+const DEFAULT_CHECKED = ['soul.md', 'skills', 'HEARTBEAT.md'];
 
 export default function CloneAgentModal({ agentId, agentName, open, onClose, onSuccess }: CloneAgentModalProps) {
     const { t } = useTranslation();

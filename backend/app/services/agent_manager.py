@@ -355,9 +355,9 @@ class AgentManager:
         if source.agent_type == "openclaw":
             raise HTTPException(status_code=400, detail="Cannot clone openclaw-type agents")
 
-        _valid_categories = {"soul.md", "memory", "skills", "workspace", "HEARTBEAT.md"}
+        _valid_categories = {"soul.md", "skills", "workspace", "HEARTBEAT.md"}
         if copy_files is None:
-            copy_files = ["soul.md", "memory", "skills", "HEARTBEAT.md"]
+            copy_files = ["soul.md", "skills", "HEARTBEAT.md"]
         invalid = set(copy_files) - _valid_categories
         if invalid:
             raise HTTPException(status_code=422, detail=f"Invalid file categories: {', '.join(sorted(invalid))}")
@@ -444,19 +444,6 @@ class AgentManager:
             if await storage.exists(source_soul_key):
                 soul_content = await storage.read(source_soul_key)
                 await storage.write(f"{dst_aid}/soul.md", soul_content)
-
-        # Copy memory/ directory
-        if "memory" in copy_files:
-            source_mem_prefix = f"{src_aid}/memory/"
-            source_mem_keys = await _collect_storage_keys(source_mem_prefix)
-            cloned_mem_dir = self._agent_dir(cloned.id) / "memory"
-            for key in source_mem_keys:
-                content = await storage.read(key)
-                target_key = f"{dst_aid}/{key[len(src_aid) + 1:]}"
-                rel = key[len(source_mem_prefix):]
-                local_path = cloned_mem_dir / rel
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                await storage.write(target_key, content)
 
         # Copy skills/ directory
         if "skills" in copy_files:
