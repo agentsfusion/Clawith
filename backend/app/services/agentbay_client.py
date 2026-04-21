@@ -263,16 +263,23 @@ class AgentBayClient:
         # Wait for dynamic content and SPA rendering before extracting
         await asyncio.sleep(3)
 
+        from pydantic import BaseModel
         from agentbay._common.models.browser_operator import ExtractOptions
-        # Use a generic dict schema since we cannot define a Pydantic model at runtime
+
+        # SDK ExtractOptions.schema requires BaseModel (calls .model_json_schema / .model_validate)
+        class ExtractedData(BaseModel):
+            model_config = {"extra": "allow"}
+
         options = ExtractOptions(
             instruction=instruction,
-            schema=dict,
+            schema=ExtractedData,
             selector=selector or None,
         )
         success, data = await asyncio.to_thread(
             self._session.browser.operator.extract, options
         )
+        if success and data is not None:
+            data = data.model_dump()
         return {"success": success, "data": data}
 
     async def browser_observe(self, instruction: str, selector: str = "") -> dict:
