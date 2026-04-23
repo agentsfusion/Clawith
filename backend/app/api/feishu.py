@@ -811,6 +811,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             _reply_target = chat_id if chat_type == "group" and chat_id else sender_open_id
             _rid_type = "chat_id" if chat_type == "group" and chat_id else "open_id"
+            import json as _json_card
 
             init_card = {
                 "schema": "2.0",
@@ -856,6 +857,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             _stream_buffer = []
             _thinking_buffer = []
+            _tool_errors: list[str] = []
             _last_flush_time = time.time()
             _FLUSH_INTERVAL_CARDKIT = 0.5
             _FLUSH_INTERVAL_PATCH = 1.0
@@ -1484,7 +1486,7 @@ async def _handle_feishu_file(
                 return
             # Reuse the shared card builder (no tool_status for image path yet,
             # but the builder is ready to accept them in the future).
-            _card = _build_card(
+            _card = _build_streaming_card(
                 "".join(_img_stream_buf),
                 streaming=True,
                 agent_name=_agent_name,
@@ -1536,7 +1538,7 @@ async def _handle_feishu_file(
             except Exception as _e_drain:
                 logger.warning(f"[Feishu] Image patch queue drain failed: {_e_drain}")
             # Build final card via shared builder (consistent with text streaming path).
-            _final_card = _build_card(
+            _final_card = _build_streaming_card(
                 reply_text or "...",
                 streaming=False,
                 agent_name=_agent_name,
