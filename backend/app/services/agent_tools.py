@@ -4394,13 +4394,14 @@ async def _save_outgoing_to_feishu_session(
 async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
     """Send a Feishu message to a person in the agent's relationship list."""
     member_name = (args.get("member_name") or "").strip()
+    direct_open_id = (args.get("open_id") or "").strip()
     direct_user_id = (args.get("user_id") or "").strip()
     message_text = (args.get("message") or "").strip()
 
     if not message_text:
         return "❌ Please provide message content"
-    if not member_name and not direct_user_id:
-        return "❌ Please provide member_name or user_id"
+    if not member_name and not direct_open_id and not direct_user_id:
+        return "❌ Please provide member_name, user_id, or open_id"
 
     try:
         from app.services.feishu_service import FeishuAPIError, feishu_service
