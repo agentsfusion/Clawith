@@ -2243,21 +2243,19 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     """Initialize agent workspace with standard structure."""
     ws = WORKSPACE_ROOT / str(agent_id)
 
-    _is_local_storage = _settings.STORAGE_BACKEND == "local"
-    if _is_local_storage:
-        ws.mkdir(parents=True, exist_ok=True)
+    ws.mkdir(parents=True, exist_ok=True)
 
-        (ws / "skills").mkdir(exist_ok=True)
-        (ws / "workspace").mkdir(exist_ok=True)
-        (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
-        (ws / "memory").mkdir(exist_ok=True)
+    (ws / "skills").mkdir(exist_ok=True)
+    (ws / "workspace").mkdir(exist_ok=True)
+    (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
+    (ws / "memory").mkdir(exist_ok=True)
 
-        if tenant_id:
-            enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
-        else:
-            enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
-        enterprise_dir.mkdir(parents=True, exist_ok=True)
-        (enterprise_dir / "knowledge_base").mkdir(exist_ok=True)
+    if tenant_id:
+        enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
+    else:
+        enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
+    enterprise_dir.mkdir(parents=True, exist_ok=True)
+    (enterprise_dir / "knowledge_base").mkdir(exist_ok=True)
 
     # Use storage for file operations
     storage = get_storage()
@@ -6116,8 +6114,9 @@ async def _execute_code(
         _sync_mgr = get_sync_manager()
         if _sync_mgr is not None and agent_id is not None:
             await _sync_mgr.ensure_watcher(agent_id, ws)
+            await _sync_mgr.sync_to_local(str(agent_id), work_dir)
     except Exception as _se:
-        logger.debug(f"[StorageSync] ensure_watcher skipped: {_se}")
+        logger.debug(f"[StorageSync] ensure_watcher / sync_to_local skipped: {_se}")
 
     try:
         # Import here to avoid circular imports
@@ -6208,6 +6207,7 @@ async def _execute_code_legacy(ws: Path, arguments: dict, env: dict[str, str] | 
         _sync_mgr = get_sync_manager()
         if _sync_mgr is not None:
             await _sync_mgr.ensure_watcher(uuid.UUID(ws.name), ws)
+            await _sync_mgr.sync_to_local(ws.name, ws.resolve())
     except Exception:
         pass
 
