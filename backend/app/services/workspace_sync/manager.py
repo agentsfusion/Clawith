@@ -20,12 +20,15 @@ class WorkspaceSyncManager:
         idle_timeout: int = 300,
         debounce_ms: int = 500,
         max_watchers: int = 100,
+        sync_ttl_seconds: int = 60,
     ):
         self._storage = storage
         self._idle_timeout = idle_timeout
         self._debounce_ms = debounce_ms
         self._max_watchers = max_watchers
+        self._sync_ttl_seconds = sync_ttl_seconds
         self._watchers: dict[str, AgentWatcher] = {}
+        self._last_sync: dict[str, float] = {}
 
     async def ensure_watcher(self, agent_id: UUID, workspace_path: Path):
         key = str(agent_id)
@@ -68,8 +71,19 @@ class WorkspaceSyncManager:
             A dict with counts: ``{"downloaded": n, "skipped": n, "failed": n}``.
         """
         stats = {"downloaded": 0, "skipped": 0, "failed": 0}
+
+        now = time.monotonic()
+        last = self._last_sync.get(agent_id, 0.0)
+        if (now - last) < self._sync_ttl_seconds:
+            logger.debug(
+                f"[StorageSync] Skipping sync for {agent_id[:8]} — "
+                f"last synced {now - last:.1f}s ago (TTL={self._sync_ttl_seconds}s)"
+            )
+            return stats
+
         list_prefix = f"{agent_id}/{prefix}" if prefix else f"{agent_id}/"
         await self._sync_prefix(list_prefix, agent_id, local_dir, stats)
+        self._last_sync[agent_id] = time.monotonic()
         logger.info(
             f"[StorageSync] sync_to_local completed for {agent_id[:8]}: "
             f"downloaded={stats['downloaded']}, skipped={stats['skipped']}, "

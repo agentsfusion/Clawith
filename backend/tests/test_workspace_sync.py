@@ -361,6 +361,28 @@ async def test_sync_to_local_with_prefix_scope(tmp_path):
     assert (local_dir / "skills" / "a" / "SKILL.md").read_bytes() == b"skill a"
 
 
+@pytest.mark.asyncio
+async def test_sync_to_local_ttl_skips_repeated_calls(tmp_path):
+    from app.services.workspace_sync.manager import WorkspaceSyncManager
+
+    storage = FakeStorage()
+    agent_id = str(uuid.uuid4())
+    storage._files[f"{agent_id}/skills/test/SKILL.md"] = b"test skill"
+
+    mgr = WorkspaceSyncManager(storage, idle_timeout=60, debounce_ms=50, sync_ttl_seconds=60)
+    local_dir = tmp_path / agent_id
+    local_dir.mkdir(parents=True)
+
+    first = await mgr.sync_to_local(agent_id, local_dir)
+    assert first["downloaded"] == 1
+
+    storage._files[f"{agent_id}/skills/new/SKILL.md"] = b"new skill"
+    second = await mgr.sync_to_local(agent_id, local_dir)
+    assert second["downloaded"] == 0
+    assert second["skipped"] == 0
+    assert not (local_dir / "skills" / "new" / "SKILL.md").exists()
+
+
 # ── Integration: _execute_code pre-sync ──
 
 

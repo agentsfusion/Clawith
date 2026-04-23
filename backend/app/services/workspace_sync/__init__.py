@@ -19,4 +19,5 @@ def get_sync_manager():
         idle_timeout=settings.WORKSPACE_SYNC_IDLE_TIMEOUT,
         debounce_ms=settings.WORKSPACE_SYNC_DEBOUNCE_MS,
         max_watchers=settings.WORKSPACE_SYNC_MAX_WATCHERS,
+        sync_ttl_seconds=settings.STORAGE_CACHE_TTL_SECONDS,
     )
