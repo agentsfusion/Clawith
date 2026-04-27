@@ -13,6 +13,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
 from app.services.storage.factory import get_storage
+from app.services.storage.mime_types import guess_mime_type, is_inline_displayable
 from app.services.storage.interface import (
     FileNotFoundError as StorageFileNotFoundError,
     StorageError,
@@ -157,10 +158,14 @@ async def download_file(
         data = await storage.read_bytes(key)
     except StorageFileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    mime_type = guess_mime_type(filename)
+    headers: dict[str, str] = {}
+    if not is_inline_displayable(mime_type):
+        headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return Response(
         content=data,
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        media_type=mime_type,
+        headers=headers,
     )
 
 
