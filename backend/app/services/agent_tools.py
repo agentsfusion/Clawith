@@ -8391,8 +8391,8 @@ async def _generate_image(agent_id: uuid.UUID, ws: Path, arguments: dict, provid
         if not image_bytes:
             return "❌ Image generation returned empty result. Please try a different prompt."
 
-        # Save the generated image to workspace
-        full_save_path.write_bytes(image_bytes)
+        storage_key = f"{agent_id}/{save_path}"
+        await _storage().write_bytes(storage_key, image_bytes)
         size_kb = len(image_bytes) / 1024
 
         # Build the API path for inline display in chat
@@ -11135,14 +11135,26 @@ async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, ar
             raw_bytes = _agentbay_normalize_image_bytes(screenshot_data)
 
             if raw_bytes:
-                # Store in memory only — vision_inject.py will consume it.
-                from app.services.vision_inject import store_temp_screenshot
-                img_id = store_temp_screenshot(raw_bytes)
-                parts.append(
-                    f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
-                    f"NOTE: This screenshot is for LLM vision only and is not saved to the user's workspace."
-                )
-                logger.info(f"[AgentBay] Browser navigate screenshot stored in memory (id={img_id})")
+                if save_to_workspace:
+                    import time as _time
+                    rel_path = f"workspace/screenshot_{int(_time.time())}.png"
+                    await _storage().write_bytes(f"{agent_id}/{rel_path}", raw_bytes)
+                    parts.append(
+                        f"截图已保存至 `{rel_path}`。\n"
+                        f"![Browser Navigation Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
+                        f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
+                    )
+                    logger.info(f"[AgentBay] Browser navigate screenshot saved to {rel_path}")
+                else:
+                    # Store in memory only — vision_inject.py will consume it
+                    from app.services.vision_inject import store_temp_screenshot
+                    img_id = store_temp_screenshot(raw_bytes)
+                    parts.append(
+                        f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
+                        f"NOTE: This screenshot is for YOUR eyes only (LLM vision). The user CANNOT see it. "
+                        f"If the user asked to SEE a screenshot, call this tool again with save_to_workspace=true."
+                    )
+                    logger.info(f"[AgentBay] Browser navigate screenshot stored in memory (id={img_id})")
 
         return "\n\n".join(parts)
 
@@ -11181,14 +11193,26 @@ async def _agentbay_browser_screenshot(agent_id: Optional[uuid.UUID], ws: Path, 
         if raw_bytes is None:
             return "❌ 截图失败：未知数据格式"
 
-        # Store in memory only — vision_inject.py will consume it for LLM vision
-        from app.services.vision_inject import store_temp_screenshot
-        img_id = store_temp_screenshot(raw_bytes)
-        logger.info(f"[AgentBay] Browser screenshot stored in memory (id={img_id})")
-        return (
-            f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
-            f"NOTE: This screenshot is for LLM vision only and is not saved to the user's workspace."
-        )
+        if save_to_workspace:
+            import time as _time
+            rel_path = f"workspace/screenshot_{int(_time.time())}.png"
+            await _storage().write_bytes(f"{agent_id}/{rel_path}", raw_bytes)
+            logger.info(f"[AgentBay] Browser screenshot saved to workspace: {rel_path}")
+            return (
+                f"✅ 截图已保存至 `{rel_path}`。\n"
+                f"![Browser Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
+                f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
+            )
+        else:
+            # Store in memory only — vision_inject.py will consume it for LLM vision
+            from app.services.vision_inject import store_temp_screenshot
+            img_id = store_temp_screenshot(raw_bytes)
+            logger.info(f"[AgentBay] Browser screenshot stored in memory (id={img_id})")
+            return (
+                f"Internal screenshot captured for analysis. [ImageID: {img_id}]\n"
+                f"NOTE: This screenshot is for YOUR eyes only (LLM vision). The user CANNOT see it. "
+                f"If the user asked to SEE a screenshot, call this tool again with save_to_workspace=true."
+            )
 
     except RuntimeError as e:
         return f"❌ {str(e)}"
@@ -11741,220 +11765,27 @@ async def _agentbay_command_exec(agent_id: Optional[uuid.UUID], ws: Path, argume
 
 # ─── AgentBay: Computer Use Handlers ────────────────────────────────────
 
-def _agentbay_extract_screen_dimensions(screen_data) -> tuple[int | None, int | None, str]:
-    """Return width/height/dpi text from AgentBay get_screen_size payload."""
-    if not isinstance(screen_data, dict):
-        return None, None, ""
-    width = screen_data.get("width")
-    height = screen_data.get("height")
-    dpi = screen_data.get("dpiScalingFactor")
-    try:
-        width = int(width) if width is not None else None
-        height = int(height) if height is not None else None
-    except (TypeError, ValueError):
-        width, height = None, None
-    parts = []
-    if width and height:
-        parts.append(f"width={width}, height={height}")
-    if dpi is not None:
-        parts.append(f"dpiScalingFactor={dpi}")
-    return width, height, ", ".join(parts)
+async def _save_screenshot_to_workspace(agent_id: uuid.UUID, ws: Path, data) -> str:
+    """Save screenshot data to workspace and return markdown image link.
 
 
-async def _agentbay_get_screen_metadata(client) -> tuple[int | None, int | None, str]:
-    try:
-        size_result = await client.computer_get_screen_size()
-        if size_result.get("success"):
-            return _agentbay_extract_screen_dimensions(size_result.get("data"))
-    except Exception as e:
-        logger.debug(f"[AgentBay] Could not fetch computer screen size: {e}")
-    return None, None, ""
+    rel_path = f"workspace/desktop-screenshot-{int(time.time())}.png"
 
+    if isinstance(data, str):
+        if data.startswith("data:image"):
+            data = data.split(",", 1)[1]
+        raw_bytes = base64.b64decode(data)
+    elif isinstance(data, bytes):
+        raw_bytes = data
+    else:
+        return ""
 
-def _agentbay_image_dimensions(raw_bytes: bytes) -> tuple[int | None, int | None]:
-    try:
-        from io import BytesIO
-        from PIL import Image
-
-        with Image.open(BytesIO(raw_bytes)) as img:
-            return img.width, img.height
-    except Exception:
-        return None, None
-
-
-def _agentbay_crop_image_bytes(
-    raw_bytes: bytes,
-    *,
-    x: int,
-    y: int,
-    width: int,
-    height: int,
-) -> tuple[bytes, tuple[int, int, int, int], int] | None:
-    try:
-        from io import BytesIO
-        from PIL import Image
-
-        with Image.open(BytesIO(raw_bytes)) as img:
-            img_width, img_height = img.width, img.height
-            left = max(0, min(int(x), img_width - 1))
-            top = max(0, min(int(y), img_height - 1))
-            right = max(left + 1, min(left + int(width), img_width))
-            bottom = max(top + 1, min(top + int(height), img_height))
-            cropped = img.crop((left, top, right, bottom))
-
-            # Enlarge precision crops before vision injection so small controls
-            # occupy more pixels without changing the absolute coordinate labels.
-            max_side = max(cropped.width, cropped.height)
-            scale = 1
-            if max_side <= 260:
-                scale = 3
-            elif max_side <= 520:
-                scale = 2
-            if scale > 1:
-                cropped = cropped.resize((cropped.width * scale, cropped.height * scale), Image.Resampling.LANCZOS)
-
-            buf = BytesIO()
-            cropped.save(buf, format="PNG")
-            return buf.getvalue(), (left, top, right - left, bottom - top), scale
-    except Exception as e:
-        logger.debug(f"[AgentBay] Could not crop desktop screenshot: {e}")
-        return None
-
-
-def _agentbay_expand_precision_crop(
-    x: int,
-    y: int,
-    width: int,
-    height: int,
-    *,
-    min_width: int = 360,
-    min_height: int = 240,
-) -> tuple[int, int, int, int]:
-    """Expand small requested crops so near-miss targeting still shows context."""
-    width = max(1, int(width))
-    height = max(1, int(height))
-    expanded_width = max(width, min_width)
-    expanded_height = max(height, min_height)
-    center_x = int(x) + width / 2
-    center_y = int(y) + height / 2
-    expanded_x = int(round(center_x - expanded_width / 2))
-    expanded_y = int(round(center_y - expanded_height / 2))
-    return expanded_x, expanded_y, expanded_width, expanded_height
-
-
-def _agentbay_desktop_coordinate_note(
-    screen_note: str,
-    image_width: int | None = None,
-    image_height: int | None = None,
-    crop: tuple[int, int, int, int] | None = None,
-) -> str:
-    parts = []
-    if screen_note:
-        parts.append(f"Cloud Desktop coordinate system for mouse tools: {screen_note}.")
-    if image_width and image_height:
-        parts.append(f"Latest screenshot pixel size: width={image_width}, height={image_height}.")
-    if crop:
-        x, y, width, height = crop
-        parts.append(
-            f"Precision crop shown to vision: absolute origin=({x}, {y}), size={width}x{height}. "
-            "Grid labels in the crop are absolute Cloud Desktop coordinates, not crop-local coordinates."
-        )
-    if parts:
-        parts.append(
-            "The injected analysis image includes a coordinate grid; use the grid labels to choose the center of the target. "
-            "Before clicking dialog buttons, text buttons, tabs, menus, checkboxes, close buttons, small controls, "
-            "or any target whose center is not unambiguous, take a precision screenshot around that target area. "
-            "For popup dismissal, prefer agentbay_computer_dismiss_dialog before coordinate clicking. "
-            "Use absolute desktop pixels from the top-left corner (0, 0); do not use the size of the right-side preview panel."
-        )
-    return "\n".join(parts)
-
-
-def _agentbay_normalize_text(value) -> str:
-    import re
-
-    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
-
-
-def _agentbay_app_field(app: dict, *keys: str) -> str:
-    for key in keys:
-        value = app.get(key)
-        if value:
-            return str(value)
-    return ""
-
-
-def _agentbay_format_apps(apps: list, limit: int = 40) -> str:
-    import json
-
-    if not apps:
-        return "[]"
-    compact_apps = []
-    for app in apps[:limit]:
-        if isinstance(app, dict):
-            compact_apps.append(
-                {
-                    key: app.get(key)
-                    for key in ("name", "start_cmd", "startCmd", "work_directory", "workDirectory", "stop_cmd", "stopCmd")
-                    if app.get(key)
-                }
-            )
-        else:
-            compact_apps.append(str(app))
-    rendered = json.dumps(compact_apps, ensure_ascii=False, indent=2)
-    if len(apps) > limit:
-        rendered += f"\n... {len(apps) - limit} more app(s) omitted"
-    return rendered[:5000]
-
-
-def _agentbay_find_installed_app_match(query: str, apps: list) -> tuple[dict | None, float]:
-    from difflib import SequenceMatcher
-
-    query_norm = _agentbay_normalize_text(query.split()[0] if query else query)
-    if not query_norm:
-        return None, 0.0
-
-    best_app = None
-    best_score = 0.0
-    for app in apps:
-        if not isinstance(app, dict):
-            continue
-        fields = [
-            _agentbay_app_field(app, "name"),
-            _agentbay_app_field(app, "start_cmd", "startCmd"),
-            _agentbay_app_field(app, "work_directory", "workDirectory"),
-        ]
-        for field in fields:
-            field_norm = _agentbay_normalize_text(field)
-            if not field_norm:
-                continue
-            if query_norm == field_norm:
-                score = 1.0
-            elif query_norm in field_norm or field_norm in query_norm:
-                score = 0.9
-            else:
-                score = SequenceMatcher(None, query_norm, field_norm).ratio()
-            if score > best_score:
-                best_app, best_score = app, score
-
-    return best_app, best_score
-
-
-def _agentbay_uncertain_start_error(error_message: str) -> bool:
-    text = (error_message or "").lower()
-    return "may have launched" in text or "no processes found" in text
-
-
-async def _agentbay_visible_apps_note(client) -> str:
-    try:
-        visible = await client.computer_list_visible_apps()
-        if visible.get("success"):
-            apps = visible.get("apps", [])
-            return f"Visible applications after the launch attempt ({len(apps)}):\n{_agentbay_format_apps(apps, limit=20)}"
-        return f"Could not verify visible applications: {visible.get('error_message', 'Unknown error')}"
-    except Exception as e:
-        logger.debug(f"[AgentBay] Could not list visible apps after start_app: {e}")
-        return f"Could not verify visible applications: {str(e)[:200]}"
+    await _storage().write_bytes(f"{agent_id}/{rel_path}", raw_bytes)
+    return (
+        f"Screenshot saved to `{rel_path}`.\n\n"
+        f"![Desktop Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
+        f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
+    )
 
 
 async def _agentbay_computer_screenshot(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
@@ -11988,58 +11819,26 @@ async def _agentbay_computer_screenshot(agent_id: Optional[uuid.UUID], ws: Path,
         if raw_bytes is None:
             return "Screenshot captured but data format is unrecognised."
 
-        crop_bounds: tuple[int, int, int, int] | None = None
-        crop_scale = 1
-        analysis_bytes = raw_bytes
-        if (
-            focus_x is not None
-            and focus_y is not None
-            and focus_width is not None
-            and focus_height is not None
-        ):
-            try:
-                crop_result = _agentbay_crop_image_bytes(
-                    raw_bytes,
-                    x=int(round(float(focus_x))),
-                    y=int(round(float(focus_y))),
-                    width=int(round(float(focus_width))),
-                    height=int(round(float(focus_height))),
-                )
-                if crop_result:
-                    analysis_bytes, crop_bounds, crop_scale = crop_result
-            except (TypeError, ValueError):
-                crop_bounds = None
-
-        # Store in memory only — vision_inject.py will consume it for LLM vision
-        from app.services.vision_inject import store_temp_screenshot
-        grid_options = {}
-        if crop_bounds:
-            crop_x, crop_y, crop_width, crop_height = crop_bounds
-            grid_options = {
-                "origin_x": crop_x,
-                "origin_y": crop_y,
-                "minor_step": 10,
-                "major_step": 50,
-                "pixel_scale": crop_scale,
-            }
-        img_id = store_temp_screenshot(analysis_bytes, grid_options=grid_options)
-        logger.info(f"[AgentBay] Desktop screenshot stored in memory (id={img_id})")
-        screen_width, screen_height, screen_note = await _agentbay_get_screen_metadata(client)
-        image_width, image_height = _agentbay_image_dimensions(raw_bytes)
-        coordinate_note = _agentbay_desktop_coordinate_note(
-            screen_note,
-            image_width or screen_width,
-            image_height or screen_height,
-            crop=crop_bounds,
-        )
-        return (
-            f"Internal desktop screenshot captured for analysis. [ImageID: {img_id}]\n"
-            f"{coordinate_note}\n"
-            "TARGETING NOTE: Before clicking dialog buttons, text buttons, tabs, menus, checkboxes, "
-            "close buttons, small controls, or any target whose center is not unambiguous, call "
-            "agentbay_computer_precision_screenshot around the target and click from that enlarged crop.\n"
-            f"NOTE: This screenshot is for LLM vision only and is not saved to the user's workspace."
-        )
+        if save_to_workspace:
+            import time as _time
+            rel_path = f"workspace/desktop-screenshot-{int(_time.time())}.png"
+            await _storage().write_bytes(f"{agent_id}/{rel_path}", raw_bytes)
+            logger.info(f"[AgentBay] Desktop screenshot saved to workspace: {rel_path}")
+            return (
+                f"Desktop screenshot saved to `{rel_path}`.\n"
+                f"![Desktop Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
+                f"CRITICAL: Do NOT call 'send_channel_file' or 'upload_image'. Just print the Markdown above exactly as shown."
+            )
+        else:
+            # Store in memory only — vision_inject.py will consume it for LLM vision
+            from app.services.vision_inject import store_temp_screenshot
+            img_id = store_temp_screenshot(raw_bytes)
+            logger.info(f"[AgentBay] Desktop screenshot stored in memory (id={img_id})")
+            return (
+                f"Internal desktop screenshot captured for analysis. [ImageID: {img_id}]\n"
+                f"NOTE: This screenshot is for YOUR eyes only (LLM vision). The user CANNOT see it. "
+                f"If the user asked to SEE a screenshot, call this tool again with save_to_workspace=true."
+            )
 
     except RuntimeError as e:
         return f"{str(e)}. Please configure AgentBay in Agent settings."
