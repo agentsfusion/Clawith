@@ -14,43 +14,56 @@ function escapeHtml(str: string): string {
 }
 
 function renderInline(text: string): string {
-    return text
-        // Bold + italic
-        .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
-        // Bold
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/__(.*?)__/g, '<strong>$1</strong>')
-        // Italic
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/_(.*?)_/g, '<em>$1</em>')
-        // Inline code
-        .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
-        // Images
-        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
+    // Phase 1: Extract images, links, and inline code into placeholders
+    // so emphasis regex can never corrupt URLs or code content.
+    const _protected: string[] = [];
+    const _ph = (html: string): string => {
+        _protected.push(html);
+        return `\x00P${_protected.length - 1}\x00`;
+    };
+
+    // Inline code (highest priority — protect from everything)
+    text = text.replace(/`([^`]+)`/g, (_m: string, code: string) =>
+        _ph(`<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">${code}</code>`)
+    );
+
+    // Images (protect URL from emphasis corruption)
+    text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m: string, alt: string, url: string) => {
+        let finalUrl = url;
+        if (finalUrl.startsWith('/api/agents/')) {
+            const token = localStorage.getItem('token');
+            if (token && !finalUrl.includes('token=')) {
+                finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
             }
-            return `<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${alt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`;
-        })
-        // Links
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-            // Avoid matching images that snuck through or weird nested stuff
-            if (match.startsWith('!')) return match;
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
+        }
+        return _ph(`<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${alt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`);
+    });
+
+    // Links
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match: string, linkText: string, url: string) => {
+        if (match.startsWith('!')) return match;
+        let finalUrl = url;
+        if (finalUrl.startsWith('/api/agents/')) {
+            const token = localStorage.getItem('token');
+            if (token && !finalUrl.includes('token=')) {
+                finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
             }
-            return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">${text}</a>`;
-        })
-        // Strikethrough
+        }
+        return _ph(`<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">${linkText}</a>`);
+    });
+
+    // Phase 2: Emphasis (now safe — no URLs/code to corrupt)
+    text = text
+        .replace(/(?<!\w)\*\*\*(.+?)\*\*\*(?!\w)/g, '<strong><em>$1</em></strong>')
+        .replace(/(?<!\w)\*\*(.+?)\*\*(?!\w)/g, '<strong>$1</strong>')
+        .replace(/(?<!\w)\*(.+?)\*(?!\w)/g, '<em>$1</em>')
+        .replace(/(?<!\w)_(.+?)(?<!_)_(?!\w)/g, '<em>$1</em>')
         .replace(/~~(.*?)~~/g, '<del>$1</del>');
+
+    // Phase 3: Restore protected content
+    text = text.replace(/\x00P(\d+)\x00/g, (_m: string, idx: string) => _protected[parseInt(idx)]);
+
+    return text;
 }
 
 function markdownToHtml(md: string): string {
