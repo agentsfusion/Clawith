@@ -6792,6 +6792,7 @@ async def _generate_image(agent_id: uuid.UUID, ws: Path, arguments: dict, provid
         return (
             f"✅ Image generated and saved to: {save_path}\n"
             f"Size: {size_kb:.1f} KB | Provider: {provider} | Model: {model or '(default)'}\n\n"
+            f"Display this image to the user using this exact markdown:\n"
             f"![generated image]({api_image_path})"
         )
     except httpx.TimeoutException:
