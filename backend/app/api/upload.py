@@ -11,6 +11,7 @@ from loguru import logger
 from app.core.security import get_current_user
 from app.models.user import User
 from app.services.storage.factory import get_storage
+from app.services.storage.mime_types import MIME_MAP
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -23,11 +24,6 @@ TEXT_EXTENSIONS = {
 OFFICE_EXTENSIONS = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 EXTRACTABLE = TEXT_EXTENSIONS | OFFICE_EXTENSIONS
-
-MIME_MAP = {
-    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
-}
 
 
 def extract_text(file_path: Path, extension: str) -> str:

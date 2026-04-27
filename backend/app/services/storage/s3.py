@@ -24,6 +24,7 @@ from .interface import (
     StorageError,
     StoragePermissionError,
 )
+from .mime_types import guess_mime_type
 
 _CHUNK_SIZE = 1000
 
@@ -154,9 +155,10 @@ class S3StorageBackend:
     async def write_bytes(self, key: str, content: bytes) -> None:
         """Write binary content to a file (create or overwrite)."""
         normalized = self._normalize(key)
+        content_type = guess_mime_type(key)
         try:
             async with self._session.client("s3", **self._client_kwargs) as s3:
-                await s3.put_object(Bucket=self._bucket, Key=normalized, Body=content)
+                await s3.put_object(Bucket=self._bucket, Key=normalized, Body=content, ContentType=content_type)
         except Exception as exc:
             self._raise_for_client_error(exc, key)
 

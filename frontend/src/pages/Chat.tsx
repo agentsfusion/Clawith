@@ -98,6 +98,7 @@ if (typeof document !== 'undefined' && !document.getElementById(PULSE_STYLE_ID))
 
 function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
     const { t } = useTranslation();
+    const token = useAuthStore((s) => s.token);
     const [expanded, setExpanded] = useState(false);
     const count = toolCalls.length;
 
@@ -270,10 +271,44 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
                                     <div style={{
                                         fontSize: '10px', color: 'var(--text-secondary)',
                                         whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                                        maxHeight: '80px', overflowY: 'auto',
+                                        maxHeight: '200px', overflowY: 'auto',
                                         borderTop: '1px solid rgba(99,102,241,0.10)', paddingTop: '4px',
                                     }}>
-                                        {tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}
+                                        {(() => {
+                                            const resultText = tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result;
+                                            const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+                                            const parts: (string | { alt: string; url: string })[] = [];
+                                            let lastIndex = 0;
+                                            let match: RegExpExecArray | null;
+                                            while ((match = imgRegex.exec(resultText)) !== null) {
+                                                if (match.index > lastIndex) {
+                                                    parts.push(resultText.slice(lastIndex, match.index));
+                                                }
+                                                let imgUrl = match[2];
+                                                if (imgUrl.startsWith('/api/agents/') && token && !imgUrl.includes('token=')) {
+                                                    imgUrl += (imgUrl.includes('?') ? '&' : '?') + `token=${token}`;
+                                                }
+                                                parts.push({ alt: match[1], url: imgUrl });
+                                                lastIndex = imgRegex.lastIndex;
+                                            }
+                                            if (lastIndex < resultText.length) {
+                                                parts.push(resultText.slice(lastIndex));
+                                            }
+                                            if (parts.length === 1 && typeof parts[0] === 'string') {
+                                                return <>{parts[0]}</>;
+                                            }
+                                            return <>{parts.map((p, i) =>
+                                                typeof p === 'string' ? <span key={i}>{p}</span> : (
+                                                    <a key={i} href={p.url} target="_blank" rel="noopener noreferrer">
+                                                        <img src={p.url} alt={p.alt} style={{
+                                                            maxWidth: '100%', maxHeight: '200px',
+                                                            borderRadius: '4px', objectFit: 'contain',
+                                                            display: 'block', margin: '4px 0',
+                                                        }} />
+                                                    </a>
+                                                )
+                                            )}</>;
+                                        })()}
                                     </div>
                                 )}
                             </div>
