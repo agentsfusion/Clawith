@@ -16,13 +16,12 @@ function escapeHtml(str: string): string {
 function renderInline(text: string): string {
     return text
         // Bold + italic
-        .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
+        .replace(/(?<!\w)\*\*\*(.+?)\*\*\*(?!\w)/g, '<strong><em>$1</em></strong>')
         // Bold
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/__(.*?)__/g, '<strong>$1</strong>')
+        .replace(/(?<!\w)\*\*(.+?)\*\*(?!\w)/g, '<strong>$1</strong>')
         // Italic
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/_(.*?)_/g, '<em>$1</em>')
+        .replace(/(?<!\w)\*(.+?)\*(?!\w)/g, '<em>$1</em>')
+        .replace(/(?<!\w)_(.+?)(?<!_)_(?!\w)/g, '<em>$1</em>')
         // Inline code
         .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
         // Images
