@@ -69,6 +69,11 @@ interface ScriptTraceEntry {
     mem?: Record<string, string>;
 }
 
+interface GeneratedImage {
+    url: string;
+    alt: string;
+}
+
 interface Message {
     role: 'user' | 'assistant';
     content: string;
@@ -77,6 +82,7 @@ interface Message {
     thinking?: string;
     scriptTrace?: ScriptTraceEntry[];
     imageUrl?: string;
+    generatedImages?: GeneratedImage[];
     timestamp?: string;
     _isToolGroup?: boolean;
 }
@@ -224,6 +230,36 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
                     })}
                 </div>
             )}
+
+            {!expanded && (() => {
+                const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+                const thumbs: { alt: string; url: string }[] = [];
+                for (const tc of toolCalls) {
+                    if (!tc.result) continue;
+                    let m: RegExpExecArray | null;
+                    const re = new RegExp(imgRegex.source, imgRegex.flags);
+                    while ((m = re.exec(tc.result)) !== null) {
+                        let u = m[2];
+                        if (u.startsWith('/api/agents/') && token && !u.includes('token=')) {
+                            u += (u.includes('?') ? '&' : '?') + `token=${token}`;
+                        }
+                        thumbs.push({ alt: m[1], url: u });
+                    }
+                }
+                if (thumbs.length === 0) return null;
+                return (
+                    <div style={{ padding: '0 10px 6px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                        {thumbs.map((th, ti) => (
+                            <a key={ti} href={th.url} target="_blank" rel="noopener noreferrer">
+                                <img src={th.url} alt={th.alt} style={{
+                                    maxHeight: '48px', borderRadius: '4px',
+                                    objectFit: 'contain', display: 'block',
+                                }} />
+                            </a>
+                        ))}
+                    </div>
+                );
+            })()}
 
             {/* ── Expanded: each tool's full detail row ── */}
             {expanded && (
@@ -513,7 +549,7 @@ export default function Chat() {
             };
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(data.type)) {
+                if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded', 'generated_image'].includes(data.type)) {
                     setIsWaiting(false);
                 }
                 if (['error', 'quota_exceeded'].includes(data.type)) {
@@ -559,6 +595,24 @@ export default function Chat() {
                             return updated;
                         }
                         return [...prev, { role: 'assistant', content: '', scriptTrace: [traceEntry], timestamp: new Date().toISOString() }];
+                    });
+                    return;
+                }
+
+                if (data.type === 'generated_image') {
+                    const genImg: GeneratedImage = { url: data.url, alt: data.alt || 'generated image' };
+                    setMessages(prev => {
+                        const updated = [...prev];
+                        const last = updated[updated.length - 1];
+                        if (last && last.role === 'assistant') {
+                            updated[updated.length - 1] = {
+                                ...last,
+                                generatedImages: [...(last.generatedImages || []), genImg],
+                            };
+                        } else {
+                            updated.push({ role: 'assistant', content: '', generatedImages: [genImg], timestamp: new Date().toISOString() });
+                        }
+                        return updated;
                     });
                     return;
                 }
@@ -681,6 +735,7 @@ export default function Chat() {
                             const existing = updated[updated.length - 1];
                             updated[updated.length - 1] = {
                                 role: 'assistant', content: data.content, toolCalls, thinking,
+                                ...(existing.generatedImages?.length ? { generatedImages: existing.generatedImages } : {}),
                                 ...(existing.scriptTrace ? { scriptTrace: existing.scriptTrace } : {}),
                             };
                         } else {
@@ -1224,7 +1279,7 @@ export default function Chat() {
                                                                                     {es.detail}
                                                                                 </span>
                                                                             </div>
-                                                                        );
+                                                                         );
                                                                     })}
                                                                 </div>
                                                             )}
@@ -1357,6 +1412,24 @@ export default function Chat() {
                                 )}
                                 {msg.toolCalls && msg.toolCalls.length > 0 && (
                                     <ChatToolChain toolCalls={msg.toolCalls} />
+                                )}
+                                {msg.generatedImages && msg.generatedImages.length > 0 && (
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', margin: '4px 0' }}>
+                                        {msg.generatedImages.map((gi, giIdx) => {
+                                            let imgUrl = gi.url;
+                                            if (imgUrl.startsWith('/api/agents/') && token && !imgUrl.includes('token=')) {
+                                                imgUrl += (imgUrl.includes('?') ? '&' : '?') + `token=${token}`;
+                                            }
+                                            return (
+                                                <a key={giIdx} href={imgUrl} target="_blank" rel="noopener noreferrer">
+                                                    <img src={imgUrl} alt={gi.alt} style={{
+                                                        maxWidth: '100%', maxHeight: '400px',
+                                                        borderRadius: '4px', objectFit: 'contain', cursor: 'pointer',
+                                                    }} />
+                                                </a>
+                                            );
+                                        })}
+                                    </div>
                                 )}
                                 {msg.role === 'assistant' ? (
                                     streaming && !msg.content && i === messages.length - 1 ? (
