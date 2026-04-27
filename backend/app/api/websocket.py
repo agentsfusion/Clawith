@@ -510,6 +510,16 @@ async def websocket_chat(
                         # Save completed tool calls to DB so they persist in chat history
                         if data.get("status") == "done":
                             try:
+                                # Emit dedicated generated_image event for image tools
+                                if data.get("name", "").startswith("generate_image_"):
+                                    import re as _img_re
+                                    _img_match = _img_re.search(r'!\[([^\]]*)\]\(([^)]+)\)', data.get("result") or "")
+                                    if _img_match:
+                                        await websocket.send_json({
+                                            "type": "generated_image",
+                                            "url": _img_match.group(2),
+                                            "alt": _img_match.group(1),
+                                        })
                                 import json as _json_tc
                                 async with async_session() as _tc_db:
                                     tc_msg = ChatMessage(
@@ -520,7 +530,7 @@ async def websocket_chat(
                                             "name": data.get("name", ""),
                                             "args": data.get("args"),
                                             "status": "done",
-                                            "result": (data.get("result") or "")[:500],
+                                            "result": (data.get("result") or "")[:2000 if data.get("name", "").startswith("generate_image_") else 500],
                                             "reasoning_content": data.get("reasoning_content"),
                                         }),
                                         conversation_id=conv_id,

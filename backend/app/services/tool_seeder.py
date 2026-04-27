@@ -848,7 +848,7 @@ BUILTIN_TOOLS = [
     {
         "name": "generate_image_siliconflow",
         "display_name": "Generate Image (SiliconFlow)",
-        "description": "Generate an image via SiliconFlow FLUX models. China-friendly and fast.",
+        "description": "Generate an image via SiliconFlow FLUX models. China-friendly and fast. Images are automatically displayed to the user. Do not repeat the image URL or file path in your response — simply describe what was generated.",
         "category": "media",
         "icon": "🎨",
         "is_default": False,
@@ -895,7 +895,7 @@ BUILTIN_TOOLS = [
     {
         "name": "generate_image_openai",
         "display_name": "Generate Image (OpenAI)",
-        "description": "Generate an image via OpenAI DALL-E models.",
+        "description": "Generate an image via OpenAI DALL-E models. Images are automatically displayed to the user. Do not repeat the image URL or file path in your response — simply describe what was generated.",
         "category": "media",
         "icon": "🎨",
         "is_default": False,
@@ -942,7 +942,7 @@ BUILTIN_TOOLS = [
     {
         "name": "generate_image_google",
         "display_name": "Generate Image (Google/Vertex)",
-        "description": "Generate an image via Google Gemini Image (Nano Banana) or Vertex AI.",
+        "description": "Generate an image via Google Gemini Image (Nano Banana) or Vertex AI. Images are automatically displayed to the user. Do not repeat the image URL or file path in your response — simply describe what was generated.",
         "category": "media",
         "icon": "🎨",
         "is_default": False,
