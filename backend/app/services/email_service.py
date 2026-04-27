@@ -17,7 +17,7 @@ from email.header import decode_header
 from email.utils import parseaddr, formataddr, make_msgid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from app.core.email import force_ipv4, send_smtp_email
 
@@ -159,6 +159,7 @@ async def send_email(
     cc: Optional[str] = None,
     attachments: Optional[list[str]] = None,
     workspace_path: Optional[Path] = None,
+    agent_id: Optional[Any] = None,
 ) -> str:
     """Send an email via SMTP.
 
@@ -191,7 +192,10 @@ async def send_email(
 
     # Attach files
     if attachments and workspace_path:
+        from app.services.sync_layer import ensure_local_file as _ensure_local_file
         for rel_path in attachments:
+            if agent_id:
+                await _ensure_local_file(agent_id, workspace_path, rel_path)
             full_path = workspace_path / rel_path
             if full_path.exists() and full_path.is_file():
                 with open(full_path, "rb") as f:
