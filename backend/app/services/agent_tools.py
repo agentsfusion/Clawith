@@ -42,6 +42,7 @@ from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
 from app.services.storage.factory import get_storage
+from app.services.sync_layer import ensure_local_file, sync_local_to_obs, write_dual
 from app.config import get_settings
 from app.services.llm.finish import (
     FINISH_PROTOCOL_REMINDER,
@@ -2637,113 +2638,15 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
             await storage.write(soul_key, "# Personality\n\n_Describe your role and responsibilities._\n")
 
 
-@dataclass
-class TempWorkspaceManifestEntry:
-    rel_path: str
-    storage_key: str
-    base_version_token: str
-    base_hash: str
-    size: int
+    try:
+        from app.services.workspace_sync import get_sync_manager
+        _sync_mgr = get_sync_manager()
+        if _sync_mgr is not None:
+            await _sync_mgr.sync_to_local(str(agent_id), ws)
+    except Exception as _se:
+        logger.warning(f"[StorageSync] Initial sync_to_local failed for {agent_id}: {_se}")
 
-
-@dataclass
-class TempWorkspace:
-    temp_dir: tempfile.TemporaryDirectory
-    root: Path
-    agent_id: uuid.UUID
-    tenant_id: str | None
-    selected_paths: list[str]
-    manifest: dict[str, TempWorkspaceManifestEntry]
-
-    def cleanup(self) -> None:
-        self.temp_dir.cleanup()
-
-
-async def _materialize_storage_workspace(storage, storage_key: str, local_root: Path) -> None:
-    if not await storage.is_dir(storage_key):
-        return
-    for entry in await storage.list_dir(storage_key):
-        await _materialize_storage_entry(storage, entry.key, storage_key, local_root)
-
-
-async def _materialize_storage_entry(storage, entry_key: str, root_key: str, local_root: Path) -> None:
-    rel = entry_key.removeprefix(root_key.rstrip("/") + "/")
-    target = (local_root / rel).resolve()
-    if not str(target).startswith(str(local_root.resolve())):
-        return
-    if await storage.is_dir(entry_key):
-        target.mkdir(parents=True, exist_ok=True)
-        for child in await storage.list_dir(entry_key):
-            await _materialize_storage_entry(storage, child.key, root_key, local_root)
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(await storage.read_bytes(entry_key))
-
-
-async def _prepare_temp_workspace(
-    agent_id: uuid.UUID,
-    tenant_id: str | None = None,
-    paths: list[str] | None = None,
-) -> TempWorkspace:
-    tmp = tempfile.TemporaryDirectory(prefix=f"clawith-agent-{str(agent_id)[:8]}-")
-    temp_ws = Path(tmp.name)
-    for folder in ("workspace", "memory", "skills"):
-        (temp_ws / folder).mkdir(parents=True, exist_ok=True)
-
-    storage = get_storage_backend()
-    budget = {"total": 0}
-    selected = TEMP_WORKSPACE_DEFAULT_PATHS if paths is None else [path for path in paths if path]
-    manifest: dict[str, TempWorkspaceManifestEntry] = {}
-    for rel_path in selected:
-        storage_key, normalized, is_enterprise = _tool_storage_key(agent_id, rel_path, tenant_id)
-        if is_enterprise:
-            continue
-        await _materialize_storage_path_with_budget(storage, storage_key, normalized, temp_ws, budget, manifest)
-    return TempWorkspace(
-        temp_dir=tmp,
-        root=temp_ws,
-        agent_id=agent_id,
-        tenant_id=tenant_id,
-        selected_paths=list(selected),
-        manifest=manifest,
-    )
-
-
-async def _materialize_storage_path_with_budget(
-    storage,
-    storage_key: str,
-    rel_path: str,
-    local_root: Path,
-    budget: dict,
-    manifest: dict[str, TempWorkspaceManifestEntry],
-) -> None:
-    if await storage.is_file(storage_key):
-        version = await storage.get_version(storage_key)
-        if version.size > TOOL_MATERIALIZE_MAX_FILE_BYTES:
-            return
-        if budget["total"] + version.size > TOOL_MATERIALIZE_MAX_TOTAL_BYTES:
-            return
-        target = (local_root / rel_path).resolve()
-        if not str(target).startswith(str(local_root.resolve())):
-            return
-        target.parent.mkdir(parents=True, exist_ok=True)
-        data = await storage.read_bytes(storage_key)
-        target.write_bytes(data)
-        normalized_rel = normalize_workspace_path(rel_path)
-        manifest[normalized_rel] = TempWorkspaceManifestEntry(
-            rel_path=normalized_rel,
-            storage_key=storage_key,
-            base_version_token=version.token,
-            base_hash=content_hash_bytes(data),
-            size=version.size,
-        )
-        budget["total"] += version.size
-        return
-    if await storage.is_dir(storage_key):
-        (local_root / rel_path).mkdir(parents=True, exist_ok=True)
-        for entry in await storage.list_dir(storage_key):
-            child_rel = f"{rel_path.rstrip('/')}/{entry.name}" if rel_path else entry.name
-            await _materialize_storage_path_with_budget(storage, entry.key, child_rel, local_root, budget, manifest)
+    return ws
 
 
 async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
@@ -4239,8 +4142,7 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
     if not await storage.exists(storage_key):
         return f"Error: File not found: {rel_path}"
 
-    # For channel uploads, use local filesystem path (required by Feishu/Slack APIs)
-    file_path = (ws / rel_path).resolve()
+    file_path = await ensure_local_file(agent_id, ws, rel_path)
     ws_resolved = ws.resolve()
     if not str(file_path).startswith(str(ws_resolved)):
         return f"Error: Access denied: path is outside workspace"
@@ -6612,9 +6514,23 @@ async def _create_on_message_trigger(
 
 
 async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: str) -> None:
-    """Create or update an in-progress Focus item."""
+    """Append a pending focus item to the agent's focus.md."""
+    focus_path = WORKSPACE_ROOT / str(agent_id) / "focus.md"
+    ws = WORKSPACE_ROOT / str(agent_id)
+    line = f"- [ ] {identifier}: {description}\n"
     try:
-        await ensure_focus_item(agent_id, focus_ref=identifier, description=description)
+        await ensure_local_file(agent_id, ws, "focus.md")
+        if focus_path.exists():
+            content = focus_path.read_text(encoding="utf-8")
+            if identifier in content:
+                return
+            if not content.endswith("\n"):
+                content += "\n"
+            content += line
+        else:
+            content = f"# Focus\n\n{line}"
+        focus_path.parent.mkdir(parents=True, exist_ok=True)
+        await write_dual(agent_id, ws, "focus.md", content)
     except Exception as e:
         logger.warning(f"[A2A] Failed to update Focus for agent {agent_id}: {e}")
 
@@ -7632,7 +7548,7 @@ async def _execute_code(
             await _sync_mgr.ensure_watcher(agent_id, ws)
             await _sync_mgr.sync_to_local(str(agent_id), work_dir)
     except Exception as _se:
-        logger.debug(f"[StorageSync] ensure_watcher / sync_to_local skipped: {_se}")
+        logger.warning(f"[StorageSync] ensure_watcher / sync_to_local skipped: {_se}")
 
     try:
         # Import here to avoid circular imports
@@ -7727,8 +7643,8 @@ async def _execute_code_legacy(ws: Path, arguments: dict, env: dict[str, str] | 
         if _sync_mgr is not None:
             await _sync_mgr.ensure_watcher(uuid.UUID(ws.name), ws)
             await _sync_mgr.sync_to_local(ws.name, ws.resolve())
-    except Exception:
-        pass
+    except Exception as _se:
+        logger.warning(f"[StorageSync] sync_to_local skipped (legacy): {_se}")
 
     safety_error = _check_code_safety(language, code)
     if safety_error:
@@ -8222,8 +8138,7 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     file_content = None
 
     if file_path:
-        # Read from workspace
-        full_path = (ws / file_path).resolve()
+        full_path = await ensure_local_file(agent_id, ws, file_path)
         if not str(full_path).startswith(str(ws)):
             return "❌ Access denied: path is outside the workspace"
         if not full_path.exists():
@@ -10956,7 +10871,7 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
         return "Only .html and .htm files can be published"
 
     # Resolve and check file exists
-    full_path = (ws / path).resolve()
+    full_path = await ensure_local_file(agent_id, ws, path)
     if not str(full_path).startswith(str(ws.resolve())):
         return "Path traversal not allowed"
     if not full_path.exists() or not full_path.is_file():
@@ -11464,6 +11379,7 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
                 cc=arguments.get("cc"),
                 attachments=arguments.get("attachments"),
                 workspace_path=ws,
+                agent_id=agent_id,
             )
         elif tool_name == "read_emails":
             return await read_emails(
@@ -11587,7 +11503,10 @@ async def _install_skill(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
             if not str(file_path).startswith(str(base.resolve())):
                 continue  # safety: skip path traversal
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(f["content"], encoding="utf-8")
+            rel = str(file_path).removeprefix(str(base.resolve()) + "/")
+            if rel == str(file_path):
+                rel = str(file_path.relative_to(base))
+            await write_dual(agent_id, ws, f"skills/{folder_name}/{rel}", f["content"])
             written.append(f["path"])
 
         from app.services.gws_skill_seeder import is_gws_skill
@@ -12585,6 +12504,7 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
             if err:
                 return err
             assert local_path is not None
+            local_path = await ensure_local_file(agent_id, ws, from_path)
             import os
             if not os.path.exists(local_path):
                 return f"File not found in workspace: {from_path}"
@@ -12629,6 +12549,7 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
                 from_path, local_path
             )
             if result.success:
+                await sync_local_to_obs(agent_id, Path(local_path), ws)
                 return (
                     f"Transferred [{from_type}]{from_path} → workspace/{to_path} "
                     f"({result.bytes_received} bytes). "
