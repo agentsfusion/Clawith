@@ -6935,7 +6935,6 @@ async def _generate_image_google(
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                "numberOfImages": 1,
                 "aspectRatio": aspect_ratio,
             },
         },
