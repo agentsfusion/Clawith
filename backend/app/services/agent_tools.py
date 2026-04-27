@@ -6783,8 +6783,8 @@ async def _generate_image(agent_id: uuid.UUID, ws: Path, arguments: dict, provid
         if not image_bytes:
             return "❌ Image generation returned empty result. Please try a different prompt."
 
-        # Save the generated image to workspace
-        full_save_path.write_bytes(image_bytes)
+        storage_key = f"{agent_id}/{save_path}"
+        await _storage().write_bytes(storage_key, image_bytes)
         size_kb = len(image_bytes) / 1024
 
         # Build the API path for inline display in chat
@@ -9142,12 +9142,9 @@ async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, ar
 
             if raw_bytes:
                 if save_to_workspace:
-                    # Persist to workspace/ so the user can see the file
                     import time as _time
                     rel_path = f"workspace/screenshot_{int(_time.time())}.png"
-                    screenshot_path = ws / rel_path
-                    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-                    screenshot_path.write_bytes(raw_bytes)
+                    await _storage().write_bytes(f"{agent_id}/{rel_path}", raw_bytes)
                     parts.append(
                         f"截图已保存至 `{rel_path}`。\n"
                         f"![Browser Navigation Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
@@ -9213,12 +9210,9 @@ async def _agentbay_browser_screenshot(agent_id: Optional[uuid.UUID], ws: Path, 
             return "❌ 截图失败：未知数据格式"
 
         if save_to_workspace:
-            # Persist to workspace/ so the user can see the file
             import time as _time
             rel_path = f"workspace/screenshot_{int(_time.time())}.png"
-            screenshot_path = ws / rel_path
-            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-            screenshot_path.write_bytes(raw_bytes)
+            await _storage().write_bytes(f"{agent_id}/{rel_path}", raw_bytes)
             logger.info(f"[AgentBay] Browser screenshot saved to workspace: {rel_path}")
             return (
                 f"✅ 截图已保存至 `{rel_path}`。\n"
@@ -9667,7 +9661,7 @@ async def _agentbay_command_exec(agent_id: Optional[uuid.UUID], ws: Path, argume
 
 # ─── AgentBay: Computer Use Handlers ────────────────────────────────────
 
-def _save_screenshot_to_workspace(agent_id: uuid.UUID, ws: Path, data) -> str:
+async def _save_screenshot_to_workspace(agent_id: uuid.UUID, ws: Path, data) -> str:
     """Save screenshot data to workspace and return markdown image link.
 
     Common helper for computer_screenshot and browser screenshot data.
@@ -9676,10 +9670,7 @@ def _save_screenshot_to_workspace(agent_id: uuid.UUID, ws: Path, data) -> str:
     import base64
 
     rel_path = f"workspace/desktop-screenshot-{int(time.time())}.png"
-    screenshot_path = ws / rel_path
-    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Handle various data formats from the SDK
     if isinstance(data, str):
         if data.startswith("data:image"):
             data = data.split(",", 1)[1]
@@ -9689,7 +9680,7 @@ def _save_screenshot_to_workspace(agent_id: uuid.UUID, ws: Path, data) -> str:
     else:
         return ""
 
-    screenshot_path.write_bytes(raw_bytes)
+    await _storage().write_bytes(f"{agent_id}/{rel_path}", raw_bytes)
     return (
         f"Screenshot saved to `{rel_path}`.\n\n"
         f"![Desktop Screenshot](/api/agents/{agent_id}/files/download?path={rel_path})\n"
@@ -9734,12 +9725,9 @@ async def _agentbay_computer_screenshot(agent_id: Optional[uuid.UUID], ws: Path,
             return "Screenshot captured but data format is unrecognised."
 
         if save_to_workspace:
-            # Persist to workspace/ for user visibility
             import time as _time
             rel_path = f"workspace/desktop-screenshot-{int(_time.time())}.png"
-            screenshot_path = ws / rel_path
-            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-            screenshot_path.write_bytes(raw_bytes)
+            await _storage().write_bytes(f"{agent_id}/{rel_path}", raw_bytes)
             logger.info(f"[AgentBay] Desktop screenshot saved to workspace: {rel_path}")
             return (
                 f"Desktop screenshot saved to `{rel_path}`.\n"
