@@ -39,6 +39,7 @@ from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
 from app.services.storage.factory import get_storage
+from app.services.sync_layer import ensure_local_file, sync_local_to_obs, write_dual
 from app.config import get_settings
 
 
@@ -2296,6 +2297,14 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     # Always sync tasks from DB
     await _sync_tasks_to_file(agent_id, ws)
 
+    try:
+        from app.services.workspace_sync import get_sync_manager
+        _sync_mgr = get_sync_manager()
+        if _sync_mgr is not None:
+            await _sync_mgr.sync_to_local(str(agent_id), ws)
+    except Exception as _se:
+        logger.warning(f"[StorageSync] Initial sync_to_local failed for {agent_id}: {_se}")
+
     return ws
 
 
@@ -3214,8 +3223,7 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
     if not await storage.exists(storage_key):
         return f"Error: File not found: {rel_path}"
 
-    # For channel uploads, use local filesystem path (required by Feishu/Slack APIs)
-    file_path = (ws / rel_path).resolve()
+    file_path = await ensure_local_file(agent_id, ws, rel_path)
     ws_resolved = ws.resolve()
     if not str(file_path).startswith(str(ws_resolved)):
         return f"Error: Access denied: path is outside workspace"
@@ -5218,8 +5226,10 @@ async def _create_on_message_trigger(
 async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: str) -> None:
     """Append a pending focus item to the agent's focus.md."""
     focus_path = WORKSPACE_ROOT / str(agent_id) / "focus.md"
+    ws = WORKSPACE_ROOT / str(agent_id)
     line = f"- [ ] {identifier}: {description}\n"
     try:
+        await ensure_local_file(agent_id, ws, "focus.md")
         if focus_path.exists():
             content = focus_path.read_text(encoding="utf-8")
             if identifier in content:
@@ -5230,7 +5240,7 @@ async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: 
         else:
             content = f"# Focus\n\n{line}"
         focus_path.parent.mkdir(parents=True, exist_ok=True)
-        focus_path.write_text(content, encoding="utf-8")
+        await write_dual(agent_id, ws, "focus.md", content)
     except Exception as e:
         logger.warning(f"[A2A] Failed to update focus.md for agent {agent_id}: {e}")
 
@@ -6116,7 +6126,7 @@ async def _execute_code(
             await _sync_mgr.ensure_watcher(agent_id, ws)
             await _sync_mgr.sync_to_local(str(agent_id), work_dir)
     except Exception as _se:
-        logger.debug(f"[StorageSync] ensure_watcher / sync_to_local skipped: {_se}")
+        logger.warning(f"[StorageSync] ensure_watcher / sync_to_local skipped: {_se}")
 
     try:
         # Import here to avoid circular imports
@@ -6208,8 +6218,8 @@ async def _execute_code_legacy(ws: Path, arguments: dict, env: dict[str, str] | 
         if _sync_mgr is not None:
             await _sync_mgr.ensure_watcher(uuid.UUID(ws.name), ws)
             await _sync_mgr.sync_to_local(ws.name, ws.resolve())
-    except Exception:
-        pass
+    except Exception as _se:
+        logger.warning(f"[StorageSync] sync_to_local skipped (legacy): {_se}")
 
     safety_error = _check_code_safety(language, code)
     if safety_error:
@@ -6628,8 +6638,7 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     file_content = None
 
     if file_path:
-        # Read from workspace
-        full_path = (ws / file_path).resolve()
+        full_path = await ensure_local_file(agent_id, ws, file_path)
         if not str(full_path).startswith(str(ws)):
             return "❌ Access denied: path is outside the workspace"
         if not full_path.exists():
@@ -8988,7 +8997,7 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
         return "Only .html and .htm files can be published"
 
     # Resolve and check file exists
-    full_path = (ws / path).resolve()
+    full_path = await ensure_local_file(agent_id, ws, path)
     if not str(full_path).startswith(str(ws.resolve())):
         return "Path traversal not allowed"
     if not full_path.exists() or not full_path.is_file():
@@ -9339,6 +9348,7 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
                 cc=arguments.get("cc"),
                 attachments=arguments.get("attachments"),
                 workspace_path=ws,
+                agent_id=agent_id,
             )
         elif tool_name == "read_emails":
             return await read_emails(
@@ -9483,7 +9493,10 @@ async def _install_skill(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
             if not str(file_path).startswith(str(base.resolve())):
                 continue  # safety: skip path traversal
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(f["content"], encoding="utf-8")
+            rel = str(file_path).removeprefix(str(base.resolve()) + "/")
+            if rel == str(file_path):
+                rel = str(file_path.relative_to(base))
+            await write_dual(agent_id, ws, f"skills/{folder_name}/{rel}", f["content"])
             written.append(f["path"])
 
         from app.services.gws_skill_seeder import is_gws_skill
@@ -10114,6 +10127,7 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
             if err:
                 return err
             assert local_path is not None
+            local_path = await ensure_local_file(agent_id, ws, from_path)
             import os
             if not os.path.exists(local_path):
                 return f"File not found in workspace: {from_path}"
@@ -10158,6 +10172,7 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
                 from_path, local_path
             )
             if result.success:
+                await sync_local_to_obs(agent_id, Path(local_path), ws)
                 return (
                     f"Transferred [{from_type}]{from_path} → workspace/{to_path} "
                     f"({result.bytes_received} bytes). "
