@@ -1367,7 +1367,7 @@ export default function Chat() {
                                             <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
                                         </div>
                                     ) : (
-                                        <MarkdownRenderer content={msg.content} />
+                                        <MarkdownRenderer content={msg.content} agentId={id} />
                                     )
                                 ) : (
                                     <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>

@@ -21,58 +21,27 @@ function escapeHtml(str: string): string {
         .replace(/"/g, '&quot;');
 }
 
-function escapeAttribute(str: string): string {
-    return escapeHtml(str).replace(/'/g, '&#39;');
+/** Known URL schemes that should NOT be treated as local file paths. */
+const _KNOWN_URL_PREFIXES = ['/api/', 'http://', 'https://', 'data:', 'blob:', '#', 'mailto:', 'tel:'];
+
+function _resolveImageUrl(url: string, agentId?: string): string {
+    if (agentId && !_KNOWN_URL_PREFIXES.some(p => url.startsWith(p))) {
+        return `/api/agents/${agentId}/files/download?path=${encodeURIComponent(url)}`;
+    }
+    return url;
 }
 
-function prepareUrl(url: string, kind: 'link' | 'image' = 'link'): string | null {
-    let finalUrl = url.trim().replace(/^<|>$/g, '');
-    const lower = finalUrl.toLowerCase();
-    const isAllowed =
-        lower.startsWith('http://') ||
-        lower.startsWith('https://') ||
-        lower.startsWith('mailto:') ||
-        finalUrl.startsWith('/') ||
-        (kind === 'image' && lower.startsWith('data:image/'));
-
-    if (!isAllowed) return null;
-
-    if (finalUrl.startsWith('/api/agents/')) {
+function _injectJwtToken(url: string): string {
+    if (url.startsWith('/api/agents/')) {
         const token = localStorage.getItem('token');
-        if (token && !finalUrl.includes('token=')) {
-            finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+        if (token && !url.includes('token=')) {
+            url += (url.includes('?') ? '&' : '?') + `token=${token}`;
         }
     }
-    return finalUrl;
+    return url;
 }
 
-function renderLink(url: string, label: string): string {
-    const finalUrl = prepareUrl(url);
-    if (!finalUrl) return label;
-    return `<a href="${escapeAttribute(finalUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);text-decoration:underline;text-underline-offset:2px;word-break:break-all">${label}</a>`;
-}
-
-function autolinkBareUrls(html: string): string {
-    return html.replace(/https?:\/\/[^\s<>"']+/g, (rawUrl) => {
-        const trailingMatch = rawUrl.match(/[),.;:!?，。！？；：、）】》]+$/);
-        const trailing = trailingMatch?.[0] ?? '';
-        const url = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
-        if (!url) return rawUrl;
-        return renderLink(url, url) + trailing;
-    });
-}
-
-function triggerImageDownload(url: string, alt: string) {
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = alt || 'image';
-    link.rel = 'noopener noreferrer';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-}
-
-function renderInline(text: string): string {
+function renderInline(text: string, agentId?: string): string {
     // Phase 1: Extract images, links, and inline code into placeholders
     // so emphasis regex can never corrupt URLs or code content.
     const _protected: string[] = [];
@@ -88,26 +57,14 @@ function renderInline(text: string): string {
 
     // Images (protect URL from emphasis corruption)
     text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m: string, alt: string, url: string) => {
-        let finalUrl = url;
-        if (finalUrl.startsWith('/api/agents/')) {
-            const token = localStorage.getItem('token');
-            if (token && !finalUrl.includes('token=')) {
-                finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-            }
-        }
+        let finalUrl = _injectJwtToken(_resolveImageUrl(url, agentId));
         return _ph(`<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${alt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`);
     });
 
     // Links
     text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match: string, linkText: string, url: string) => {
         if (match.startsWith('!')) return match;
-        let finalUrl = url;
-        if (finalUrl.startsWith('/api/agents/')) {
-            const token = localStorage.getItem('token');
-            if (token && !finalUrl.includes('token=')) {
-                finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-            }
-        }
+        let finalUrl = _injectJwtToken(_resolveImageUrl(url, agentId));
         return _ph(`<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">${linkText}</a>`);
     });
 
@@ -125,7 +82,7 @@ function renderInline(text: string): string {
     return text;
 }
 
-function markdownToHtml(md: string): string {
+function markdownToHtml(md: string, agentId?: string): string {
     const lines = md.split('\n');
     let html = '';
     let inCodeBlock = false;
@@ -181,7 +138,7 @@ function markdownToHtml(md: string): string {
             const level = hMatch[1].length;
             const sizes = ['1.6em', '1.4em', '1.2em', '1.1em', '1em', '0.9em'];
             const margins = ['20px 0 8px', '16px 0 6px', '14px 0 5px', '12px 0 4px', '10px 0 4px', '8px 0 4px'];
-            html += `<h${level} style="margin:${margins[level - 1]};font-size:${sizes[level - 1]};font-weight:600;line-height:1.3">${renderInline(hMatch[2])}</h${level}>`;
+            html += `<h${level} style="margin:${margins[level - 1]};font-size:${sizes[level - 1]};font-weight:600;line-height:1.3">${renderInline(hMatch[2], agentId)}</h${level}>`;
             continue;
         }
 
@@ -199,7 +156,7 @@ function markdownToHtml(md: string): string {
                 html += '<blockquote style="border-left:3px solid var(--accent-primary);margin:8px 0;padding:4px 12px;color:var(--text-secondary);background:var(--bg-secondary);border-radius:0 4px 4px 0">';
                 inBlockquote = true;
             }
-            html += `<div>${renderInline(line.slice(2))}</div>`;
+            html += `<div>${renderInline(line.slice(2), agentId)}</div>`;
             continue;
         } else if (inBlockquote) {
             flushBlockquote();
@@ -219,10 +176,10 @@ function markdownToHtml(md: string): string {
                 inTable = true;
                 tableHeader = false;
                 // This is the header row
-                html += '<tr>' + cols.map(c => `<th style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px;background:var(--bg-secondary);text-align:left;font-weight:600">${renderInline(c)}</th>`).join('') + '</tr>';
+                html += '<tr>' + cols.map(c => `<th style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px;background:var(--bg-secondary);text-align:left;font-weight:600">${renderInline(c, agentId)}</th>`).join('') + '</tr>';
                 html += '</thead><tbody>';
             } else {
-                html += '<tr>' + cols.map(c => `<td style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px">${renderInline(c)}</td>`).join('') + '</tr>';
+                html += '<tr>' + cols.map(c => `<td style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px">${renderInline(c, agentId)}</td>`).join('') + '</tr>';
             }
             continue;
         } else if (inTable) {
@@ -234,7 +191,7 @@ function markdownToHtml(md: string): string {
         if (ulMatch) {
             flushBlockquote(); flushTable();
             if (inList !== 'ul') { if (inList) flushList(); html += '<ul style="margin:6px 0;padding-left:24px">'; inList = 'ul'; }
-            html += `<li style="margin:2px 0">${renderInline(ulMatch[2])}</li>`;
+            html += `<li style="margin:2px 0">${renderInline(ulMatch[2], agentId)}</li>`;
             continue;
         }
 
@@ -243,13 +200,13 @@ function markdownToHtml(md: string): string {
         if (olMatch) {
             flushBlockquote(); flushTable();
             if (inList !== 'ol') { if (inList) flushList(); html += '<ol style="margin:6px 0;padding-left:24px">'; inList = 'ol'; }
-            html += `<li style="margin:2px 0">${renderInline(olMatch[2])}</li>`;
+            html += `<li style="margin:2px 0">${renderInline(olMatch[2], agentId)}</li>`;
             continue;
         }
 
         // Regular paragraph
         flushList(); flushBlockquote(); flushTable();
-        html += `<p style="margin:4px 0;line-height:1.7">${renderInline(line)}</p>`;
+        html += `<p style="margin:4px 0;line-height:1.7">${renderInline(line, agentId)}</p>`;
     }
 
     // Close any open structures
@@ -265,56 +222,11 @@ interface MarkdownRendererProps {
     content: string;
     style?: React.CSSProperties;
     className?: string;
+    agentId?: string;
 }
 
-export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, style, className }: MarkdownRendererProps) {
-    const html = useMemo(() => markdownToHtml(content), [content]);
-    const [lightbox, setLightbox] = useState<{ src: string; alt: string; scale: number } | null>(null);
-
-    const closeLightbox = useCallback(() => setLightbox(null), []);
-    const zoomIn = useCallback(() => setLightbox(prev => prev ? { ...prev, scale: Math.min(4, prev.scale + 0.25) } : prev), []);
-    const zoomOut = useCallback(() => setLightbox(prev => prev ? { ...prev, scale: Math.max(0.25, prev.scale - 0.25) } : prev), []);
-    const resetZoom = useCallback(() => setLightbox(prev => prev ? { ...prev, scale: 1 } : prev), []);
-
-    useEffect(() => {
-        if (!lightbox) return;
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') closeLightbox();
-            if (event.key === '+') zoomIn();
-            if (event.key === '-') zoomOut();
-            if (event.key === '0') resetZoom();
-        };
-        window.addEventListener('keydown', onKeyDown);
-        return () => window.removeEventListener('keydown', onKeyDown);
-    }, [closeLightbox, lightbox, resetZoom, zoomIn, zoomOut]);
-
-    const handleContainerClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-        const target = event.target as HTMLElement | null;
-        if (!target) return;
-
-        const downloadButton = target.closest<HTMLElement>('[data-markdown-image-download]');
-        if (downloadButton) {
-            event.preventDefault();
-            event.stopPropagation();
-            triggerImageDownload(
-                downloadButton.dataset.markdownImageDownload || '',
-                downloadButton.dataset.markdownImageAlt || 'image',
-            );
-            return;
-        }
-
-        const image = target.closest<HTMLImageElement>('[data-markdown-image-src]');
-        if (image) {
-            event.preventDefault();
-            event.stopPropagation();
-            setLightbox({
-                src: image.dataset.markdownImageSrc || image.src,
-                alt: image.dataset.markdownImageAlt || image.alt || 'image',
-                scale: 1,
-            });
-        }
-    }, []);
-
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, style, className, agentId }: MarkdownRendererProps) {
+    const html = useMemo(() => markdownToHtml(content, agentId), [content, agentId]);
     return (
         <>
             <div
