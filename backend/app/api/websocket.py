@@ -21,6 +21,59 @@ from app.services.llm import call_llm, call_llm_with_failover
 router = APIRouter(tags=["websocket"])
 
 
+def _build_cli_extra_instructions(agent) -> str:
+    return (
+        "\n## CLI Agent Capabilities\n\n"
+        "You are running as a CLI Agent powered by an external CLI engine.\n\n"
+        "1. **File Operations**: Use your native file tools directly. Your working directory is the agent workspace.\n"
+        "   soul.md, memory/, skills/, workspace/ are all accessible.\n\n"
+        "2. **Platform Tools via MCP**: You have additional tools through the \"clawith\" MCP server:\n"
+        "   - `clawith_a2a_send` — Send message to another agent\n"
+        "   - `clawith_trigger_set/update/cancel` — Manage autonomous triggers\n"
+        "   - `clawith_channel_send` — Send message to human colleagues\n"
+        "   - `clawith_plaza_post/comment` — Post to organization feed\n\n"
+        "3. **Memory**: Write to `memory/memory.md` using Write tool. Read it at session start.\n\n"
+        "4. **Skills**: Listed in the system prompt. Read the skill file for full instructions when relevant.\n\n"
+        "5. **Focus**: Update `focus.md` with checklist format:\n"
+        "   - [ ] identifier: Description\n"
+        "   - [/] identifier: In progress\n"
+        "   - [x] identifier: Completed\n"
+    )
+
+
+async def _build_cli_mcp_config(agent_id, agent) -> dict:
+    config: dict = {"mcpServers": {}}
+    if agent.cli_config and agent.cli_config.get("mcp_bridge_enabled", True):
+        from app.config import settings as app_settings
+        config["mcpServers"]["clawith"] = {
+            "type": "http",
+            "url": f"http://localhost:{getattr(app_settings, 'CLI_MCP_BRIDGE_PORT', 18900)}/mcp",
+            "headers": {
+                "X-Agent-Id": str(agent_id),
+                "Authorization": f"Bearer {agent.api_key_hash[:32] if agent.api_key_hash else ''}",
+            }
+        }
+    from app.models.tool import Tool
+    async with async_session() as db:
+        mcp_tools = await db.execute(
+            select(Tool).where(Tool.type == "mcp", Tool.tenant_id == agent.tenant_id)
+        )
+        seen_urls: set[str] = set()
+        for tool in mcp_tools.scalars():
+            url = getattr(tool, 'mcp_server_url', None) or (tool.config or {}).get('url')
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                name = getattr(tool, 'mcp_server_name', None) or url.split("//")[1].split(".")[0]
+                server_conf: dict = {"type": "http", "url": url}
+                api_key = (tool.config or {}).get("api_key")
+                if api_key:
+                    from app.core.security import decrypt_data
+                    from app.config import settings as s
+                    server_conf["headers"] = {"Authorization": f"Bearer {decrypt_data(api_key, s.SECRET_KEY)}"}
+                config["mcpServers"][name] = server_conf
+    return config
+
+
 class ConnectionManager:
     """Manage WebSocket connections per agent."""
 
@@ -439,6 +492,79 @@ async def websocket_chat(
                     "role": "assistant",
                     "content": "Message forwarded to OpenClaw agent. Waiting for response..."
                 })
+                continue
+
+            # ── CLI Agent routing: run CLI subprocess and stream output ──
+            if agent_type == "cli":
+                from app.services.cli_executor import get_cli_executor
+                from app.services.agent_context import build_agent_context
+                from app.config import settings as app_settings
+
+                static_prompt, dynamic_prompt = await build_agent_context(
+                    agent_id, agent_name, role_description, current_user_name
+                )
+                cli_instructions = _build_cli_extra_instructions(agent)
+                full_system = static_prompt + "\n\n---\n\n" + dynamic_prompt + "\n\n" + cli_instructions
+
+                mcp_config = await _build_cli_mcp_config(agent_id, agent)
+
+                recent_context = "\n".join(
+                    f"[{m.get('role', '?')}] {m.get('content', '')[:200]}"
+                    for m in (history_messages[-10:] if history_messages else [])
+                )
+
+                full_prompt = (
+                    f"{full_system}\n\n---\n\n"
+                    f"## Recent Context\n{recent_context}\n\n"
+                    f"## User Message\n{content}"
+                )
+
+                executor = get_cli_executor(agent)
+                final_response = ""
+
+                async for event in executor.run_stream(prompt=full_prompt, mcp_config=mcp_config):
+                    etype = event.get("type")
+                    if etype == "assistant":
+                        await websocket.send_json({
+                            "type": "partial",
+                            "role": "assistant",
+                            "content": event.get("content", ""),
+                        })
+                    elif etype == "tool_use":
+                        await websocket.send_json({
+                            "type": "tool_call",
+                            "tool": event.get("tool", "unknown"),
+                            "input_summary": str(event.get("input", ""))[:200],
+                        })
+                    elif etype == "tool_result":
+                        await websocket.send_json({
+                            "type": "tool_result",
+                            "tool": event.get("tool", "unknown"),
+                            "output_summary": str(event.get("output", ""))[:200],
+                        })
+                    elif etype == "result":
+                        final_response = event.get("content", "")
+                        async with async_session() as db:
+                            db.add(ChatMessage(
+                                agent_id=agent_id, user_id=user_id,
+                                conversation_id=conv_id, role="user", content=content,
+                            ))
+                            db.add(ChatMessage(
+                                agent_id=agent_id, user_id=user_id,
+                                conversation_id=conv_id, role="assistant", content=final_response,
+                            ))
+                            await db.commit()
+                        await websocket.send_json({
+                            "type": "done",
+                            "role": "assistant",
+                            "content": final_response,
+                        })
+                    elif etype == "error":
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": event.get("content", "Unknown CLI error"),
+                        })
+
                 continue
 
             # Detect task creation intent
