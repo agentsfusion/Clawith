@@ -294,6 +294,61 @@ async def create_agent(
         out["api_key"] = raw_key  # Return once on creation
         return out
 
+    # For CLI agents: validate binary, encrypt API key, init workspace + skills, skip container
+    if agent.agent_type == "cli":
+        import shutil
+        engine_binary = {"claude_code": "claude", "gemini_cli": "gemini"}.get(data.cli_engine)
+        if not engine_binary:
+            raise HTTPException(400, "cli_engine is required for CLI agents")
+        if not shutil.which(engine_binary):
+            raise HTTPException(400, f"{engine_binary} CLI not installed on server")
+
+        raw_key = f"cli-{secrets.token_urlsafe(32)}"
+        agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+        if data.cli_api_key:
+            from app.core.security import encrypt_data
+            agent.cli_api_key_encrypted = encrypt_data(data.cli_api_key, settings.SECRET_KEY)
+        agent.cli_engine = data.cli_engine
+
+        from app.services.agent_manager import agent_manager
+        await agent_manager.initialize_agent_files(
+            db, agent, personality=data.personality, boundaries=data.boundaries,
+        )
+
+        from app.models.skill import Skill
+        from sqlalchemy.orm import selectinload
+        from sqlalchemy import or_ as _or
+        default_result = await db.execute(select(Skill).where(Skill.is_default))
+        default_ids = {s.id for s in default_result.scalars().all()}
+        all_skill_ids = set(data.skill_ids or []) | default_ids
+        if all_skill_ids:
+            agent_dir = agent_manager._agent_dir(agent.id)
+            skills_dir = agent_dir / "skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            for sid in all_skill_ids:
+                q = select(Skill).where(
+                    Skill.id == sid,
+                    _or(Skill.tenant_id.is_(None), Skill.tenant_id == agent.tenant_id)
+                ).options(selectinload(Skill.files))
+                result = await db.execute(q)
+                skill = result.scalar_one_or_none()
+                if not skill:
+                    continue
+                skill_folder = skills_dir / skill.folder_name
+                skill_folder.mkdir(parents=True, exist_ok=True)
+                for sf in skill.files:
+                    file_path = skill_folder / sf.path
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.write_text(sf.content, encoding="utf-8")
+
+        agent.status = "idle"
+        agent.heartbeat_enabled = False
+        await db.commit()
+        out = AgentOut.model_validate(agent).model_dump()
+        out["api_key"] = raw_key
+        return out
+
     # Initialize agent file system from template
     from app.services.agent_manager import agent_manager
     await agent_manager.initialize_agent_files(
