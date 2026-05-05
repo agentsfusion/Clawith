@@ -3214,6 +3214,13 @@ function AgentDetailInner() {
                                         letterSpacing: '0.5px',
                                     }}>Evolver</span>
                                 )}
+                                {(agent as any).agent_type === 'cli' && (
+                                    <span style={{
+                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                        background: '#8B5CF6', color: '#fff', fontWeight: 600,
+                                        letterSpacing: '0.5px',
+                                    }}>CLI Agent</span>
+                                )}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                         Expires: {new Date((agent as any).expires_at).toLocaleString()}
@@ -3234,7 +3241,7 @@ function AgentDetailInner() {
                     <div style={{ display: 'flex', gap: '8px' }}>
                         <button className="btn btn-primary" onClick={() => setActiveTab('chat')}>{t('agent.actions.chat')}</button>
                         <button className="btn btn-secondary" onClick={() => setCloneModalOpen(true)}>{t('agent.clone.button')}</button>
-                        {(agent as any)?.agent_type !== 'openclaw' && (
+                        {(agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' && (
                             <>
                                 {agent.status === 'stopped' ? (
                                     <button className="btn btn-secondary" onClick={async () => { await agentApi.start(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.start')}</button>
@@ -3256,6 +3263,9 @@ function AgentDetailInner() {
                         // OpenClaw agents: only show status, chat, activityLog, settings
                         if ((agent as any)?.agent_type === 'openclaw') {
                             return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
+                        }
+                        if ((agent as any)?.agent_type === 'cli') {
+                            return ['status', 'chat', 'activityLog', 'settings', 'workspace', 'relationships'].includes(tab);
                         }
                         const isEvolver = (agent as any)?.agent_type === 'evolver';
                         if (['feedback', 'health', 'script', 'jobs'].includes(tab)) return isEvolver;
@@ -3301,7 +3311,7 @@ function AgentDetailInner() {
                                     {agent.max_tokens_per_month && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_month)}</div>}
                                 </div>
                                 {/* Native agent metrics */}
-                                {(agent as any)?.agent_type !== 'openclaw' && (<>
+                                {(agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' && (<>
                                     <div className="card">
                                         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.llmCallsToday')}</div>
                                         <div style={{ fontSize: '22px', fontWeight: 600 }}>{((agent as any).llm_calls_today || 0).toLocaleString()}</div>
@@ -3346,6 +3356,14 @@ function AgentDetailInner() {
                                         </div>
                                     </div>
                                 )}
+                                {(agent as any)?.agent_type === 'cli' && (
+                                    <div className="card">
+                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>CLI Engine</div>
+                                        <div style={{ fontSize: '16px', fontWeight: 500 }}>
+                                            {(agent as any).cli_engine === 'claude_code' ? 'Claude Code CLI' : (agent as any).cli_engine === 'gemini_cli' ? 'Gemini CLI' : '—'}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
                             {/* Agent Profile & Model Info */}
@@ -3377,7 +3395,7 @@ function AgentDetailInner() {
                                         </div>
                                     </div>
                                 </div>
-                                {(agent as any)?.agent_type !== 'openclaw' ? (
+                                {(agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' ? (
                                     <div className="card">
                                         <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -3392,6 +3410,32 @@ function AgentDetailInner() {
                                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
                                                 <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.contextRounds')}</span>
                                                 <span>{(agent as any).context_window_size || 100}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (agent as any)?.agent_type === 'cli' ? (
+                                    <div className="card">
+                                        <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>CLI Configuration</h3>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>Engine</span>
+                                                <span>{(agent as any).cli_engine === 'claude_code' ? 'Claude Code CLI' : (agent as any).cli_engine === 'gemini_cli' ? 'Gemini CLI' : '—'}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>Model</span>
+                                                <span>{(agent as any).cli_config?.model || 'Default'}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>Permission Mode</span>
+                                                <span>{(agent as any).cli_config?.permission_mode || 'bypass'}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>MCP Bridge</span>
+                                                <span>{(agent as any).cli_config?.mcp_bridge_enabled !== false ? 'Enabled' : 'Disabled'}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                                <span style={{ color: 'var(--text-tertiary)' }}>Max Turns</span>
+                                                <span>{(agent as any).cli_config?.max_turns || 50}</span>
                                             </div>
                                         </div>
                                     </div>
@@ -3449,7 +3493,7 @@ function AgentDetailInner() {
                             {/* Quick Actions */}
                             <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
                                 <button className="btn btn-secondary" onClick={() => setActiveTab('chat')}>{t('agent.actions.chat')}</button>
-                                {(agent as any)?.agent_type !== 'openclaw' && <button className="btn btn-secondary" onClick={() => setActiveTab('aware')}>{t('agent.tabs.aware')}</button>}
+                                {(agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' && <button className="btn btn-secondary" onClick={() => setActiveTab('aware')}>{t('agent.tabs.aware')}</button>}
                                 <button className="btn btn-secondary" onClick={() => setActiveTab('settings')}>{t('agent.tabs.settings')}</button>
                             </div>
                         </div>
@@ -5314,7 +5358,7 @@ function AgentDetailInner() {
                                 {/* Filter tabs */}
                                 <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
                                     {filterBtn('user', '👤 ' + t('agent.activityLog.userActions', 'User Actions'))}
-                                    {(agent as any)?.agent_type !== 'openclaw' && (<>
+                                    {(agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' && (<>
                                         {filterBtn('backend', '⚙️ ' + t('agent.activityLog.backendServices', 'Backend Services'))}
                                         {(logFilter === 'backend' || logFilter === 'heartbeat' || logFilter === 'schedule' || logFilter === 'messages') && (
                                             <>
@@ -5507,7 +5551,83 @@ function AgentDetailInner() {
                     )
                 }
                 {
-                    activeTab === 'settings' && (agent as any)?.agent_type !== 'openclaw' && (() => {
+                    activeTab === 'settings' && (agent as any)?.agent_type === 'cli' && (() => {
+                        return (
+                            <div>
+                                <div className="card" style={{ marginBottom: '12px' }}>
+                                    <h4 style={{ marginBottom: '12px' }}>CLI Configuration</h4>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>Engine</span>
+                                            <span>{(agent as any).cli_engine === 'claude_code' ? 'Claude Code CLI' : (agent as any).cli_engine === 'gemini_cli' ? 'Gemini CLI' : '—'}</span>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>Model</span>
+                                            <span>{(agent as any).cli_config?.model || 'Default'}</span>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>Max Turns</span>
+                                            <span>{(agent as any).cli_config?.max_turns || 50}</span>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>Permission Mode</span>
+                                            <span>{(agent as any).cli_config?.permission_mode || 'bypass'}</span>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>MCP Bridge</span>
+                                            <span>{(agent as any).cli_config?.mcp_bridge_enabled !== false ? 'Enabled' : 'Disabled'}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="card" style={{ marginBottom: '12px' }}>
+                                    <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.tokenLimits')}</h4>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                                        <div>
+                                            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.dailyLimit')}</div>
+                                            <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_today)}</div>
+                                            {agent.max_tokens_per_day && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_day)}</div>}
+                                        </div>
+                                        <div>
+                                            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.monthlyLimit')}</div>
+                                            <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_month)}</div>
+                                            {agent.max_tokens_per_month && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_month)}</div>}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div style={{ marginBottom: '12px' }}>
+                                    <ChannelConfig mode="edit" agentId={id!} />
+                                </div>
+
+                                <div className="card" style={{ borderColor: 'var(--error)' }}>
+                                    <h4 style={{ color: 'var(--error)', marginBottom: '12px' }}>{t('agent.settings.danger.title')}</h4>
+                                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                                        {t('agent.settings.danger.deleteWarning')}
+                                    </p>
+                                    {!showDeleteConfirm ? (
+                                        <button className="btn btn-danger" onClick={() => setShowDeleteConfirm(true)}>× {t('agent.settings.danger.deleteAgent')}</button>
+                                    ) : (
+                                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                            <span style={{ fontSize: '13px', color: 'var(--error)', fontWeight: 600 }}>{t('agent.settings.danger.deleteWarning')}</span>
+                                            <button className="btn btn-danger" onClick={async () => {
+                                                try {
+                                                    await agentApi.delete(id!);
+                                                    queryClient.invalidateQueries({ queryKey: ['agents'] });
+                                                    navigate('/');
+                                                } catch (err: any) {
+                                                    alert(err?.message || 'Failed to delete agent');
+                                                }
+                                            }}>{t('agent.settings.danger.confirmDelete')}</button>
+                                            <button className="btn btn-secondary" onClick={() => setShowDeleteConfirm(false)}>{t('common.cancel')}</button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    })()
+                }
+                {
+                    activeTab === 'settings' && (agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' && (() => {
                         // Check if form has unsaved changes
                         const hasChanges = (
                             settingsForm.primary_model_id !== (agent?.primary_model_id || '') ||
@@ -5588,7 +5708,7 @@ function AgentDetailInner() {
                                 </div>
 
                                 {/* Model Selection — native agents only */}
-                                {(agent as any)?.agent_type !== 'openclaw' && (
+                                {(agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' && (
                                     <div className="card" style={{ marginBottom: '12px' }}>
                                         <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.modelConfig')}</h4>
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -5641,7 +5761,7 @@ function AgentDetailInner() {
                                 )}
 
                                 {/* Context Window — native agents only */}
-                                {(agent as any)?.agent_type !== 'openclaw' && (<>
+                                {(agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' && (<>
                                     <div className="card" style={{ marginBottom: '12px' }}>
                                         <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.conversationContext')}</h4>
                                         <div>
@@ -5712,7 +5832,7 @@ function AgentDetailInner() {
                                 </div>
 
                                 {/* Trigger Limits — native agents only */}
-                                {(agent as any)?.agent_type !== 'openclaw' && (() => {
+                                {(agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' && (() => {
                                     const isChinese = i18n.language?.startsWith('zh');
                                     return (
                                         <div className="card" style={{ marginBottom: '12px' }}>
@@ -5832,7 +5952,7 @@ function AgentDetailInner() {
                                 })()}
 
                                 {/* Autonomy Policy — native agents only */}
-                                {(agent as any)?.agent_type !== 'openclaw' && <div className="card" style={{ marginBottom: '12px' }}>
+                                {(agent as any)?.agent_type !== 'openclaw' && (agent as any)?.agent_type !== 'cli' && <div className="card" style={{ marginBottom: '12px' }}>
                                     <h4 style={{ marginBottom: '4px' }}>{t('agent.settings.autonomy.title')}</h4>
                                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
                                         {t('agent.settings.autonomy.description')}
@@ -6066,7 +6186,7 @@ function AgentDetailInner() {
                                 </div>
 
                                 {/* Heartbeat */}
-                                <div className="card" style={{ marginBottom: '12px' }}>
+                                {(agent as any)?.agent_type !== 'cli' && <div className="card" style={{ marginBottom: '12px' }}>
                                     <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                                         {t('agent.settings.heartbeat.title', 'Heartbeat')}
                                     </h4>
@@ -6176,7 +6296,7 @@ function AgentDetailInner() {
                                             </div>
                                         )}
                                     </div>
-                                </div>
+                                </div>}
 
                                 {/* Channel Config */}
                                 <div style={{ marginBottom: "12px" }}>
