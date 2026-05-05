@@ -253,6 +253,19 @@ async def _deferred_startup():
     ss_task = asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
     ss_task.add_done_callback(_bg_task_error)
 
+    try:
+        import subprocess as _sp
+        from pathlib import Path as _Path
+        _bridge_port = getattr(settings, 'CLI_MCP_BRIDGE_PORT', 18900)
+        _sp.Popen(
+            ["uvicorn", "app.services.cli_mcp_bridge:app", "--host", "127.0.0.1", "--port", str(_bridge_port)],
+            cwd=str(_Path(__file__).parent),
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+        logger.info(f"[startup] CLI MCP Bridge Server started on port {_bridge_port}")
+    except Exception as e:
+        logger.warning(f"[startup] CLI MCP Bridge Server failed to start: {e}")
+
     logger.info("[startup] deferred initialization complete")
 
 
