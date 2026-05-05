@@ -44,7 +44,8 @@ def _build_cli_extra_instructions(agent) -> str:
 async def _build_cli_mcp_config(agent_id, agent) -> dict:
     config: dict = {"mcpServers": {}}
     if agent.cli_config and agent.cli_config.get("mcp_bridge_enabled", True):
-        from app.config import settings as app_settings
+        from app.config import get_settings
+        app_settings = get_settings()
         config["mcpServers"]["clawith"] = {
             "type": "http",
             "url": f"http://localhost:{getattr(app_settings, 'CLI_MCP_BRIDGE_PORT', 18900)}/mcp",
@@ -68,7 +69,8 @@ async def _build_cli_mcp_config(agent_id, agent) -> dict:
                 api_key = (tool.config or {}).get("api_key")
                 if api_key:
                     from app.core.security import decrypt_data
-                    from app.config import settings as s
+                    from app.config import get_settings
+                    s = get_settings()
                     server_conf["headers"] = {"Authorization": f"Bearer {decrypt_data(api_key, s.SECRET_KEY)}"}
                 config["mcpServers"][name] = server_conf
     return config
@@ -498,7 +500,8 @@ async def websocket_chat(
             if agent_type == "cli":
                 from app.services.cli_executor import get_cli_executor
                 from app.services.agent_context import build_agent_context
-                from app.config import settings as app_settings
+                from app.config import get_settings
+                app_settings = get_settings()
 
                 static_prompt, dynamic_prompt = await build_agent_context(
                     agent_id, agent_name, role_description, current_user_name
@@ -576,6 +579,7 @@ async def websocket_chat(
 
             # Track thinking content for storage (initialize before condition)
             thinking_content = []
+            queued_messages: list[dict] = []
 
             # Call LLM with streaming
             if llm_model:
@@ -696,7 +700,6 @@ async def websocket_chat(
 
                     # Listen for abort while LLM is running
                     aborted = False
-                    queued_messages: list[dict] = []
                     while not llm_task.done():
                         try:
                             msg = await _aio.wait_for(
