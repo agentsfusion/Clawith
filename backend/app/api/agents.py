@@ -11,12 +11,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission
 from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentCloneRequest, AgentOut, AgentUpdate
+
+settings = get_settings()
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -612,6 +615,35 @@ async def update_agent(
                         "applied": update_data["webhook_rate_limit"],
                         "reason": "company_ceiling",
                     })
+
+    # CLI-specific fields require special handling (validation, encryption, merge)
+    cli_engine_new = update_data.pop("cli_engine", None)
+    cli_api_key_new = update_data.pop("cli_api_key", None)
+    cli_config_patch = update_data.pop("cli_config", None)
+
+    if cli_engine_new is not None or cli_api_key_new is not None or cli_config_patch is not None:
+        if agent.agent_type != "cli":
+            raise HTTPException(400, "CLI fields can only be set on CLI agents")
+
+        if cli_engine_new is not None:
+            import shutil
+            engine_binary = {"claude_code": "claude", "gemini_cli": "gemini"}.get(cli_engine_new)
+            if not engine_binary:
+                raise HTTPException(400, "cli_engine must be 'claude_code' or 'gemini_cli'")
+            if not shutil.which(engine_binary):
+                raise HTTPException(400, f"{engine_binary} CLI not installed on server")
+            agent.cli_engine = cli_engine_new
+
+        if cli_api_key_new:  # non-empty string → update; empty/None → keep existing
+            from app.core.security import encrypt_data
+            agent.cli_api_key_encrypted = encrypt_data(cli_api_key_new, settings.SECRET_KEY)
+
+        if cli_config_patch is not None:
+            merged = dict(agent.cli_config or {})
+            merged.update(cli_config_patch)
+            agent.cli_config = merged
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(agent, "cli_config")
 
     for field, value in update_data.items():
         setattr(agent, field, value)

@@ -277,6 +277,7 @@ class AgentOut(BaseModel):
     max_llm_calls_per_day: int = 100
     agent_type: str = "native"
     cli_engine: str | None = None
+    cli_config: dict | None = None
     openclaw_last_seen: datetime | None = None
     has_api_key: bool = False
     api_key_hash: str | None = None
@@ -307,6 +308,10 @@ class AgentUpdate(BaseModel):
     heartbeat_active_hours: str | None = None
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
+    # CLI agent fields (only meaningful when agent_type == "cli")
+    cli_engine: str | None = None  # "claude_code" | "gemini_cli"
+    cli_api_key: str | None = None  # Plaintext key; encrypted before save. Empty string = no change.
+    cli_config: dict | None = None  # Merged into existing cli_config (shallow merge)
 
 
 class AgentStatusOut(BaseModel):
