@@ -13,6 +13,16 @@ if ! command -v gws &>/dev/null; then
     npm install -g @googleworkspace/cli 2>/dev/null || true
 fi
 
+if ! command -v claude &>/dev/null; then
+    echo "=== Installing @anthropic-ai/claude-code ==="
+    npm install -g @anthropic-ai/claude-code 2>/dev/null || true
+fi
+
+if ! command -v gemini &>/dev/null; then
+    echo "=== Installing @google/gemini-cli ==="
+    npm install -g @google/gemini-cli 2>/dev/null || true
+fi
+
 cd "$ROOT/backend"
 
 echo "=== Updating database ==="
