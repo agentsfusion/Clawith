@@ -20,7 +20,14 @@ class BaseCLIExecutor(ABC):
 
     def __init__(self, agent, agent_dir: Path):
         self.agent = agent
-        self.cwd = agent_dir / "workspace"
+        # cwd is the agent ROOT (not the workspace/ subdir). The system prompt
+        # built by `build_agent_context` describes the layout from this root
+        # (soul.md, memory/, skills/, workspace/ as siblings); launching the
+        # CLI inside workspace/ caused the agent to write `memory/memory.md`
+        # under workspace/ (invisible to the platform) and to nest produced
+        # files as `workspace/workspace/...`.
+        self.agent_dir = agent_dir
+        self.cwd = agent_dir
         self.config = agent.cli_config or {}
         self._api_key = self._decrypt_key()
 
@@ -52,7 +59,40 @@ class BaseCLIExecutor(ABC):
 
         logger.info(f"[CLI] Starting {self.get_binary()} with {len(args)} args, cwd={self.cwd}")
 
-        self.cwd.mkdir(parents=True, exist_ok=True)
+        # Make sure the documented layout exists so the agent can `ls .` and
+        # immediately see the right structure.
+        self.agent_dir.mkdir(parents=True, exist_ok=True)
+        for sub in ("workspace", "memory", "skills"):
+            (self.agent_dir / sub).mkdir(parents=True, exist_ok=True)
+
+        # One-time best-effort cleanup of junk created by the previous (buggy)
+        # cwd=workspace layout. We move misplaced memory back to its correct
+        # home only when the target is empty (never destructive), and remove
+        # the empty `workspace/workspace` nesting if present.
+        try:
+            ws = self.agent_dir / "workspace"
+            stray_mem = ws / "memory" / "memory.md"
+            real_mem = self.agent_dir / "memory" / "memory.md"
+            target_empty = (
+                not real_mem.exists()
+                or (real_mem.is_file() and real_mem.stat().st_size == 0)
+            )
+            if stray_mem.exists() and target_empty:
+                real_mem.parent.mkdir(parents=True, exist_ok=True)
+                if real_mem.exists():
+                    real_mem.unlink()
+                stray_mem.rename(real_mem)
+                logger.warning(
+                    f"[CLI] Migrated stray memory from {stray_mem} → {real_mem}"
+                )
+            stray_mem_dir = ws / "memory"
+            if stray_mem_dir.exists() and not any(stray_mem_dir.iterdir()):
+                stray_mem_dir.rmdir()
+            stray_ws_dir = ws / "workspace"
+            if stray_ws_dir.exists() and not any(stray_ws_dir.iterdir()):
+                stray_ws_dir.rmdir()
+        except Exception as _e:
+            logger.warning(f"[CLI] cleanup of stray workspace dirs skipped: {_e}")
 
         proc = await asyncio.create_subprocess_exec(
             self.get_binary(), *args,
