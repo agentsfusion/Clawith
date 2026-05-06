@@ -1,11 +1,12 @@
-"""Sync layer — on-demand single-file sync between OBS and local filesystem.
+"""Sync layer — on-demand file sync between OBS and local filesystem.
 
-Provides three stateless helper functions for Agent tool functions that need
+Provides stateless helper functions for Agent tool functions that need
 local file paths when ``STORAGE_BACKEND`` is not ``local``:
 
 - ``ensure_local_file()``  — download a single file from OBS if missing locally
 - ``sync_local_to_obs()``  — upload a locally-modified file back to OBS
 - ``write_dual()``         — write content to both local filesystem and OBS
+- ``sync_dir_to_obs()``   — batch upload a local directory tree to OBS
 
 When ``STORAGE_BACKEND == "local"``, every function is a fast no-op / passthrough.
 """
@@ -132,3 +133,70 @@ async def write_dual(
             logger.warning(
                 f"[SyncLayer] Failed to dual-write {agent_id}/{rel_path}: {exc}"
             )
+
+
+async def sync_dir_to_obs(
+    agent_id: str | uuid.UUID,
+    ws: Path,
+    subdir: str = "workspace",
+) -> dict[str, int]:
+    """Recursively upload all files under *ws/subdir* to cloud storage.
+
+    Files that already exist in cloud storage with the same byte size as the
+    local copy are skipped.  Individual upload failures are logged but do not
+    abort the remaining uploads.
+
+    Returns a dict with counts: ``{"uploaded": n, "skipped": n, "failed": n}``.
+    No-op (returns zeroed stats) when ``STORAGE_BACKEND`` is ``local``.
+    """
+    stats: dict[str, int] = {"uploaded": 0, "skipped": 0, "failed": 0}
+
+    if not _is_cloud_storage():
+        return stats
+
+    local_root = (ws / subdir).resolve()
+    if not local_root.is_dir():
+        return stats
+
+    storage = get_storage()
+    prefix = f"{agent_id}/{subdir}/"
+
+    try:
+        remote_entries = await storage.list(prefix)
+    except Exception:
+        remote_entries = []
+
+    remote_sizes: dict[str, int] = {}
+    for entry in remote_entries:
+        if not entry.is_dir:
+            rel = entry.path.removeprefix(prefix)
+            remote_sizes[rel] = entry.size
+
+    for local_file in local_root.rglob("*"):
+        if not local_file.is_file():
+            continue
+        rel = str(local_file.relative_to(local_root))
+        local_size = local_file.stat().st_size
+
+        if rel in remote_sizes and remote_sizes[rel] == local_size:
+            stats["skipped"] += 1
+            continue
+
+        storage_key = f"{prefix}{rel}"
+        try:
+            data = local_file.read_bytes()
+            await storage.write_bytes(storage_key, data)
+            stats["uploaded"] += 1
+            logger.debug(
+                f"[SyncLayer] Uploaded {storage_key} ({len(data)} bytes)"
+            )
+        except Exception as exc:
+            stats["failed"] += 1
+            logger.warning(f"[SyncLayer] Failed to upload {storage_key}: {exc}")
+
+    logger.info(
+        f"[SyncLayer] sync_dir_to_obs({agent_id}/{subdir}): "
+        f"uploaded={stats['uploaded']}, skipped={stats['skipped']}, "
+        f"failed={stats['failed']}"
+    )
+    return stats

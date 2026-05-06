@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from loguru import logger
@@ -525,16 +526,20 @@ async def websocket_chat(
                 executor = get_cli_executor(agent)
                 final_response = ""
 
+                agent_ws = Path(app_settings.AGENT_DATA_DIR) / str(agent_id)
+
+                _cli_sync_mgr = None
+                try:
+                    from app.services.workspace_sync import get_sync_manager
+                    _cli_sync_mgr = get_sync_manager()
+                    if _cli_sync_mgr is not None:
+                        await _cli_sync_mgr.sync_to_local(str(agent_id), agent_ws)
+                except Exception:
+                    _cli_sync_mgr = None
+
                 async for event in executor.run_stream(prompt=full_prompt, mcp_config=mcp_config):
                     etype = event.get("type")
                     if etype == "assistant":
-                        # CLI engines emit each assistant turn as a complete
-                        # message (not a delta). The frontend has no merge
-                        # strategy for "partial" events, so forwarding them
-                        # caused the message to appear twice (once from the
-                        # partial fallthrough append, once from the final
-                        # `done` event). Skip; the final reply is delivered
-                        # via the `result` → `done` event below.
                         continue
                     elif etype == "tool_use":
                         await websocket.send_json({
@@ -550,11 +555,6 @@ async def websocket_chat(
                         })
                     elif etype == "result":
                         final_response = event.get("content", "")
-                        # NOTE: the user message is already persisted by the
-                        # general path above (see "[WS] User message saved").
-                        # Re-inserting it here caused the user's message to
-                        # appear twice after a page refresh. Only persist the
-                        # assistant reply.
                         async with async_session() as db:
                             db.add(ChatMessage(
                                 agent_id=agent_id, user_id=user_id,
@@ -571,6 +571,13 @@ async def websocket_chat(
                             "type": "error",
                             "content": event.get("content", "Unknown CLI error"),
                         })
+
+                if _cli_sync_mgr is not None:
+                    try:
+                        from app.services.sync_layer import sync_dir_to_obs
+                        await sync_dir_to_obs(agent_id, agent_ws, "workspace")
+                    except Exception as _se:
+                        logger.warning(f"[CLI-Sync] Post-execution sync failed: {_se}")
 
                 continue
 
