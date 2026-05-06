@@ -3282,7 +3282,7 @@ function AgentDetailInner() {
                             return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
                         }
                         if ((agent as any)?.agent_type === 'cli') {
-                            return ['status', 'chat', 'activityLog', 'settings', 'workspace', 'relationships'].includes(tab);
+                            return ['status', 'chat', 'mind', 'skills', 'activityLog', 'settings', 'workspace', 'relationships'].includes(tab);
                         }
                         const isEvolver = (agent as any)?.agent_type === 'evolver';
                         if (['feedback', 'health', 'script', 'jobs'].includes(tab)) return isEvolver;
