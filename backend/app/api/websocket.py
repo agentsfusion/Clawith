@@ -504,7 +504,7 @@ async def websocket_chat(
                 app_settings = get_settings()
 
                 static_prompt, dynamic_prompt = await build_agent_context(
-                    agent_id, agent_name, role_description, current_user_name
+                    agent_id, agent_name, role_description, current_user_name=user.display_name
                 )
                 cli_instructions = _build_cli_extra_instructions(agent)
                 full_system = static_prompt + "\n\n---\n\n" + dynamic_prompt + "\n\n" + cli_instructions
@@ -512,7 +512,7 @@ async def websocket_chat(
                 mcp_config = await _build_cli_mcp_config(agent_id, agent)
 
                 recent_context = "\n".join(
-                    f"[{m.get('role', '?')}] {m.get('content', '')[:200]}"
+                    f"[{getattr(m, 'role', '?')}] {(getattr(m, 'content', '') or '')[:200]}"
                     for m in (history_messages[-10:] if history_messages else [])
                 )
 
@@ -528,11 +528,14 @@ async def websocket_chat(
                 async for event in executor.run_stream(prompt=full_prompt, mcp_config=mcp_config):
                     etype = event.get("type")
                     if etype == "assistant":
-                        await websocket.send_json({
-                            "type": "partial",
-                            "role": "assistant",
-                            "content": event.get("content", ""),
-                        })
+                        # CLI engines emit each assistant turn as a complete
+                        # message (not a delta). The frontend has no merge
+                        # strategy for "partial" events, so forwarding them
+                        # caused the message to appear twice (once from the
+                        # partial fallthrough append, once from the final
+                        # `done` event). Skip; the final reply is delivered
+                        # via the `result` → `done` event below.
+                        continue
                     elif etype == "tool_use":
                         await websocket.send_json({
                             "type": "tool_call",
