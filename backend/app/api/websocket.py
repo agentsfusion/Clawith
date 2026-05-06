@@ -550,11 +550,12 @@ async def websocket_chat(
                         })
                     elif etype == "result":
                         final_response = event.get("content", "")
+                        # NOTE: the user message is already persisted by the
+                        # general path above (see "[WS] User message saved").
+                        # Re-inserting it here caused the user's message to
+                        # appear twice after a page refresh. Only persist the
+                        # assistant reply.
                         async with async_session() as db:
-                            db.add(ChatMessage(
-                                agent_id=agent_id, user_id=user_id,
-                                conversation_id=conv_id, role="user", content=content,
-                            ))
                             db.add(ChatMessage(
                                 agent_id=agent_id, user_id=user_id,
                                 conversation_id=conv_id, role="assistant", content=final_response,
