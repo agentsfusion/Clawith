@@ -1,6 +1,7 @@
 """WebSocket chat endpoint for real-time agent conversations."""
 
 import json
+import time
 import uuid
 from pathlib import Path
 
@@ -52,7 +53,29 @@ def _build_cli_extra_instructions(agent) -> str:
     )
 
 
+# ─── MCP config cache ────────────────────────────────────────────────
+#
+# `_build_cli_mcp_config` runs a tenant-wide DB query for MCP tool rows
+# every time the user sends a message.  Tool definitions change rarely;
+# cache the assembled MCP-config dict for `_MCP_CONFIG_TTL_S` per agent.
+_MCP_CONFIG_TTL_S = 60.0
+_mcp_config_cache: dict[str, tuple[float, dict]] = {}
+
+
+def invalidate_mcp_config(agent_id=None) -> None:
+    if agent_id is None:
+        _mcp_config_cache.clear()
+    else:
+        _mcp_config_cache.pop(str(agent_id), None)
+
+
 async def _build_cli_mcp_config(agent_id, agent) -> dict:
+    cache_key = str(agent_id)
+    now = time.monotonic()
+    cached = _mcp_config_cache.get(cache_key)
+    if cached and (now - cached[0]) < _MCP_CONFIG_TTL_S:
+        return cached[1]
+
     config: dict = {"mcpServers": {}}
     if agent.cli_config and agent.cli_config.get("mcp_bridge_enabled", True):
         from app.config import get_settings
@@ -84,6 +107,8 @@ async def _build_cli_mcp_config(agent_id, agent) -> dict:
                     s = get_settings()
                     server_conf["headers"] = {"Authorization": f"Bearer {decrypt_data(api_key, s.SECRET_KEY)}"}
                 config["mcpServers"][name] = server_conf
+
+    _mcp_config_cache[cache_key] = (now, config)
     return config
 
 
@@ -514,13 +539,20 @@ async def websocket_chat(
                 from app.config import get_settings
                 app_settings = get_settings()
 
+                _t_ctx = time.perf_counter()
                 static_prompt, dynamic_prompt = await build_agent_context(
                     agent_id, agent_name, role_description, current_user_name=user.display_name
                 )
+                _ctx_ms = (time.perf_counter() - _t_ctx) * 1000
                 cli_instructions = _build_cli_extra_instructions(agent)
                 full_system = static_prompt + "\n\n---\n\n" + dynamic_prompt + "\n\n" + cli_instructions
 
+                _t_mcp = time.perf_counter()
                 mcp_config = await _build_cli_mcp_config(agent_id, agent)
+                _mcp_ms = (time.perf_counter() - _t_mcp) * 1000
+                logger.info(
+                    f"[WS][perf] agent={agent_id} build_context={_ctx_ms:.0f}ms mcp_config={_mcp_ms:.0f}ms"
+                )
 
                 recent_context = "\n".join(
                     f"[{getattr(m, 'role', '?')}] {(getattr(m, 'content', '') or '')[:200]}"
@@ -543,8 +575,15 @@ async def websocket_chat(
                     from app.services.workspace_sync import get_sync_manager
                     _cli_sync_mgr = get_sync_manager()
                     if _cli_sync_mgr is not None:
+                        # Start (or reuse) a recursive watcher on the agent
+                        # ROOT so any file the CLI writes — including
+                        # memory/, skills/, workspace/ — gets debounce-uploaded
+                        # to object storage in real time.
+                        await _cli_sync_mgr.ensure_watcher(agent_id, agent_ws)
                         await _cli_sync_mgr.sync_to_local(str(agent_id), agent_ws)
-                except Exception:
+                        logger.info(f"[CLI] Watcher ensured for {agent_id}")
+                except Exception as _se:
+                    logger.warning(f"[CLI] sync setup failed: {_se}")
                     _cli_sync_mgr = None
 
                 async for event in executor.run_stream(prompt=full_prompt, mcp_config=mcp_config):
@@ -552,17 +591,55 @@ async def websocket_chat(
                     if etype == "assistant":
                         continue
                     elif etype == "tool_use":
+                        # Use the same payload shape as the LLM-agent path so
+                        # the frontend (AgentDetail.tsx) can render the tool
+                        # name + args in the "Analysing" bubble. Keys must be
+                        # `name` / `args` / `status` (not `tool` / `input_summary`).
                         await websocket.send_json({
                             "type": "tool_call",
-                            "tool": event.get("tool", "unknown"),
-                            "input_summary": str(event.get("input", ""))[:200],
+                            "name": event.get("tool", "unknown"),
+                            "args": event.get("input", {}),
+                            "status": "running",
+                            "tool_use_id": event.get("tool_use_id", ""),
                         })
                     elif etype == "tool_result":
+                        tool_name = event.get("tool", "unknown")
+                        tool_args = event.get("input", {})
+                        tool_output = event.get("output", "") or ""
+                        is_error = bool(event.get("is_error", False))
+                        # Send as a `tool_call` with status=done so the frontend
+                        # collapses the prior `running` bubble into a completed
+                        # one (it pairs by toolName + status).
                         await websocket.send_json({
-                            "type": "tool_result",
-                            "tool": event.get("tool", "unknown"),
-                            "output_summary": str(event.get("output", ""))[:200],
+                            "type": "tool_call",
+                            "name": tool_name,
+                            "args": tool_args,
+                            "status": "done",
+                            "result": tool_output[:1000],
+                            "is_error": is_error,
+                            "tool_use_id": event.get("tool_use_id", ""),
                         })
+                        # Persist the completed tool call to chat history so
+                        # it survives a page refresh, mirroring the LLM path.
+                        try:
+                            import json as _json_tc
+                            async with async_session() as _tc_db:
+                                _tc_db.add(ChatMessage(
+                                    agent_id=agent_id,
+                                    user_id=user_id,
+                                    conversation_id=conv_id,
+                                    role="tool_call",
+                                    content=_json_tc.dumps({
+                                        "name": tool_name,
+                                        "args": tool_args,
+                                        "status": "done",
+                                        "result": tool_output[:500],
+                                        "is_error": is_error,
+                                    }),
+                                ))
+                                await _tc_db.commit()
+                        except Exception as _persist_err:
+                            logger.warning(f"[CLI] persist tool_call failed: {_persist_err}")
                     elif etype == "result":
                         final_response = event.get("content", "")
                         async with async_session() as db:
@@ -583,9 +660,16 @@ async def websocket_chat(
                         })
 
                 if _cli_sync_mgr is not None:
+                    # Give the debounced uploader a moment to flush in-flight
+                    # writes from the CLI run, then do an explicit catch-up
+                    # sweep across every CLI-writable subdir so nothing is
+                    # left behind locally.
+                    import asyncio as _asyncio
+                    await _asyncio.sleep(0.7)
                     try:
                         from app.services.sync_layer import sync_dir_to_obs
-                        await sync_dir_to_obs(agent_id, agent_ws, "workspace")
+                        for _sub in ("memory", "skills", "workspace"):
+                            await sync_dir_to_obs(agent_id, agent_ws, _sub)
                     except Exception as _se:
                         logger.warning(f"[CLI-Sync] Post-execution sync failed: {_se}")
 
