@@ -19,7 +19,7 @@ DEFAULT_CONTEXT_WINDOW_SIZE = 100
 class Agent(Base):
     """Digital employee (Agent) instance.
 
-    agent_type: 'native' (platform-hosted), 'evolver' (self-evolving Agent Script), or 'openclaw' (remote OpenClaw bot).
+    agent_type: 'native' (platform-hosted), 'evolver' (self-evolving Agent Script), 'openclaw' (remote OpenClaw bot), or 'cli' (local CLI subprocess).
     """
 
     __tablename__ = "agents"
@@ -35,12 +35,21 @@ class Agent(Base):
     creator_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"))
 
-    # Agent type: 'native' (platform-hosted LLM) or 'openclaw' (remote OpenClaw bot)
     agent_type: Mapped[str] = mapped_column(String(20), default="native", nullable=False)
-    # API key hash for OpenClaw gateway authentication
     api_key_hash: Mapped[str | None] = mapped_column(String(128))
-    # Last time OpenClaw polled the gateway (online status indicator)
     openclaw_last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # CLI Agent configuration
+    cli_engine: Mapped[str | None] = mapped_column(String(30))
+    cli_api_key_encrypted: Mapped[str | None] = mapped_column(String(500))
+    cli_config: Mapped[dict | None] = mapped_column(JSON, default=lambda: {
+        "max_turns": 50,
+        "permission_mode": "bypass",
+        "output_format": "stream-json",
+        "model": None,
+        "mcp_bridge_enabled": True,
+        "webhook_url": None,
+    })
 
     # Runtime
     status: Mapped[str] = mapped_column(

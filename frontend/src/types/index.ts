@@ -44,7 +44,15 @@ export interface Agent {
     last_heartbeat_at?: string;
     timezone?: string;
     context_window_size?: number;
-    agent_type?: 'native' | 'evolver' | 'openclaw';
+    agent_type?: 'native' | 'evolver' | 'openclaw' | 'cli';
+    cli_engine?: 'claude_code' | 'gemini_cli';
+    cli_config?: {
+        max_turns?: number;
+        permission_mode?: 'bypass' | 'default';
+        model?: string;
+        mcp_bridge_enabled?: boolean;
+        webhook_url?: string;
+    };
     openclaw_last_seen?: string;
     access_mode?: 'company' | 'private' | 'custom';
     company_access_level?: 'use' | 'manage';

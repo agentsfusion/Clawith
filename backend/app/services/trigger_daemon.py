@@ -91,6 +91,40 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             if not agent or agent.is_expired:
                 return
 
+            if getattr(agent, 'agent_type', 'native') == 'cli':
+                context_parts = []
+                trigger_names = []
+                for t in triggers:
+                    context_parts.append(f"Trigger: {t.name} ({t.type})\nReason: {t.reason}")
+                    trigger_names.append(t.name)
+                trigger_context_text = (
+                    "===== Trigger wake context =====\n"
+                    + "\n---\n".join(context_parts)
+                    + "\n==========================="
+                )
+                from app.models.gateway_message import GatewayMessage as GwMsg
+                gw_msg = GwMsg(
+                    agent_id=agent_id,
+                    kind="trigger_fire",
+                    content=trigger_context_text,
+                    status="pending",
+                )
+                db.add(gw_msg)
+                await db.commit()
+                if hasattr(agent, 'cli_config') and agent.cli_config and agent.cli_config.get("webhook_url"):
+                    try:
+                        import httpx
+                        async with httpx.AsyncClient() as client:
+                            await client.post(agent.cli_config["webhook_url"], json={
+                                "event": "trigger_fired",
+                                "agent_id": str(agent_id),
+                                "trigger_name": trigger_names[0] if trigger_names else "unknown",
+                                "trigger_context": trigger_context_text[:500],
+                            }, timeout=5)
+                    except Exception:
+                        pass
+                return
+
             # Load LLM model
             if not agent.primary_model_id:
                 logger.warning(f"Agent {agent.name} has no LLM model, skipping trigger invocation")

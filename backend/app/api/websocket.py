@@ -2,10 +2,9 @@
 
 import asyncio
 import json
-import re
+import time
 import uuid
-from datetime import datetime, timezone as tz
-from time import perf_counter
+from pathlib import Path
 
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
@@ -112,6 +111,122 @@ def extract_partial_content(args_str: str) -> str:
                 val_chars.append(c)
         i += 1
     return "".join(val_chars)
+
+
+def _build_cli_extra_instructions(agent) -> str:
+    return (
+        "\n## CLI Agent Capabilities\n\n"
+        "You are running as a CLI Agent powered by an external CLI engine.\n\n"
+        "### Working directory layout (IMPORTANT)\n"
+        "Your cwd IS your agent home directory. Running `ls .` shows these siblings:\n"
+        "  `soul.md`, `memory/`, `skills/`, `workspace/`, `HEARTBEAT.md`,\n"
+        "  `relationships.md`, `enterprise_info/`, `state.json`, `todo.json`.\n\n"
+        "Path rules (use these EXACT relative paths):\n"
+        "  - Long-term memory → `memory/memory.md`  (NEVER `workspace/memory/...`)\n"
+        "  - Reflection journal → `memory/reflections.md`\n"
+        "  - Skill files       → `skills/<name>.md` or `skills/<name>/SKILL.md`\n"
+        "  - Your produced artifacts (reports, drafts, code) → `workspace/<file>`\n"
+        "    DO NOT create `workspace/workspace/` — that is a bug.\n\n"
+        "Platform-managed files — read freely, but do NOT modify unless the user "
+        "explicitly asks: `state.json`, `todo.json`, `HEARTBEAT.md`, `soul.md`.\n\n"
+        "### Capabilities\n"
+        "1. **File Operations**: Use your native Read/Write/Edit/LS tools at the paths above.\n\n"
+        "2. **Platform Tools via MCP**: You have additional tools through the \"clawith\" MCP server:\n"
+        "   - `clawith_a2a_send` — Send message to another agent\n"
+        "   - `clawith_trigger_set/update/cancel` — Manage autonomous triggers\n"
+        "   - `clawith_channel_send` — Send message to human colleagues\n"
+        "   - `clawith_plaza_post/comment` — Post to organization feed\n"
+        "   - `clawith_gws` — Execute Google Workspace (Gmail / Drive / Calendar / Sheets / Docs / Chat)\n"
+        "      commands on behalf of the current user. Only usable when that user has linked\n"
+        "      their Google account for this agent (a `## Google Workspace` block will appear above).\n\n"
+        "3. **Focus**: Update `focus.md` with checklist format:\n"
+        "   - [ ] identifier: Description\n"
+        "   - [/] identifier: In progress\n"
+        "   - [x] identifier: Completed\n"
+    )
+
+
+# ─── MCP config cache ────────────────────────────────────────────────
+#
+# `_build_cli_mcp_config` runs a tenant-wide DB query for MCP tool rows
+# every time the user sends a message.  Tool definitions change rarely;
+# cache the assembled MCP-config dict for `_MCP_CONFIG_TTL_S` per agent.
+_MCP_CONFIG_TTL_S = 60.0
+_mcp_config_cache: dict[str, tuple[float, dict]] = {}
+
+
+def invalidate_mcp_config(agent_id=None) -> None:
+    if agent_id is None:
+        _mcp_config_cache.clear()
+        return
+    # Cache keys now have the form f"{agent_id}:{user_id_or_empty}";
+    # remove every per-user variant for this agent.
+    prefix = f"{agent_id}:"
+    for k in [k for k in _mcp_config_cache if k.startswith(prefix)]:
+        _mcp_config_cache.pop(k, None)
+
+
+async def _build_cli_mcp_config(agent_id, agent, user_id=None) -> dict:
+    # Cache key includes user_id so per-user headers (signed
+    # X-Session-Token used by clawith_gws) are correctly distinguished
+    # across sessions for the same agent. TTL is bounded well under the
+    # session-token TTL so we never serve an expired token from cache.
+    cache_key = f"{agent_id}:{user_id or ''}"
+    now = time.monotonic()
+    cached = _mcp_config_cache.get(cache_key)
+    if cached and (now - cached[0]) < _MCP_CONFIG_TTL_S:
+        return cached[1]
+
+    config: dict = {"mcpServers": {}}
+    if agent.cli_config and agent.cli_config.get("mcp_bridge_enabled", True):
+        from app.config import get_settings
+        app_settings = get_settings()
+        # Bridge auth uses a short-lived HMAC token signed with
+        # SECRET_KEY. (The previous shared-secret design stored
+        # sha256(raw_key) on the agent but threw raw_key away at
+        # creation — there was no real key to send.) The token binds
+        # agent_id + exp; bridge listens on localhost and is only
+        # called by us in-process, so a server-internal mint/verify is
+        # both correct and sufficient.
+        from app.services.cli_mcp_bridge.auth import mint_bridge_auth_token
+        headers = {
+            "X-Agent-Id": str(agent_id),
+            "Authorization": f"Bearer {mint_bridge_auth_token(agent_id)}",
+        }
+        if user_id:
+            # Mint an HMAC-signed token binding (agent_id, user_id, exp).
+            # The bridge will verify the signature + agent binding before
+            # trusting user_id for per-user tools like clawith_gws — a
+            # caller holding only the agent API key cannot forge this.
+            from app.services.cli_mcp_bridge.auth import mint_session_token
+            headers["X-Session-Token"] = mint_session_token(agent_id, user_id)
+        config["mcpServers"]["clawith"] = {
+            "type": "http",
+            "url": f"http://localhost:{getattr(app_settings, 'CLI_MCP_BRIDGE_PORT', 18900)}/mcp",
+            "headers": headers,
+        }
+    from app.models.tool import Tool
+    async with async_session() as db:
+        mcp_tools = await db.execute(
+            select(Tool).where(Tool.type == "mcp", Tool.tenant_id == agent.tenant_id)
+        )
+        seen_urls: set[str] = set()
+        for tool in mcp_tools.scalars():
+            url = getattr(tool, 'mcp_server_url', None) or (tool.config or {}).get('url')
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                name = getattr(tool, 'mcp_server_name', None) or url.split("//")[1].split(".")[0]
+                server_conf: dict = {"type": "http", "url": url}
+                api_key = (tool.config or {}).get("api_key")
+                if api_key:
+                    from app.core.security import decrypt_data
+                    from app.config import get_settings
+                    s = get_settings()
+                    server_conf["headers"] = {"Authorization": f"Bearer {decrypt_data(api_key, s.SECRET_KEY)}"}
+                config["mcpServers"][name] = server_conf
+
+    _mcp_config_cache[cache_key] = (now, config)
+    return config
 
 
 class ConnectionManager:
@@ -708,6 +823,151 @@ class WebSocketChatHandler:
         """Enqueues message for OpenClaw edge node poll."""
         from app.models.gateway_message import GatewayMessage as GwMsg
 
+            # ── CLI Agent routing: run CLI subprocess and stream output ──
+            if agent_type == "cli":
+                from app.services.cli_executor import get_cli_executor
+                from app.services.agent_context import build_agent_context
+                from app.config import get_settings
+                app_settings = get_settings()
+
+                _t_ctx = time.perf_counter()
+                static_prompt, dynamic_prompt = await build_agent_context(
+                    agent_id, agent_name, role_description,
+                    current_user_name=user.display_name,
+                    current_user_id=user_id,
+                )
+                _ctx_ms = (time.perf_counter() - _t_ctx) * 1000
+                cli_instructions = _build_cli_extra_instructions(agent)
+                full_system = static_prompt + "\n\n---\n\n" + dynamic_prompt + "\n\n" + cli_instructions
+
+                _t_mcp = time.perf_counter()
+                mcp_config = await _build_cli_mcp_config(agent_id, agent, user_id=user_id)
+                _mcp_ms = (time.perf_counter() - _t_mcp) * 1000
+                logger.info(
+                    f"[WS][perf] agent={agent_id} build_context={_ctx_ms:.0f}ms mcp_config={_mcp_ms:.0f}ms"
+                )
+
+                recent_context = "\n".join(
+                    f"[{getattr(m, 'role', '?')}] {(getattr(m, 'content', '') or '')[:200]}"
+                    for m in (history_messages[-10:] if history_messages else [])
+                )
+
+                full_prompt = (
+                    f"{full_system}\n\n---\n\n"
+                    f"## Recent Context\n{recent_context}\n\n"
+                    f"## User Message\n{content}"
+                )
+
+                executor = get_cli_executor(agent)
+                final_response = ""
+
+                agent_ws = Path(app_settings.AGENT_DATA_DIR) / str(agent_id)
+
+                _cli_sync_mgr = None
+                try:
+                    from app.services.workspace_sync import get_sync_manager
+                    _cli_sync_mgr = get_sync_manager()
+                    if _cli_sync_mgr is not None:
+                        # Start (or reuse) a recursive watcher on the agent
+                        # ROOT so any file the CLI writes — including
+                        # memory/, skills/, workspace/ — gets debounce-uploaded
+                        # to object storage in real time.
+                        await _cli_sync_mgr.ensure_watcher(agent_id, agent_ws)
+                        await _cli_sync_mgr.sync_to_local(str(agent_id), agent_ws)
+                        logger.info(f"[CLI] Watcher ensured for {agent_id}")
+                except Exception as _se:
+                    logger.warning(f"[CLI] sync setup failed: {_se}")
+                    _cli_sync_mgr = None
+
+                async for event in executor.run_stream(prompt=full_prompt, mcp_config=mcp_config):
+                    etype = event.get("type")
+                    if etype == "assistant":
+                        continue
+                    elif etype == "tool_use":
+                        # Use the same payload shape as the LLM-agent path so
+                        # the frontend (AgentDetail.tsx) can render the tool
+                        # name + args in the "Analysing" bubble. Keys must be
+                        # `name` / `args` / `status` (not `tool` / `input_summary`).
+                        await websocket.send_json({
+                            "type": "tool_call",
+                            "name": event.get("tool", "unknown"),
+                            "args": event.get("input", {}),
+                            "status": "running",
+                            "tool_use_id": event.get("tool_use_id", ""),
+                        })
+                    elif etype == "tool_result":
+                        tool_name = event.get("tool", "unknown")
+                        tool_args = event.get("input", {})
+                        tool_output = event.get("output", "") or ""
+                        is_error = bool(event.get("is_error", False))
+                        # Send as a `tool_call` with status=done so the frontend
+                        # collapses the prior `running` bubble into a completed
+                        # one (it pairs by toolName + status).
+                        await websocket.send_json({
+                            "type": "tool_call",
+                            "name": tool_name,
+                            "args": tool_args,
+                            "status": "done",
+                            "result": tool_output[:1000],
+                            "is_error": is_error,
+                            "tool_use_id": event.get("tool_use_id", ""),
+                        })
+                        # Persist the completed tool call to chat history so
+                        # it survives a page refresh, mirroring the LLM path.
+                        try:
+                            import json as _json_tc
+                            async with async_session() as _tc_db:
+                                _tc_db.add(ChatMessage(
+                                    agent_id=agent_id,
+                                    user_id=user_id,
+                                    conversation_id=conv_id,
+                                    role="tool_call",
+                                    content=_json_tc.dumps({
+                                        "name": tool_name,
+                                        "args": tool_args,
+                                        "status": "done",
+                                        "result": tool_output[:500],
+                                        "is_error": is_error,
+                                    }),
+                                ))
+                                await _tc_db.commit()
+                        except Exception as _persist_err:
+                            logger.warning(f"[CLI] persist tool_call failed: {_persist_err}")
+                    elif etype == "result":
+                        final_response = event.get("content", "")
+                        async with async_session() as db:
+                            db.add(ChatMessage(
+                                agent_id=agent_id, user_id=user_id,
+                                conversation_id=conv_id, role="assistant", content=final_response,
+                            ))
+                            await db.commit()
+                        await websocket.send_json({
+                            "type": "done",
+                            "role": "assistant",
+                            "content": final_response,
+                        })
+                    elif etype == "error":
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": event.get("content", "Unknown CLI error"),
+                        })
+
+                if _cli_sync_mgr is not None:
+                    # Give the debounced uploader a moment to flush in-flight
+                    # writes from the CLI run, then do an explicit catch-up
+                    # sweep across every CLI-writable subdir so nothing is
+                    # left behind locally.
+                    import asyncio as _asyncio
+                    await _asyncio.sleep(0.7)
+                    try:
+                        from app.services.sync_layer import sync_dir_to_obs
+                        for _sub in ("memory", "skills", "workspace"):
+                            await sync_dir_to_obs(agent_id, agent_ws, _sub)
+                    except Exception as _se:
+                        logger.warning(f"[CLI-Sync] Post-execution sync failed: {_se}")
+
+                continue
+
             # Detect task creation intent
             import re
             task_match = re.search(
@@ -787,6 +1047,7 @@ class WebSocketChatHandler:
 
             # Track thinking content for storage
             thinking_content = []
+            queued_messages: list[dict] = []
 
             async def thinking_to_ws(text: str):
                 """Send thinking chunks to client for collapsible display."""
@@ -986,9 +1247,54 @@ class WebSocketChatHandler:
                 live_code_chars_sent = 0
                 live_code_truncated_sent = False
 
-                async def code_output_to_ws(text: str, label: str = "stdout"):
-                    """Stream execute_code output chunks to the frontend live panel in real-time."""
-                    nonlocal live_code_chars_sent, live_code_truncated_sent
+                    # Listen for abort while LLM is running
+                    aborted = False
+                    while not llm_task.done():
+                        try:
+                            msg = await _aio.wait_for(
+                                websocket.receive_json(), timeout=0.5
+                            )
+                            if msg.get("type") == "abort":
+                                logger.info(f"[WS] Abort received, cancelling LLM task")
+                                llm_task.cancel()
+                                aborted = True
+                                break
+                            else:
+                                # Queue non-abort messages for later
+                                queued_messages.append(msg)
+                        except _aio.TimeoutError:
+                            continue
+                        except WebSocketDisconnect:
+                            llm_task.cancel()
+                            raise
+
+                    if aborted:
+                        # Wait for task to finish cancelling
+                        try:
+                            await llm_task
+                        except (_aio.CancelledError, Exception):
+                            pass
+                        partial_text = "".join(partial_chunks).strip()
+                        if partial_text:
+                            assistant_response = partial_text + "\n\n*[Generation stopped]*"
+                        else:
+                            assistant_response = "*[Generation stopped]*"
+                        logger.info(f"[WS] LLM aborted, partial: {assistant_response[:80]}")
+                    else:
+                        assistant_response = await llm_task
+                        logger.info(f"[WS] LLM response: {assistant_response[:80]}")
+
+                    # Update last_active_at
+                    from datetime import datetime, timezone as tz
+                    async with async_session() as _db:
+                        from app.models.agent import Agent as AgentModel
+                        _ar = await _db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                        _agent = _ar.scalar_one_or_none()
+                        if _agent:
+                            _agent.last_active_at = datetime.now(tz.utc)
+                            await _db.commit()
+
+                    # Increment quota usage
                     try:
                         remaining = MAX_LIVE_CODE_STREAM_CHARS - live_code_chars_sent
                         if remaining <= 0:

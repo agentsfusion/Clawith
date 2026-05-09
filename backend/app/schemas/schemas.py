@@ -214,7 +214,9 @@ class UserUpdate(BaseModel):
 
 class AgentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100, description="Agent name, 2-100 characters")
-    agent_type: str = "native"  # native | evolver | openclaw
+    agent_type: str = "native"  # native | evolver | openclaw | cli
+    cli_engine: str | None = None  # "claude_code" | "gemini_cli"
+    cli_api_key: str | None = None  # Plaintext API key, only passed at creation
     role_description: str = Field(default="", max_length=500, description="Role description, max 500 characters")
     bio: str | None = None
     welcome_message: str | None = None
@@ -290,6 +292,8 @@ class AgentOut(BaseModel):
     llm_calls_today: int = 0
     max_llm_calls_per_day: int = 1000
     agent_type: str = "native"
+    cli_engine: str | None = None
+    cli_config: dict | None = None
     openclaw_last_seen: datetime | None = None
     unread_count: int = 0
     has_api_key: bool = False
@@ -327,6 +331,10 @@ class AgentUpdate(BaseModel):
     heartbeat_active_hours: str | None = None
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
+    # CLI agent fields (only meaningful when agent_type == "cli")
+    cli_engine: str | None = None  # "claude_code" | "gemini_cli"
+    cli_api_key: str | None = None  # Plaintext key; encrypted before save. Empty string = no change.
+    cli_config: dict | None = None  # Merged into existing cli_config (shallow merge)
 
 
 class AgentStatusOut(BaseModel):

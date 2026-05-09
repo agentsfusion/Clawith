@@ -381,8 +381,8 @@ class AgentManager:
         """
         from fastapi import HTTPException
 
-        if source.agent_type == "openclaw":
-            raise HTTPException(status_code=400, detail="Cannot clone openclaw-type agents")
+        if source.agent_type in ("openclaw", "cli"):
+            raise HTTPException(status_code=400, detail=f"Cannot clone {source.agent_type}-type agents")
 
         _valid_categories = {"soul.md", "skills", "workspace", "HEARTBEAT.md"}
         if copy_files is None:

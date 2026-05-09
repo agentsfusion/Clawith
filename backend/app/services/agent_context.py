@@ -4,9 +4,15 @@ Loads soul, memory, skills summary, and relationships from the agent's
 workspace files and composes a comprehensive system prompt.
 """
 
+import asyncio
+import logging
+import time
 import uuid
 
 from app.services.storage.factory import get_storage
+from app.services.storage.interface import FileNotFoundError as StorageFileNotFoundError
+
+_log = logging.getLogger(__name__)
 
 
 def _agent_workspace(agent_id: uuid.UUID) -> str:
@@ -15,18 +21,23 @@ def _agent_workspace(agent_id: uuid.UUID) -> str:
 
 
 async def _read_file_safe(key: str, max_chars: int = 3000) -> str:
-    """Read a file via storage, return empty string if missing. Truncate if too long."""
+    """Read a file via storage, return "" if missing. Truncate if too long.
+
+    Skips the pre-`exists()` check that earlier versions did — the read call
+    itself raises FileNotFoundError on miss, so doing both is a wasted
+    round-trip against object-storage backends.
+    """
     storage = get_storage()
-    if not await storage.exists(key):
-        return ""
     try:
         content = await storage.read(key)
-        content = content.strip()
-        if len(content) > max_chars:
-            content = content[:max_chars] + "\n...(truncated)"
-        return content
+    except StorageFileNotFoundError:
+        return ""
     except Exception:
         return ""
+    content = content.strip()
+    if len(content) > max_chars:
+        content = content[:max_chars] + "\n...(truncated)"
+    return content
 
 
 def _parse_skill_frontmatter(content: str, filename: str) -> tuple[str, str]:
@@ -84,11 +95,8 @@ async def _load_skills_index(agent_id: uuid.UUID) -> str:
     prompt. The model is instructed to call read_file to load full content
     when a skill is relevant.
     """
-    import logging
-    _log = logging.getLogger(__name__)
     storage = get_storage()
     prefix = _agent_workspace(agent_id)  # e.g. "{agent_id}/"
-    skills: list[tuple[str, str, str]] = []  # (name, description, path_relative_to_skills)
 
     try:
         entries = await storage.list(f"{prefix}skills")
@@ -96,36 +104,51 @@ async def _load_skills_index(agent_id: uuid.UUID) -> str:
         _log.warning(f"[skills] Failed to list {prefix}skills: {e}")
         return ""
 
-    for entry in sorted(entries, key=lambda e: (not e.is_dir, e.name)):
-        if entry.name.startswith("."):
-            continue
+    sorted_entries = sorted(
+        (e for e in entries if not e.name.startswith(".")),
+        key=lambda e: (not e.is_dir, e.name),
+    )
 
-        # Case 1: Folder-based skill — skills/<folder>/SKILL.md
+    async def _load_one(entry) -> tuple[str, str, str] | None:
+        # Folder-based skill: skills/<folder>/SKILL.md (try uppercase, then lowercase)
         if entry.is_dir:
-            skill_key = f"{prefix}skills/{entry.name}/SKILL.md"
-            if not await storage.exists(skill_key):
-                # Also try lowercase skill.md
-                skill_key = f"{prefix}skills/{entry.name}/skill.md"
-            if await storage.exists(skill_key):
+            for fname in ("SKILL.md", "skill.md"):
+                skill_key = f"{prefix}skills/{entry.name}/{fname}"
                 try:
                     content = (await storage.read(skill_key)).strip()
-                    name, desc = _parse_skill_frontmatter(content, entry.name)
-                    skills.append((name, desc, f"{entry.name}/SKILL.md"))
+                except StorageFileNotFoundError:
+                    continue
                 except Exception as e:
                     _log.warning(f"[skills] Failed to read folder skill {skill_key}: {e}")
-                    skills.append((entry.name, "", f"{entry.name}/SKILL.md"))
+                    return (entry.name, "", f"{entry.name}/{fname}")
+                name, desc = _parse_skill_frontmatter(content, entry.name)
+                # Emit the *actual* matched filename so the model's
+                # follow-up read_file call hits the right path.
+                return (name, desc, f"{entry.name}/{fname}")
+            return None
 
-        # Case 2: Flat file — skills/<name>.md
-        elif entry.name.endswith(".md") and not entry.is_dir:
+        # Flat file skill: skills/<name>.md
+        if entry.name.endswith(".md"):
             read_key = f"{prefix}skills/{entry.name}"
             try:
                 content = (await storage.read(read_key)).strip()
-                stem = entry.name[:-3]  # remove .md suffix
-                name, desc = _parse_skill_frontmatter(content, stem)
-                skills.append((name, desc, entry.name))
+            except StorageFileNotFoundError:
+                return None
             except Exception as e:
                 _log.warning(f"[skills] Failed to read flat skill {read_key}: {e}")
-                skills.append((entry.name[:-3], "", entry.name))
+                return (entry.name[:-3], "", entry.name)
+            stem = entry.name[:-3]
+            name, desc = _parse_skill_frontmatter(content, stem)
+            return (name, desc, entry.name)
+        return None
+
+    # Read every skill file concurrently — the previous version awaited each
+    # exists() + read() sequentially, turning N skills into ~3N round-trips.
+    results = await asyncio.gather(
+        *(_load_one(e) for e in sorted_entries),
+        return_exceptions=False,
+    )
+    skills: list[tuple[str, str, str]] = [r for r in results if r is not None]
 
     # Deduplicate by name
     seen: set[str] = set()
@@ -158,199 +181,162 @@ async def _load_skills_index(agent_id: uuid.UUID) -> str:
     return "\n".join(lines)
 
 
-async def _load_relationships_from_db(db, agent_id: uuid.UUID) -> str:
-    """Query relationships directly from the database and format as a markdown list."""
-    from app.models.org import AgentRelationship, AgentAgentRelationship, OrgMember
-    from app.models.identity import IdentityProvider
-    from app.core.permissions import evaluate_human_relationship_status, evaluate_agent_relationship_status
-    from sqlalchemy.orm import selectinload
-    from sqlalchemy import select
+# ─── Session-level static prompt cache ────────────────────────────────
+#
+# `build_agent_context` is called on EVERY user message in a chat.  The
+# "static" half of its output (soul, skills, role, channel-tool docs,
+# company intro, …) only depends on `agent_id` + `agent_name` +
+# `role_description`, none of which change between turns within a session.
+# We cache the assembled static_prompt with a short TTL so rapid back-to-
+# back chats don't keep re-reading object storage and re-querying the DB.
+#
+# We deliberately do NOT cache:
+#   • dynamic_prompt          (memory / focus / triggers / time / user)
+#   • the full prompt         (depends on dynamic + current user)
+#
+# The default TTL is short (60 s) so soul/skill edits become visible
+# quickly; tools that mutate static-affecting files can also call
+# `invalidate_static_prompt(agent_id)` for instant invalidation.
 
-    RELATION_LABELS = {
-        "direct_leader": "直属上级",
-        "collaborator": "协作伙伴",
-        "stakeholder": "利益相关者",
-        "team_member": "团队成员",
-        "subordinate": "下属",
-        "mentor": "导师",
-        "other": "其他",
-    }
+_STATIC_PROMPT_TTL_S = 60.0
+_static_prompt_cache: dict[tuple, tuple[float, str]] = {}
 
-    AGENT_RELATION_LABELS = {
-        "peer": "同级协作",
-        "supervisor": "上级数字员工",
-        "assistant": "助手",
-        "collaborator": "协作伙伴",
-        "other": "其他",
-    }
 
-    # Load human relationships
-    h_result = await db.execute(
-        select(
-            AgentRelationship,
-            IdentityProvider.name.label("provider_name"),
-            IdentityProvider.provider_type.label("provider_type"),
-        )
-        .outerjoin(OrgMember, AgentRelationship.member_id == OrgMember.id)
-        .outerjoin(IdentityProvider, OrgMember.provider_id == IdentityProvider.id)
-        .where(AgentRelationship.agent_id == agent_id)
-        .options(selectinload(AgentRelationship.member))
-    )
-    human_rows = []
-    for rel, provider_name, provider_type in h_result.all():
-        status_info = await evaluate_human_relationship_status(db, rel)
-        if status_info["access_status"] == "active":
-            def _display_provider_name(pn, pt):
-                if not pn and not pt:
-                    return None
-                if (pt or "").lower() in ("web", "platform") or (pn or "").lower() == "web":
-                    return "Platform"
-                return pn
-            human_rows.append((rel, _display_provider_name(provider_name, provider_type)))
+def invalidate_static_prompt(agent_id: uuid.UUID | None = None) -> None:
+    """Drop cached static prompts. Pass None to clear everything."""
+    if agent_id is None:
+        _static_prompt_cache.clear()
+        return
+    aid = str(agent_id)
+    for k in [k for k in _static_prompt_cache if k[0] == aid]:
+        _static_prompt_cache.pop(k, None)
 
-    # Load agent relationships
-    a_result = await db.execute(
-        select(AgentAgentRelationship)
-        .where(AgentAgentRelationship.agent_id == agent_id)
-        .options(selectinload(AgentAgentRelationship.target_agent))
-    )
-    agent_rels = []
-    for rel in a_result.scalars().all():
-        status_info = await evaluate_agent_relationship_status(db, rel)
-        if status_info["access_status"] == "active":
-            agent_rels.append(rel)
 
-    if not human_rows and not agent_rels:
+async def _gather_static_prompt(
+    agent_id: uuid.UUID,
+    agent_name: str,
+    role_description: str,
+) -> str:
+    """Build only the static half of the system prompt (no time / user / focus)."""
+    ws_root = _agent_workspace(agent_id)
+
+    # ---- Coroutines for every piece of independent I/O ---------------
+    async def _soul() -> str:
+        s = await _read_file_safe(f"{ws_root}soul.md", 2000)
+        if s.startswith("# "):
+            s = "\n".join(s.split("\n")[1:]).strip()
+        return s
+
+    async def _relationships() -> str:
+        r = await _read_file_safe(f"{ws_root}relationships.md", 2000)
+        if r.startswith("# "):
+            r = "\n".join(r.split("\n")[1:]).strip()
+        return r
+
+    async def _has_feishu_cfg() -> bool:
+        try:
+            from app.models.channel_config import ChannelConfig
+            from app.database import async_session as _ctx_session
+            from sqlalchemy import select as sa_select
+            async with _ctx_session() as _ctx_db:
+                _cfg_r = await _ctx_db.execute(
+                    sa_select(ChannelConfig).where(
+                        ChannelConfig.agent_id == agent_id,
+                        ChannelConfig.channel_type == "feishu",
+                        ChannelConfig.is_configured == True,
+                    )
+                )
+                return _cfg_r.scalar_one_or_none() is not None
+        except Exception:
+            return False
+
+    async def _dingtalk_block() -> str:
+        try:
+            from app.services.agent.context.dingtalk import get_dingtalk_context
+            return (await get_dingtalk_context(agent_id)) or ""
+        except Exception:
+            return ""
+
+    async def _has_atlassian_cfg() -> bool:
+        try:
+            from app.database import async_session
+            from app.models.channel_config import ChannelConfig
+            from sqlalchemy import select as sa_select
+            async with async_session() as db:
+                result = await db.execute(
+                    sa_select(ChannelConfig).where(
+                        ChannelConfig.agent_id == agent_id,
+                        ChannelConfig.channel_type == "atlassian",
+                        ChannelConfig.is_configured == True,
+                    )
+                )
+                return result.scalar_one_or_none() is not None
+        except Exception:
+            return False
+
+    async def _company_intro() -> str:
+        try:
+            from app.database import async_session
+            from app.models.system_settings import SystemSetting
+            from app.models.agent import Agent as _AgentModel
+            from sqlalchemy import select as sa_select
+            async with async_session() as db:
+                _ag_r = await db.execute(
+                    sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id)
+                )
+                _agent_tenant_id = _ag_r.scalar_one_or_none()
+
+                if _agent_tenant_id:
+                    try:
+                        from app.models.tenant_setting import TenantSetting
+                        result = await db.execute(
+                            sa_select(TenantSetting).where(
+                                TenantSetting.tenant_id == _agent_tenant_id,
+                                TenantSetting.key == "company_intro",
+                            )
+                        )
+                        ts = result.scalar_one_or_none()
+                        if ts and ts.value and ts.value.get("content"):
+                            return ts.value["content"].strip()
+                    except Exception:
+                        pass
+
+                if _agent_tenant_id:
+                    tenant_key = f"company_intro_{_agent_tenant_id}"
+                    result = await db.execute(
+                        sa_select(SystemSetting).where(SystemSetting.key == tenant_key)
+                    )
+                    setting = result.scalar_one_or_none()
+                    if setting and setting.value and setting.value.get("content"):
+                        return setting.value["content"].strip()
+
+                result = await db.execute(
+                    sa_select(SystemSetting).where(SystemSetting.key == "company_intro")
+                )
+                setting = result.scalar_one_or_none()
+                if setting and setting.value and setting.value.get("content"):
+                    return setting.value["content"].strip()
+        except Exception:
+            pass
         return ""
 
-    lines = []
+    # Run every independent I/O call concurrently.
+    soul, relationships, skills_text, has_feishu, dingtalk_ctx, has_atlassian, company_intro = await asyncio.gather(
+        _soul(),
+        _relationships(),
+        _load_skills_index(agent_id),
+        _has_feishu_cfg(),
+        _dingtalk_block(),
+        _has_atlassian_cfg(),
+        _company_intro(),
+    )
 
-    # Human relationships
-    if human_rows:
-        lines.append("## 人类同事\n")
-        for r, provider_name in human_rows:
-            m = r.member
-            if not m:
-                continue
-            label = RELATION_LABELS.get(r.relation, r.relation)
-            source = f"（通过 {provider_name} 同步）" if provider_name else ""
-            lines.append(f"### {m.name} — {m.title or '未设置职位'}{source}")
-            if r.description:
-                lines.append(f"- {r.description}")
-            lines.append("")
-
-    # Agent relationships
-    if agent_rels:
-        lines.append("## 🤖 数字员工同事\n")
-        for r in agent_rels:
-            a = r.target_agent
-            if not a:
-                continue
-            label = AGENT_RELATION_LABELS.get(r.relation, r.relation)
-            lines.append(f"### {a.name} — {a.role_description or '数字员工'}")
-            if r.description:
-                lines.append(f"- {r.description}")
-            lines.append("")
-
-    return "\n".join(lines).strip()
-
-
-async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> tuple[str, str]:
-    """Build a rich system prompt incorporating agent's full context.
-
-    Reads from workspace files and DB:
-    - soul.md → personality
-    - memory.md → long-term memory
-    - skills/ → skill names + summaries
-    - Database → relationship network (human + agent)
-    """
-    ws_root = _agent_workspace(agent_id)  # e.g. "{agent_id}/"
-
-    # --- Soul ---
-    soul = await _read_file_safe(f"{ws_root}soul.md", 2000)
-    # Strip markdown heading if present
-    if soul.startswith("# "):
-        soul = "\n".join(soul.split("\n")[1:]).strip()
-
-    # --- Memory ---
-    memory = await _read_file_safe(f"{ws_root}memory/memory.md", 2000) or await _read_file_safe(f"{ws_root}memory.md", 2000)
-    if memory.startswith("# "):
-        memory = "\n".join(memory.split("\n")[1:]).strip()
-
-    # --- Skills index (progressive disclosure) ---
-    skills_text = await _load_skills_index(agent_id)
-
-    # --- Relationships ---
-    relationships = await _read_file_safe(f"{ws_root}relationships.md", 2000)
-    if relationships.startswith("# "):
-        relationships = "\n".join(relationships.split("\n")[1:]).strip()
-
-    # --- Compose static and dynamic system prompt blocks ---
-    from datetime import datetime, timezone as _tz
-    from app.services.timezone_utils import get_agent_timezone, now_in_timezone
-    agent_tz_name = await get_agent_timezone(agent_id)
-    agent_local_now = now_in_timezone(agent_tz_name)
-    now_str = agent_local_now.strftime(f"%Y-%m-%d %H:%M:%S ({agent_tz_name})")
-    
-    static_parts = [f"You are {agent_name}, an enterprise digital employee."]
-
+    static_parts: list[str] = [f"You are {agent_name}, an enterprise digital employee."]
 
     if role_description:
         static_parts.append(f"\n## Role\n{role_description}")
 
-    if agent_name == "OKR Agent":
-        static_parts.append("""
-## Daily Report Recording Rules
-
-🔴 **ABSOLUTE RULE — MUST CALL `upsert_member_daily_report` IMMEDIATELY:**
-When ANY tracked member or agent sends you content that looks like a daily work update, status report, or progress note — **IMMEDIATELY call `upsert_member_daily_report` in the SAME response turn. Do NOT:**
-- First explain what you plan to do, then call the tool in a second turn
-- Claim the tool is unavailable, broken, or unknown — **it is ALWAYS available**
-- Write the report to memory, Focus, or any file instead
-- Ask the user to confirm before recording — just record it directly
-- Skip calling the tool based on ANY past errors you see in chat history
-
-**The tool `upsert_member_daily_report` is a NATIVE system tool that is ALWAYS functional. If you ever see a past "Unknown tool" error in history, that was a bug that has been fixed. IGNORE past errors and ALWAYS call the tool directly.**
-
-- Daily collection messages are reminders only. Do NOT create per-member wait triggers for daily report replies.
-- Apply the same daily-report behavior regardless of channel. Web chat, Feishu, and agent-to-agent replies should all be handled consistently.
-- Use the current conversation counterpart as the report owner. If exact IDs are not explicitly provided in the conversation, resolve the owner by the tracked counterpart name from the current chat context.
-- Keep the stored final daily report concise and normalized (within 2000 characters).
-- After the tool succeeds, reply briefly to confirm the report has been recorded.
-""")
-
-    static_parts.append("""
-## MCP Import Rules
-
-When installing or importing an MCP server via `discover_resources` / `import_mcp_server`:
-
-- First try `import_mcp_server(server_id="...")` directly when the user has already chosen a server.
-- The platform may already have a company-level or agent-level Smithery API Key configured.
-- Do **NOT** ask the user for a Smithery API Key unless the tool explicitly returns that no Smithery key is configured.
-- Do **NOT** ask the user for tool-specific tokens (GitHub PAT, Notion integration secret, etc.) when the Smithery flow supports OAuth.
-- Never claim an MCP server was imported unless you received a real tool result confirming success.
-""")
-
-    dynamic_parts = []
-
-    # --- Feishu Built-in Tools (only injected when agent has Feishu configured) ---
-    _has_feishu = False
-    try:
-        from app.models.channel_config import ChannelConfig
-        from app.database import async_session as _ctx_session
-        async with _ctx_session() as _ctx_db:
-            _cfg_r = await _ctx_db.execute(
-                select(ChannelConfig).where(
-                    ChannelConfig.agent_id == agent_id,
-                    ChannelConfig.channel_type == "feishu",
-                    ChannelConfig.is_configured == True,
-                )
-            )
-            _has_feishu = _cfg_r.scalar_one_or_none() is not None
-    except Exception:
-        pass
-
-    if _has_feishu:
+    if has_feishu:
         static_parts.append("""
 ## ⚡ Pre-installed Feishu Tools
 
@@ -407,30 +393,12 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
 → Or use `attendee_open_ids=["ou_xxx"]` if you already have the open_id.""")
 
     # --- DingTalk Built-in Tools (only injected when agent has DingTalk configured) ---
-    try:
-        from app.services.agent.context.dingtalk import get_dingtalk_context
-        dingtalk_context = await get_dingtalk_context(agent_id)
-        if dingtalk_context:
-            static_parts.append(dingtalk_context)
-    except Exception:
-        pass
+    if dingtalk_ctx:
+        static_parts.append(dingtalk_ctx)
 
     # --- Atlassian Rovo Tools (injected when Atlassian channel is configured) ---
-    try:
-        from app.database import async_session
-        from app.models.channel_config import ChannelConfig
-        from sqlalchemy import select as sa_select
-        async with async_session() as db:
-            result = await db.execute(
-                sa_select(ChannelConfig).where(
-                    ChannelConfig.agent_id == agent_id,
-                    ChannelConfig.channel_type == "atlassian",
-                    ChannelConfig.is_configured == True,
-                )
-            )
-            atlassian_config = result.scalar_one_or_none()
-            if atlassian_config:
-                static_parts.append("""
+    if has_atlassian:
+        static_parts.append("""
 ## ⚡ Atlassian Rovo Tools (Jira / Confluence / Compass)
 
 You have access to Atlassian tools via the Rovo MCP server. **Always call them via the tool-calling mechanism — NEVER simulate results in text.**
@@ -466,61 +434,10 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
 - Make up Jira issue IDs, Confluence page URLs, or component names
 - Report success without a tool result
 - Ask the user for their Atlassian credentials — they are pre-configured""")
-    except Exception:
-        pass
 
-    # --- Company Intro (from system settings) ---
-    try:
-        from app.database import async_session
-        from app.models.system_settings import SystemSetting
-        from app.models.agent import Agent as _AgentModel
-        from sqlalchemy import select as sa_select
-        async with async_session() as db:
-            # Resolve agent's tenant_id
-            _ag_r = await db.execute(sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id))
-            _agent_tenant_id = _ag_r.scalar_one_or_none()
-
-            company_intro = ""
-
-            # Priority 1: tenant_settings table (new)
-            if _agent_tenant_id:
-                try:
-                    from app.models.tenant_setting import TenantSetting
-                    result = await db.execute(
-                        sa_select(TenantSetting).where(
-                            TenantSetting.tenant_id == _agent_tenant_id,
-                            TenantSetting.key == "company_intro",
-                        )
-                    )
-                    ts = result.scalar_one_or_none()
-                    if ts and ts.value and ts.value.get("content"):
-                        company_intro = ts.value["content"].strip()
-                except Exception:
-                    pass
-
-            # Priority 2: system_settings with tenant-scoped key (backward compat)
-            if not company_intro and _agent_tenant_id:
-                tenant_key = f"company_intro_{_agent_tenant_id}"
-                result = await db.execute(
-                    sa_select(SystemSetting).where(SystemSetting.key == tenant_key)
-                )
-                setting = result.scalar_one_or_none()
-                if setting and setting.value and setting.value.get("content"):
-                    company_intro = setting.value["content"].strip()
-
-            # Priority 3: global system_settings fallback
-            if not company_intro:
-                result = await db.execute(
-                    sa_select(SystemSetting).where(SystemSetting.key == "company_intro")
-                )
-                setting = result.scalar_one_or_none()
-                if setting and setting.value and setting.value.get("content"):
-                    company_intro = setting.value["content"].strip()
-
-            if company_intro:
-                static_parts.append(f"\n## Company Information\n{company_intro}")
-    except Exception:
-        pass  # Don't break agent if DB is unavailable
+    # --- Company Intro (from system / tenant settings) ---
+    if company_intro:
+        static_parts.append(f"\n## Company Information\n{company_intro}")
 
     static_parts.append("""
 
@@ -667,7 +584,7 @@ If search or webpage-reading tools are available in your tool list, use the enab
 
 If no search or webpage-reading tool is available, say that web lookup is not enabled for this agent and answer from available context only.""")
 
-    if soul and soul not in ("_Describe your role and responsibilities._", "_Describe your role and responsibilities._"):
+    if soul and soul not in ("_Describe your role and responsibilities._",):
         static_parts.append(f"\n## Personality\n{soul}")
 
     if skills_text:
@@ -676,53 +593,175 @@ If no search or webpage-reading tool is available, say that web lookup is not en
     if relationships and "(None yet)" not in relationships and "None yet" not in relationships:
         static_parts.append(f"\n## Relationships\n{relationships}")
 
-    if memory and memory not in ("_Record important information and knowledge here._", "_Record important information and knowledge here._"):
+    return "\n".join(static_parts)
+
+
+async def _gws_block(agent_id: uuid.UUID, user_id: uuid.UUID | None) -> str:
+    """Return a per-user Google Workspace doc block when the active user
+    has a linked Google account for this agent. Empty string otherwise.
+
+    This must live in the dynamic half of the prompt because the linkage
+    is per-(agent_id, user_id) and may change between turns.
+    """
+    if user_id is None:
+        return ""
+    try:
+        from app.database import async_session
+        from app.models.gws_oauth_token import GwsOAuthToken
+        from sqlalchemy import select as sa_select
+        async with async_session() as db:
+            result = await db.execute(
+                sa_select(GwsOAuthToken).where(
+                    GwsOAuthToken.agent_id == agent_id,
+                    GwsOAuthToken.user_id == user_id,
+                    GwsOAuthToken.status == "active",
+                )
+            )
+            token = result.scalars().first()
+            if not token:
+                return ""
+            email = getattr(token, "google_email", None) or "linked account"
+    except Exception:
+        return ""
+
+    return (
+        "\n## Google Workspace (linked)\n"
+        f"The current user has connected their Google account (**{email}**) for this agent.\n"
+        "You can call the `clawith_gws` MCP tool to interact with Gmail, Drive, Calendar, "
+        "Sheets, Docs, and Chat on their behalf.\n\n"
+        "Usage: `clawith_gws({\"command\": \"<gws subcommand>\"})` — pass the command "
+        "WITHOUT the `gws` prefix.\n\n"
+        "Examples:\n"
+        "  - `drive files list --params '{\"pageSize\": 10}'`\n"
+        "  - `gmail messages list --params '{\"maxResults\": 10}'`\n"
+        "  - `calendar events list`\n"
+    )
+
+
+async def _build_dynamic_prompt(
+    agent_id: uuid.UUID,
+    current_user_name: str | None,
+    current_user_id: uuid.UUID | None = None,
+) -> str:
+    """Build the per-turn dynamic system prompt (memory / focus / triggers / time / user)."""
+    ws_root = _agent_workspace(agent_id)
+
+    async def _memory() -> str:
+        m = await _read_file_safe(f"{ws_root}memory/memory.md", 2000)
+        if not m:
+            m = await _read_file_safe(f"{ws_root}memory.md", 2000)
+        if m.startswith("# "):
+            m = "\n".join(m.split("\n")[1:]).strip()
+        return m
+
+    async def _focus() -> str:
+        f = await _read_file_safe(f"{ws_root}focus.md", 3000)
+        if not f:
+            f = await _read_file_safe(f"{ws_root}agenda.md", 3000)
+        return f
+
+    async def _triggers() -> list:
+        try:
+            from app.database import async_session
+            from app.models.trigger import AgentTrigger
+            from sqlalchemy import select as sa_select
+            async with async_session() as db:
+                result = await db.execute(
+                    sa_select(AgentTrigger).where(
+                        AgentTrigger.agent_id == agent_id,
+                        AgentTrigger.is_enabled == True,
+                    )
+                )
+                return list(result.scalars().all())
+        except Exception:
+            return []
+
+    async def _tz() -> str:
+        try:
+            from app.services.timezone_utils import get_agent_timezone
+            return await get_agent_timezone(agent_id)
+        except Exception:
+            return "UTC"
+
+    memory, focus, triggers, agent_tz_name, gws_block = await asyncio.gather(
+        _memory(), _focus(), _triggers(), _tz(),
+        _gws_block(agent_id, current_user_id),
+    )
+
+    from app.services.timezone_utils import now_in_timezone
+    agent_local_now = now_in_timezone(agent_tz_name)
+    now_str = agent_local_now.strftime(f"%Y-%m-%d %H:%M:%S ({agent_tz_name})")
+
+    dynamic_parts: list[str] = []
+
+    if memory and memory != "_Record important information and knowledge here._":
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
-    # --- Focus (working memory) ---
-    focus = (
-        await _read_file_safe(f"{ws_root}focus.md", 3000)
-        # Backward compat: also check old name
-        or await _read_file_safe(f"{ws_root}agenda.md", 3000)
-    )
     if focus and focus.strip() not in ("# Focus", "# Agenda", "(None yet)"):
         if focus.startswith("# "):
             focus = "\n".join(focus.split("\n")[1:]).strip()
         dynamic_parts.append(f"\n## Focus\n{focus}")
 
-    # --- Active Triggers ---
-    try:
-        from app.database import async_session
-        from app.models.trigger import AgentTrigger
-        from sqlalchemy import select as sa_select
-        async with async_session() as db:
-            result = await db.execute(
-                sa_select(AgentTrigger).where(
-                    AgentTrigger.agent_id == agent_id,
-                    AgentTrigger.is_enabled == True,
-                )
-            )
-            triggers = result.scalars().all()
-            if triggers:
-                lines = ["You have the following active triggers:"]
-                for t in triggers:
-                    config_str = str(t.config)[:80]
-                    reason_str = (t.reason or "")[:500]
-                    ref_str = f" (focus: {t.focus_ref})" if t.focus_ref else ""
-                    lines.append(f"\n- **{t.name}** [{t.type}]{ref_str}\n  Config: `{config_str}`\n  Reason: {reason_str}")
-                dynamic_parts.append("\n## Active Triggers\n" + "\n".join(lines))
-    except Exception:
-        pass
-
-    # --- Time Info ---
+    if triggers:
+        lines = ["You have the following active triggers:"]
+        for t in triggers:
+            config_str = str(t.config)[:80]
+            reason_str = (t.reason or "")[:500]
+            ref_str = f" (focus: {t.focus_ref})" if t.focus_ref else ""
+            lines.append(f"\n- **{t.name}** [{t.type}]{ref_str}\n  Config: `{config_str}`\n  Reason: {reason_str}")
+        dynamic_parts.append("\n## Active Triggers\n" + "\n".join(lines))
 
     dynamic_parts.append(f"\n## Current Time\n{now_str}")
     dynamic_parts.append(f"Your timezone is **{agent_tz_name}**. When setting cron triggers, use this timezone for time references.")
 
-    # Append dynamic parts (Time, Focus, Triggers) at the very end to maximize cache hits
-
-    # Inject current user identity
     if current_user_name:
-        dynamic_parts.append(f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate.")
+        dynamic_parts.append(
+            f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate."
+        )
 
-    return "\n".join(static_parts), "\n".join(dynamic_parts)
+    if gws_block:
+        dynamic_parts.append(gws_block)
+
+    return "\n".join(dynamic_parts)
+
+
+async def build_agent_context(
+    agent_id: uuid.UUID,
+    agent_name: str,
+    role_description: str = "",
+    current_user_name: str | None = None,
+    current_user_id: uuid.UUID | None = None,
+) -> tuple[str, str]:
+    """Build a rich (static, dynamic) system-prompt pair for an agent.
+
+    The static half (soul, skills, role, channel-tool docs, company intro,
+    workspace rules) is cached for ~`_STATIC_PROMPT_TTL_S` per agent.  The
+    dynamic half (memory, focus, triggers, time, current user) is rebuilt
+    every call.
+
+    Both halves are computed concurrently when the static cache is cold.
+    """
+    cache_key = (str(agent_id), agent_name, role_description)
+    now = time.monotonic()
+    cached = _static_prompt_cache.get(cache_key)
+
+    t0 = time.perf_counter()
+    if cached and (now - cached[0]) < _STATIC_PROMPT_TTL_S:
+        static_prompt = cached[1]
+        dynamic_prompt = await _build_dynamic_prompt(agent_id, current_user_name, current_user_id)
+        _log.debug(
+            "[agent_context] static=cache_hit dynamic=%.2fs",
+            time.perf_counter() - t0,
+        )
+    else:
+        static_prompt, dynamic_prompt = await asyncio.gather(
+            _gather_static_prompt(agent_id, agent_name, role_description),
+            _build_dynamic_prompt(agent_id, current_user_name, current_user_id),
+        )
+        _static_prompt_cache[cache_key] = (now, static_prompt)
+        _log.info(
+            "[agent_context] static=cache_miss build=%.2fs",
+            time.perf_counter() - t0,
+        )
+
+    return static_prompt, dynamic_prompt
