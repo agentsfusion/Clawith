@@ -91,9 +91,17 @@ async def _build_cli_mcp_config(agent_id, agent, user_id=None) -> dict:
     if agent.cli_config and agent.cli_config.get("mcp_bridge_enabled", True):
         from app.config import get_settings
         app_settings = get_settings()
+        # Bridge auth uses a short-lived HMAC token signed with
+        # SECRET_KEY. (The previous shared-secret design stored
+        # sha256(raw_key) on the agent but threw raw_key away at
+        # creation — there was no real key to send.) The token binds
+        # agent_id + exp; bridge listens on localhost and is only
+        # called by us in-process, so a server-internal mint/verify is
+        # both correct and sufficient.
+        from app.services.cli_mcp_bridge.auth import mint_bridge_auth_token
         headers = {
             "X-Agent-Id": str(agent_id),
-            "Authorization": f"Bearer {agent.api_key_hash[:32] if agent.api_key_hash else ''}",
+            "Authorization": f"Bearer {mint_bridge_auth_token(agent_id)}",
         }
         if user_id:
             # Mint an HMAC-signed token binding (agent_id, user_id, exp).
