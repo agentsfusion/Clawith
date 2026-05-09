@@ -36,8 +36,49 @@ WEATHER_TOOL = {
     "config_schema": {},
 }
 
+RENDER_CHART_TOOL = {
+    "name": "render_chart",
+    "display_name": "Render Chart",
+    "description": (
+        "Render a chart inline in the chat UI from rows just returned by a SQL "
+        "or data tool. Supports bar / line / area / pie. The backend validates "
+        "the spec and serializes it — the frontend draws via Recharts. "
+        "Use AFTER getting rows; pass the entire rows array verbatim as `data`."
+    ),
+    "category": "data",
+    "icon": "📊",
+    "is_default": True,
+    "parameters_schema": {
+        "type": "object",
+        "required": ["type", "title", "data", "xKey", "yKeys"],
+        "properties": {
+            "type": {"type": "string", "enum": ["bar", "line", "area", "pie"]},
+            "title": {"type": "string"},
+            "data": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    "Array of row objects. For bar/line/area: each row contains "
+                    "xKey + one field per yKey. For pie: each row has xKey (label) "
+                    "+ the first yKey (numeric)."
+                ),
+            },
+            "xKey": {"type": "string"},
+            "yKeys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of numeric keys to plot. For pie, only the first is used.",
+            },
+            "description": {"type": "string", "description": "Optional caption"},
+        },
+    },
+    "config": {},
+    "config_schema": {},
+}
+
 BUILTIN_TOOLS = [
     WEATHER_TOOL,
+    RENDER_CHART_TOOL,
     {
         "name": "list_files",
         "display_name": "List Files",
@@ -2134,8 +2175,8 @@ async def seed_builtin_tools():
     from app.models.agent import Agent
     from app.services.seeder_state import is_seeder_done, mark_seeder_done
 
-    if await is_seeder_done("seeder:tools", 3):
-        logger.info("[ToolSeeder] Already seeded (seeder:tools v3), skipping")
+    if await is_seeder_done("seeder:tools", 4):
+        logger.info("[ToolSeeder] Already seeded (seeder:tools v4), skipping")
         return
 
     async with async_session() as db:
@@ -2221,7 +2262,7 @@ async def seed_builtin_tools():
         await db.commit()
         logger.info("[ToolSeeder] Builtin tools seeded")
 
-    await mark_seeder_done("seeder:tools", 3, {"count": len(BUILTIN_TOOLS)})
+    await mark_seeder_done("seeder:tools", 4, {"count": len(BUILTIN_TOOLS)})
 
 
 async def clean_orphaned_mcp_tools():
