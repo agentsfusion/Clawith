@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams, useLocation } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
+import { ChartRenderer, tryParseChartSpec } from '../components/ChartRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
@@ -267,7 +268,11 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
                                         {JSON.stringify(tc.args, null, 2)}
                                     </div>
                                 )}
-                                {tc.result && (
+                                {tc.result && tc.name === 'render_chart' && (() => {
+                                    const spec = tryParseChartSpec(tc.result);
+                                    return spec ? <ChartRenderer spec={spec} /> : null;
+                                })()}
+                                {tc.result && tc.name !== 'render_chart' && (
                                     <div style={{
                                         fontSize: '10px', color: 'var(--text-secondary)',
                                         whiteSpace: 'pre-wrap', wordBreak: 'break-all',

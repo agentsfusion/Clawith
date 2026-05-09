@@ -57,6 +57,12 @@ def _validate_rel_path(rel_path: str) -> bool:
     return ".." not in rel_path.strip("/").split("/")
 
 
+# Per-turn shared context: when any tool returns rows-shaped output (a JSON
+# array of objects), execute_tool caches it here so render_chart can auto-fill
+# `data` if the LLM forgets to copy the rows back into its tool-call args.
+last_sql_rows: ContextVar = ContextVar("last_sql_rows", default=None)
+
+
 # ─── Tool Config Cache ──────────────────────────────────────────
 # Cache tool configurations to avoid frequent DB queries
 # Key: (agent_id, tool_name), Value: (config, expiry_time)
@@ -1684,6 +1690,44 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "render_chart",
+            "description": (
+                "Render a chart in the chat UI from data the user has just queried. "
+                "Use AFTER getting rows from a SQL/data tool when the user asks for "
+                "visualization, comparison, trend, or top-N. You MUST pass the actual "
+                "rows array as `data` — copy the entire rows verbatim. Do NOT call "
+                "with only metadata. Choose `type` based on intent: bar=categories, "
+                "line=time-series/trend, area=cumulative, pie=share/composition (≤8 slices)."
+            ),
+            "parameters": {
+                "type": "object",
+                "required": ["type", "title", "data", "xKey", "yKeys"],
+                "properties": {
+                    "type": {"type": "string", "enum": ["bar", "line", "area", "pie"]},
+                    "title": {"type": "string"},
+                    "data": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": (
+                            "Array of row objects. For bar/line/area: each row contains "
+                            "xKey + one field per yKey. For pie: each row has xKey (label) "
+                            "+ the first yKey (numeric)."
+                        ),
+                    },
+                    "xKey": {"type": "string"},
+                    "yKeys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of numeric keys to plot. For pie, only the first is used.",
+                    },
+                    "description": {"type": "string", "description": "Optional caption"},
+                },
+            },
+        },
+    },
 ]
 
 
@@ -2449,6 +2493,99 @@ async def is_tool_enabled_for_agent(agent_id: uuid.UUID, tool_name: str) -> bool
         return False
 
 
+_CHART_MAX_POINTS = 200
+_CHART_PIE_MAX = 8
+
+
+async def _render_chart(arguments: dict) -> str:
+    """Validate a chart spec from the LLM and return a JSON string the
+    frontend recognizes (via the `__chart: true` magic field) to render
+    via Recharts. The backend never draws — it only validates + serializes.
+    """
+    chart_type = (arguments.get("type") or "").strip()
+    title = (arguments.get("title") or "").strip()
+    description = (arguments.get("description") or "").strip() or None
+    x_key = (arguments.get("xKey") or "").strip()
+    y_keys_raw = arguments.get("yKeys") or []
+    data = arguments.get("data") or []
+
+    # 1. type
+    if chart_type not in ("bar", "line", "area", "pie"):
+        return f"❌ Invalid chart type: {chart_type!r}. Must be one of: bar, line, area, pie."
+
+    # 2. title
+    if not title:
+        return "❌ `title` is empty. Provide a short human-readable chart title."
+
+    # 3. xKey
+    if not x_key:
+        return "❌ `xKey` is empty. Provide the column name to use as x-axis (or category for bar/pie)."
+
+    # 4. yKeys
+    if not isinstance(y_keys_raw, list) or len(y_keys_raw) < 1:
+        return "❌ `yKeys` must be a non-empty list of column names to plot."
+    y_keys = [str(k).strip() for k in y_keys_raw if str(k).strip()]
+    if not y_keys:
+        return "❌ `yKeys[0]` is empty. Provide at least one numeric column name."
+
+    auto_filled = False
+    # 5. data — empty? try auto-fill from per-turn cache
+    if not isinstance(data, list) or len(data) == 0:
+        cached = last_sql_rows.get()
+        if cached and isinstance(cached, list) and len(cached) > 0:
+            data = cached
+            auto_filled = True
+        else:
+            return (
+                "❌ data is empty — you must pass the actual rows array as the "
+                "`data` argument. Copy the entire rows verbatim. Calling render_chart "
+                "with only metadata will not work."
+            )
+
+    # 6. pie max slices
+    if chart_type == "pie" and len(data) > _CHART_PIE_MAX:
+        return (
+            f"❌ Pie chart supports at most {_CHART_PIE_MAX} slices, but `data` has "
+            f"{len(data)} rows. Aggregate (e.g. group small categories into 'Other') "
+            f"or switch `type` to 'bar' for a clearer comparison."
+        )
+
+    # 7. truncate
+    if chart_type == "pie":
+        trimmed = data[:_CHART_PIE_MAX]
+    else:
+        trimmed = data[:_CHART_MAX_POINTS]
+    truncated = len(data) > len(trimmed)
+
+    # 8. key validation against first 5 rows
+    sample = trimmed[:5]
+    available_keys: set = set()
+    for row in sample:
+        if isinstance(row, dict):
+            available_keys.update(row.keys())
+    required = [x_key] + y_keys
+    missing = [k for k in required if k not in available_keys]
+    if missing:
+        return (
+            f"❌ Keys not found in data rows: {','.join(missing)}. "
+            f"Available keys: {','.join(sorted(available_keys))}"
+        )
+
+    spec = {
+        "__chart": True,
+        "type": chart_type,
+        "title": title,
+        "description": description,
+        "xKey": x_key,
+        "yKeys": y_keys,
+        "data": trimmed,
+        "truncated": truncated,
+    }
+    if auto_filled:
+        spec["autoFilledFromLastQuery"] = True
+    return json.dumps(spec, default=str)
+
+
 async def execute_tool(
     tool_name: str,
     arguments: dict,
@@ -2572,6 +2709,8 @@ async def execute_tool(
             )
         elif tool_name == "manage_tasks":
             result = await _manage_tasks(agent_id, user_id, ws, arguments)
+        elif tool_name == "render_chart":
+            result = await _render_chart(arguments)
         elif tool_name == "set_trigger":
             result = await _handle_set_trigger(agent_id, arguments)
         elif tool_name == "update_trigger":
@@ -2759,6 +2898,30 @@ async def execute_tool(
                 f"Called tool {tool_name}: {result[:80]}",
                 detail={"tool": tool_name, "args": {k: str(v)[:100] for k, v in arguments.items()}, "result": result[:300]},
             )
+
+        # Auto-cache rows-shaped tool results so a subsequent render_chart call
+        # can auto-fill `data` if the LLM forgets to copy rows back into args.
+        # Strict criteria to avoid false positives:
+        #   1. Skip render_chart itself (its output is a chart spec, not rows).
+        #   2. Result must be ONLY a JSON array (no surrounding text / markdown).
+        #   3. EVERY element must be a dict (not just first 5).
+        #   4. First row must have ≥ 2 keys (single-key arrays are rarely
+        #      meaningful chart input and are likely something else).
+        if tool_name != "render_chart" and isinstance(result, str):
+            stripped = result.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                try:
+                    parsed = json.loads(stripped)
+                    if (
+                        isinstance(parsed, list)
+                        and len(parsed) > 0
+                        and all(isinstance(r, dict) for r in parsed)
+                        and len(parsed[0]) >= 2
+                    ):
+                        last_sql_rows.set(parsed)
+                except Exception:
+                    pass
+
         return result
     except Exception as e:
         logger.exception(f"[Tool] Execution failed: {tool_name}")
