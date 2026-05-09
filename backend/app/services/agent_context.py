@@ -575,9 +575,52 @@ You have internet access through these tools — **use them proactively when you
     return "\n".join(static_parts)
 
 
+async def _gws_block(agent_id: uuid.UUID, user_id: uuid.UUID | None) -> str:
+    """Return a per-user Google Workspace doc block when the active user
+    has a linked Google account for this agent. Empty string otherwise.
+
+    This must live in the dynamic half of the prompt because the linkage
+    is per-(agent_id, user_id) and may change between turns.
+    """
+    if user_id is None:
+        return ""
+    try:
+        from app.database import async_session
+        from app.models.gws_oauth_token import GwsOAuthToken
+        from sqlalchemy import select as sa_select
+        async with async_session() as db:
+            result = await db.execute(
+                sa_select(GwsOAuthToken).where(
+                    GwsOAuthToken.agent_id == agent_id,
+                    GwsOAuthToken.user_id == user_id,
+                    GwsOAuthToken.status == "active",
+                )
+            )
+            token = result.scalars().first()
+            if not token:
+                return ""
+            email = getattr(token, "google_email", None) or "linked account"
+    except Exception:
+        return ""
+
+    return (
+        "\n## Google Workspace (linked)\n"
+        f"The current user has connected their Google account (**{email}**) for this agent.\n"
+        "You can call the `clawith_gws` MCP tool to interact with Gmail, Drive, Calendar, "
+        "Sheets, Docs, and Chat on their behalf.\n\n"
+        "Usage: `clawith_gws({\"command\": \"<gws subcommand>\"})` — pass the command "
+        "WITHOUT the `gws` prefix.\n\n"
+        "Examples:\n"
+        "  - `drive files list --params '{\"pageSize\": 10}'`\n"
+        "  - `gmail messages list --params '{\"maxResults\": 10}'`\n"
+        "  - `calendar events list`\n"
+    )
+
+
 async def _build_dynamic_prompt(
     agent_id: uuid.UUID,
     current_user_name: str | None,
+    current_user_id: uuid.UUID | None = None,
 ) -> str:
     """Build the per-turn dynamic system prompt (memory / focus / triggers / time / user)."""
     ws_root = _agent_workspace(agent_id)
@@ -619,8 +662,9 @@ async def _build_dynamic_prompt(
         except Exception:
             return "UTC"
 
-    memory, focus, triggers, agent_tz_name = await asyncio.gather(
-        _memory(), _focus(), _triggers(), _tz()
+    memory, focus, triggers, agent_tz_name, gws_block = await asyncio.gather(
+        _memory(), _focus(), _triggers(), _tz(),
+        _gws_block(agent_id, current_user_id),
     )
 
     from app.services.timezone_utils import now_in_timezone
@@ -654,6 +698,9 @@ async def _build_dynamic_prompt(
             f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate."
         )
 
+    if gws_block:
+        dynamic_parts.append(gws_block)
+
     return "\n".join(dynamic_parts)
 
 
@@ -662,6 +709,7 @@ async def build_agent_context(
     agent_name: str,
     role_description: str = "",
     current_user_name: str | None = None,
+    current_user_id: uuid.UUID | None = None,
 ) -> tuple[str, str]:
     """Build a rich (static, dynamic) system-prompt pair for an agent.
 
@@ -679,7 +727,7 @@ async def build_agent_context(
     t0 = time.perf_counter()
     if cached and (now - cached[0]) < _STATIC_PROMPT_TTL_S:
         static_prompt = cached[1]
-        dynamic_prompt = await _build_dynamic_prompt(agent_id, current_user_name)
+        dynamic_prompt = await _build_dynamic_prompt(agent_id, current_user_name, current_user_id)
         _log.debug(
             "[agent_context] static=cache_hit dynamic=%.2fs",
             time.perf_counter() - t0,
@@ -687,7 +735,7 @@ async def build_agent_context(
     else:
         static_prompt, dynamic_prompt = await asyncio.gather(
             _gather_static_prompt(agent_id, agent_name, role_description),
-            _build_dynamic_prompt(agent_id, current_user_name),
+            _build_dynamic_prompt(agent_id, current_user_name, current_user_id),
         )
         _static_prompt_cache[cache_key] = (now, static_prompt)
         _log.info(

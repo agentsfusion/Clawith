@@ -4,7 +4,7 @@ import json
 
 from fastapi import FastAPI, Request, Response
 
-from app.services.cli_mcp_bridge.auth import verify_cli_agent, check_autonomy
+from app.services.cli_mcp_bridge.auth import verify_cli_agent, check_autonomy, get_session_user_id
 
 app = FastAPI(title="Clawith MCP Bridge")
 
@@ -84,6 +84,9 @@ def _register_tools():
         ("clawith_page_list", page_tools.clawith_page_list,
          "List published pages",
          {"type": "object", "properties": {}}),
+        ("clawith_gws", None,
+         "Execute Google Workspace CLI (gws) commands to interact with Gmail, Drive, Calendar, Sheets, Docs, and Chat. The current user must have connected their Google account via agent settings. Examples: 'drive files list', 'gmail messages list --params \\'{\"maxResults\": 10}\\'', 'calendar events list'.",
+         {"type": "object", "properties": {"command": {"type": "string", "description": "The gws CLI command (without the 'gws' prefix), e.g. 'drive files list --params \\'{\"pageSize\": 10}\\''"}}, "required": ["command"]}),
     ]
 
     for name, handler, description, schema in entries:
@@ -161,8 +164,19 @@ async def mcp_endpoint(request: Request):
             )
 
         try:
-            handler = TOOL_REGISTRY[tool_name]["handler"]
-            result = await handler(agent, **arguments)
+            if tool_name == "clawith_gws":
+                user_id = get_session_user_id(request)
+                if user_id is None:
+                    result = (
+                        "❌ Google Workspace requires an active user session. "
+                        "This tool is only available during user-initiated chats."
+                    )
+                else:
+                    from app.services.agent_tools import _execute_gws
+                    result = await _execute_gws(agent.id, user_id, arguments)
+            else:
+                handler = TOOL_REGISTRY[tool_name]["handler"]
+                result = await handler(agent, **arguments)
             return Response(
                 content=json.dumps({
                     "jsonrpc": "2.0", "id": req_id,

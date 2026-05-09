@@ -45,7 +45,10 @@ def _build_cli_extra_instructions(agent) -> str:
         "   - `clawith_a2a_send` — Send message to another agent\n"
         "   - `clawith_trigger_set/update/cancel` — Manage autonomous triggers\n"
         "   - `clawith_channel_send` — Send message to human colleagues\n"
-        "   - `clawith_plaza_post/comment` — Post to organization feed\n\n"
+        "   - `clawith_plaza_post/comment` — Post to organization feed\n"
+        "   - `clawith_gws` — Execute Google Workspace (Gmail / Drive / Calendar / Sheets / Docs / Chat)\n"
+        "      commands on behalf of the current user. Only usable when that user has linked\n"
+        "      their Google account for this agent (a `## Google Workspace` block will appear above).\n\n"
         "3. **Focus**: Update `focus.md` with checklist format:\n"
         "   - [ ] identifier: Description\n"
         "   - [/] identifier: In progress\n"
@@ -65,12 +68,20 @@ _mcp_config_cache: dict[str, tuple[float, dict]] = {}
 def invalidate_mcp_config(agent_id=None) -> None:
     if agent_id is None:
         _mcp_config_cache.clear()
-    else:
-        _mcp_config_cache.pop(str(agent_id), None)
+        return
+    # Cache keys now have the form f"{agent_id}:{user_id_or_empty}";
+    # remove every per-user variant for this agent.
+    prefix = f"{agent_id}:"
+    for k in [k for k in _mcp_config_cache if k.startswith(prefix)]:
+        _mcp_config_cache.pop(k, None)
 
 
-async def _build_cli_mcp_config(agent_id, agent) -> dict:
-    cache_key = str(agent_id)
+async def _build_cli_mcp_config(agent_id, agent, user_id=None) -> dict:
+    # Cache key includes user_id so per-user headers (signed
+    # X-Session-Token used by clawith_gws) are correctly distinguished
+    # across sessions for the same agent. TTL is bounded well under the
+    # session-token TTL so we never serve an expired token from cache.
+    cache_key = f"{agent_id}:{user_id or ''}"
     now = time.monotonic()
     cached = _mcp_config_cache.get(cache_key)
     if cached and (now - cached[0]) < _MCP_CONFIG_TTL_S:
@@ -80,13 +91,21 @@ async def _build_cli_mcp_config(agent_id, agent) -> dict:
     if agent.cli_config and agent.cli_config.get("mcp_bridge_enabled", True):
         from app.config import get_settings
         app_settings = get_settings()
+        headers = {
+            "X-Agent-Id": str(agent_id),
+            "Authorization": f"Bearer {agent.api_key_hash[:32] if agent.api_key_hash else ''}",
+        }
+        if user_id:
+            # Mint an HMAC-signed token binding (agent_id, user_id, exp).
+            # The bridge will verify the signature + agent binding before
+            # trusting user_id for per-user tools like clawith_gws — a
+            # caller holding only the agent API key cannot forge this.
+            from app.services.cli_mcp_bridge.auth import mint_session_token
+            headers["X-Session-Token"] = mint_session_token(agent_id, user_id)
         config["mcpServers"]["clawith"] = {
             "type": "http",
             "url": f"http://localhost:{getattr(app_settings, 'CLI_MCP_BRIDGE_PORT', 18900)}/mcp",
-            "headers": {
-                "X-Agent-Id": str(agent_id),
-                "Authorization": f"Bearer {agent.api_key_hash[:32] if agent.api_key_hash else ''}",
-            }
+            "headers": headers,
         }
     from app.models.tool import Tool
     async with async_session() as db:
@@ -541,14 +560,16 @@ async def websocket_chat(
 
                 _t_ctx = time.perf_counter()
                 static_prompt, dynamic_prompt = await build_agent_context(
-                    agent_id, agent_name, role_description, current_user_name=user.display_name
+                    agent_id, agent_name, role_description,
+                    current_user_name=user.display_name,
+                    current_user_id=user_id,
                 )
                 _ctx_ms = (time.perf_counter() - _t_ctx) * 1000
                 cli_instructions = _build_cli_extra_instructions(agent)
                 full_system = static_prompt + "\n\n---\n\n" + dynamic_prompt + "\n\n" + cli_instructions
 
                 _t_mcp = time.perf_counter()
-                mcp_config = await _build_cli_mcp_config(agent_id, agent)
+                mcp_config = await _build_cli_mcp_config(agent_id, agent, user_id=user_id)
                 _mcp_ms = (time.perf_counter() - _t_mcp) * 1000
                 logger.info(
                     f"[WS][perf] agent={agent_id} build_context={_ctx_ms:.0f}ms mcp_config={_mcp_ms:.0f}ms"

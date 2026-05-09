@@ -5728,6 +5728,11 @@ function AgentDetailInner() {
                                     <ChannelConfig mode="edit" agentId={id!} />
                                 </div>
 
+                                {/* Google Workspace Integration — same per-user link UI as native agents */}
+                                <div style={{ marginBottom: '12px' }}>
+                                    <GoogleWorkspaceSection agentId={id!} />
+                                </div>
+
                                 <div className="card" style={{ borderColor: 'var(--error)' }}>
                                     <h4 style={{ color: 'var(--error)', marginBottom: '12px' }}>{t('agent.settings.danger.title')}</h4>
                                     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
