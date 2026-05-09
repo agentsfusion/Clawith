@@ -6816,7 +6816,6 @@ select:focus {
   color: white;
 }
 
-<<<<<<< HEAD
 /* ── SaaS chat message system (replaces inline styles) ── */
 .chat-msg-row {
   display: flex;
@@ -7220,33 +7219,6 @@ select:focus {
 }
 [data-theme="dark"] .chat-scroll-btn:hover {
   background: rgba(50, 50, 60, 0.9);
-=======
-.scroll-to-bottom-btn {
-  position: absolute;
-  bottom: 100px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  font-size: 16px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  z-index: 10;
-  transition: all 150ms ease;
-}
-
-.scroll-to-bottom-btn:hover {
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
->>>>>>> 6932b31 (fix: resolve chat scrolling with auto-scroll and return-to-bottom button (#9))
 }
 
 .chat-input-area {
