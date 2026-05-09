@@ -486,6 +486,8 @@ async def _heartbeat_tick():
                 await write_audit_log("heartbeat_fire", {"agent_name": agent.name}, agent_id=agent.id)
                 if getattr(agent, 'agent_type', 'native') == 'evolver':
                     asyncio.create_task(_execute_evolver_evolution(agent.id, agent.tenant_id))
+                elif getattr(agent, 'agent_type', 'native') == 'cli':
+                    pass  # CLI agents: heartbeat disabled in Phase 1
                 else:
                     asyncio.create_task(_execute_heartbeat(agent.id))
                 triggered += 1

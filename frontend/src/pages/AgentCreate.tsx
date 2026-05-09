@@ -7,6 +7,7 @@ import ChannelConfig from '../components/ChannelConfig';
 import LinearCopyButton from '../components/LinearCopyButton';
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
 const OPENCLAW_STEPS = ['basicInfo', 'permissions'] as const;
+const CLI_STEPS = ['basicInfo', 'cliConfig', 'personality', 'skills', 'permissions'] as const;
 
 /**
  * Generic parser for soul_template markdown format.
@@ -65,7 +66,11 @@ export default function AgentCreate() {
     const [step, setStep] = useState(0);
     const [error, setError] = useState('');
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-    const [agentType, setAgentType] = useState<'native' | 'openclaw' | 'evolver'>('native');
+    const [agentType, setAgentType] = useState<'native' | 'openclaw' | 'evolver' | 'cli'>('native');
+    const [cliEngine, setCliEngine] = useState<'claude_code' | 'gemini_cli'>('claude_code');
+    const [cliApiKey, setCliApiKey] = useState('');
+    const [cliPermissionMode, setCliPermissionMode] = useState<'bypass' | 'default'>('bypass');
+    const [cliModel, setCliModel] = useState('');
     // Clear field error when user edits a field
     const clearFieldError = (field: string) => setFieldErrors(prev => { const n = { ...prev }; delete n[field]; return n; });
     const [createdApiKey, setCreatedApiKey] = useState('');
@@ -255,22 +260,31 @@ export default function AgentCreate() {
             name: form.name,
             agent_type: agentType,
             role_description: form.role_description,
-            personality: isHosted ? form.personality : undefined,
-            boundaries: isHosted ? form.boundaries : undefined,
+            personality: isHosted || agentType === 'cli' ? form.personality : undefined,
+            boundaries: isHosted || agentType === 'cli' ? form.boundaries : undefined,
             primary_model_id: isHosted ? (form.primary_model_id || undefined) : undefined,
             fallback_model_id: isHosted ? (form.fallback_model_id || undefined) : undefined,
             template_id: form.template_id || undefined,
             permission_scope_type: form.permission_scope_type,
             max_tokens_per_day: form.max_tokens_per_day ? Number(form.max_tokens_per_day) : undefined,
             max_tokens_per_month: form.max_tokens_per_month ? Number(form.max_tokens_per_month) : undefined,
-            skill_ids: isHosted ? form.skill_ids : [],
+            skill_ids: isHosted || agentType === 'cli' ? form.skill_ids : [],
             permission_access_level: form.permission_access_level,
             tenant_id: currentTenant || undefined,
+            ...(agentType === 'cli' ? {
+                cli_engine: cliEngine,
+                cli_api_key: cliApiKey || undefined,
+                cli_config: {
+                    permission_mode: cliPermissionMode,
+                    model: cliModel || undefined,
+                    mcp_bridge_enabled: true,
+                },
+            } : {}),
         });
     };
 
     const selectedModel = models.find((m: any) => m.id === form.primary_model_id);
-    const activeSteps = agentType === 'openclaw' ? OPENCLAW_STEPS : STEPS;
+    const activeSteps = agentType === 'openclaw' ? OPENCLAW_STEPS : agentType === 'cli' ? CLI_STEPS : STEPS;
 
     // If OpenClaw agent just created, show success page with API key
     if (createdApiKey && createMutation.data) {
@@ -401,7 +415,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
 
     // ── Type Selector (shared between both modes) ──
     const typeSelector = (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', maxWidth: '780px', marginBottom: '24px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', maxWidth: '780px', marginBottom: '24px' }}>
             <div
                 onClick={() => { setAgentType('native'); setStep(0); }}
                 style={{
@@ -446,6 +460,24 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                 }}>Lab</span>
                 <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>{t('openclaw.openclawTitle', 'Link Personal Assistant')}</div>
                 <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('openclaw.openclawDesc', 'Connect your existing Personal Assistant agent')}</div>
+            </div>
+            <div
+                onClick={() => { setAgentType('cli'); setStep(0); }}
+                style={{
+                    padding: '16px', borderRadius: '8px', cursor: 'pointer', position: 'relative',
+                    border: `1.5px solid ${agentType === 'cli' ? '#8B5CF6' : 'var(--border-default)'}`,
+                    background: agentType === 'cli' ? 'rgba(139,92,246,0.1)' : 'var(--bg-elevated)',
+                }}
+            >
+                <span style={{
+                    position: 'absolute', top: '8px', right: '8px',
+                    fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                    background: '#8B5CF6', color: '#fff', fontWeight: 600,
+                    letterSpacing: '0.5px',
+                }}>NEW</span>
+                <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>CLI Agent</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>Powered by Claude Code CLI / Gemini CLI</div>
+                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>Use external CLI engine as agent brain</div>
             </div>
         </div>
     );
@@ -525,6 +557,315 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                             disabled={createMutation.isPending}>
                             {createMutation.isPending ? t('common.loading') : t('openclaw.createBtn', 'Link Agent')}
                         </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // ── CLI mode: multi-step wizard with cliConfig step ──
+    if (agentType === 'cli') {
+        const cliStepLabels: Record<string, string> = {
+            basicInfo: t('wizard.steps.basicInfo'),
+            cliConfig: 'CLI Config',
+            personality: t('wizard.steps.personality'),
+            skills: t('wizard.steps.skills'),
+            permissions: t('wizard.steps.permissions'),
+        };
+        const currentStepName = CLI_STEPS[step];
+        const isLastStep = step === CLI_STEPS.length - 1;
+
+        return (
+            <div>
+                <div className="page-header">
+                    <h1 className="page-title">{t('nav.newAgent')}</h1>
+                </div>
+
+                {typeSelector}
+
+                <div className="wizard-steps">
+                    {CLI_STEPS.map((s, i) => (
+                        <div key={s} style={{ display: 'contents' }}>
+                            <div className={`wizard-step ${i === step ? 'active' : i < step ? 'completed' : ''}`}>
+                                <div className="wizard-step-number">{i < step ? '\u2713' : i + 1}</div>
+                                <span>{cliStepLabels[s] || s}</span>
+                            </div>
+                            {i < CLI_STEPS.length - 1 && <div className="wizard-connector" />}
+                        </div>
+                    ))}
+                </div>
+
+                {error && (
+                    <div style={{ background: 'var(--error-subtle)', color: 'var(--error)', padding: '8px 12px', borderRadius: '6px', fontSize: '13px', marginBottom: '16px' }}>
+                        {error}
+                    </div>
+                )}
+
+                <div className="card" style={{ maxWidth: '640px' }}>
+                    {/* Step: Basic Info */}
+                    {currentStepName === 'basicInfo' && (
+                        <div>
+                            <h3 style={{ marginBottom: '20px', fontWeight: 600, fontSize: '15px' }}>{t('wizard.step1.title')}</h3>
+                            <div className="form-group">
+                                <label className="form-label">{t('agent.fields.name')} <span style={{ color: 'var(--error)' }}>*</span></label>
+                                <input className={`form-input${fieldErrors.name ? ' input-error' : ''}`} value={form.name}
+                                    onChange={(e) => { setForm({ ...form, name: e.target.value }); clearFieldError('name'); }}
+                                    placeholder={t("wizard.step1.namePlaceholder")} autoFocus />
+                                {fieldErrors.name && <div style={{ color: 'var(--error)', fontSize: '12px', marginTop: '4px' }}>{fieldErrors.name}</div>}
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label">{t('agent.fields.role')}</label>
+                                <input className={`form-input${fieldErrors.role_description ? ' input-error' : ''}`} value={form.role_description}
+                                    onChange={(e) => { setForm({ ...form, role_description: e.target.value }); clearFieldError('role_description'); }}
+                                    placeholder={t('wizard.roleHint')} />
+                                {fieldErrors.role_description && <div style={{ color: 'var(--error)', fontSize: '12px', marginTop: '4px' }}>{fieldErrors.role_description}</div>}
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                                <div className="form-group">
+                                    <label className="form-label">{t('wizard.step1.dailyTokenLimit')}</label>
+                                    <input className={`form-input${fieldErrors.max_tokens_per_day ? ' input-error' : ''}`} type="number" value={form.max_tokens_per_day}
+                                        onChange={(e) => { setForm({ ...form, max_tokens_per_day: e.target.value }); clearFieldError('max_tokens_per_day'); }}
+                                        placeholder={t("wizard.step1.unlimited")} />
+                                    {fieldErrors.max_tokens_per_day && <div style={{ color: 'var(--error)', fontSize: '12px', marginTop: '4px' }}>{fieldErrors.max_tokens_per_day}</div>}
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">{t('wizard.step1.monthlyTokenLimit')}</label>
+                                    <input className={`form-input${fieldErrors.max_tokens_per_month ? ' input-error' : ''}`} type="number" value={form.max_tokens_per_month}
+                                        onChange={(e) => { setForm({ ...form, max_tokens_per_month: e.target.value }); clearFieldError('max_tokens_per_month'); }}
+                                        placeholder={t("wizard.step1.unlimited")} />
+                                    {fieldErrors.max_tokens_per_month && <div style={{ color: 'var(--error)', fontSize: '12px', marginTop: '4px' }}>{fieldErrors.max_tokens_per_month}</div>}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Step: CLI Config */}
+                    {currentStepName === 'cliConfig' && (
+                        <div>
+                            <h3 style={{ marginBottom: '20px', fontWeight: 600, fontSize: '15px' }}>CLI Configuration</h3>
+                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
+                                Configure the external CLI engine that powers this agent.
+                            </p>
+
+                            <div className="form-group">
+                                <label className="form-label">CLI Engine</label>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    {[
+                                        { value: 'claude_code', label: 'Claude Code CLI', desc: 'Anthropic Claude Code CLI' },
+                                        { value: 'gemini_cli', label: 'Gemini CLI', desc: 'Google Gemini CLI' },
+                                    ].map((eng) => (
+                                        <label key={eng.value} style={{
+                                            flex: 1, display: 'flex', alignItems: 'center', gap: '10px', padding: '12px',
+                                            background: cliEngine === eng.value ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+                                            border: `1px solid ${cliEngine === eng.value ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                                            borderRadius: '8px', cursor: 'pointer',
+                                        }}>
+                                            <input type="radio" name="cli_engine" checked={cliEngine === eng.value}
+                                                onChange={() => setCliEngine(eng.value as 'claude_code' | 'gemini_cli')} />
+                                            <div>
+                                                <div style={{ fontWeight: 500, fontSize: '13px' }}>{eng.label}</div>
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{eng.desc}</div>
+                                            </div>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="form-group">
+                                <label className="form-label">API Key</label>
+                                <input className="form-input" type="password" value={cliApiKey}
+                                    onChange={(e) => setCliApiKey(e.target.value)}
+                                    placeholder={cliEngine === 'claude_code' ? 'ANTHROPIC_API_KEY' : 'GOOGLE_API_KEY'} />
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                    {cliEngine === 'claude_code' ? 'Your Anthropic API key for Claude Code CLI' : 'Your Google API key for Gemini CLI'}
+                                </div>
+                            </div>
+
+                            <div className="form-group">
+                                <label className="form-label">Permission Mode</label>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    {[
+                                        { value: 'bypass', label: 'Bypass', desc: 'Skip all permission checks (recommended)' },
+                                        { value: 'default', label: 'Default', desc: 'Prompt for dangerous operations' },
+                                    ].map((mode) => (
+                                        <label key={mode.value} style={{
+                                            flex: 1, display: 'flex', alignItems: 'center', gap: '10px', padding: '12px',
+                                            background: cliPermissionMode === mode.value ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+                                            border: `1px solid ${cliPermissionMode === mode.value ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                                            borderRadius: '8px', cursor: 'pointer',
+                                        }}>
+                                            <input type="radio" name="permission_mode" checked={cliPermissionMode === mode.value}
+                                                onChange={() => setCliPermissionMode(mode.value as 'bypass' | 'default')} />
+                                            <div>
+                                                <div style={{ fontWeight: 500, fontSize: '13px' }}>{mode.label}</div>
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{mode.desc}</div>
+                                            </div>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="form-group">
+                                <label className="form-label">Model (Optional)</label>
+                                <input className="form-input" value={cliModel}
+                                    onChange={(e) => setCliModel(e.target.value)}
+                                    placeholder={cliEngine === 'claude_code' ? 'e.g. claude-sonnet-4-20250514' : 'e.g. gemini-2.5-pro'} />
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                    Leave empty to use the CLI engine's default model
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Step: Personality */}
+                    {currentStepName === 'personality' && (
+                        <div>
+                            <h3 style={{ marginBottom: '20px', fontWeight: 600, fontSize: '15px' }}>{t('wizard.step2.title')}</h3>
+                            <div className="form-group">
+                                <label className="form-label">{t('agent.fields.personality')}</label>
+                                <textarea className="form-textarea" rows={4} value={form.personality}
+                                    onChange={(e) => setForm({ ...form, personality: e.target.value })}
+                                    placeholder={t("wizard.step2.personalityPlaceholder")} />
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label">{t('agent.fields.boundaries')}</label>
+                                <textarea className="form-textarea" rows={4} value={form.boundaries}
+                                    onChange={(e) => setForm({ ...form, boundaries: e.target.value })}
+                                    placeholder={t("wizard.step2.boundariesPlaceholder")} />
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Step: Skills */}
+                    {currentStepName === 'skills' && (
+                        <div>
+                            <h3 style={{ marginBottom: '20px', fontWeight: 600, fontSize: '15px' }}>{t('wizard.step3.title')}</h3>
+                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
+                                {t('wizard.step3.description')}
+                            </p>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                {globalSkills.map((skill: any) => {
+                                    const isDefault = skill.is_default;
+                                    const isChecked = form.skill_ids.includes(skill.id);
+                                    return (
+                                        <label key={skill.id} style={{
+                                            display: 'flex', alignItems: 'center', gap: '12px', padding: '12px',
+                                            background: isChecked ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+                                            border: `1px solid ${isChecked ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                                            borderRadius: '8px', cursor: isDefault ? 'default' : 'pointer',
+                                            opacity: isDefault ? 0.85 : 1,
+                                        }}>
+                                            <input type="checkbox"
+                                                checked={isChecked}
+                                                disabled={isDefault}
+                                                onChange={(e) => {
+                                                    if (isDefault) return;
+                                                    if (e.target.checked) {
+                                                        setForm({ ...form, skill_ids: [...form.skill_ids, skill.id] });
+                                                    } else {
+                                                        setForm({ ...form, skill_ids: form.skill_ids.filter((id: string) => id !== skill.id) });
+                                                    }
+                                                }}
+                                            />
+                                            <div style={{ fontSize: '18px' }}>{skill.icon}</div>
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    <span style={{ fontWeight: 500, fontSize: '13px' }}>{skill.name}</span>
+                                                    {isDefault && <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', background: 'var(--accent-primary)', color: '#fff', fontWeight: 500 }}>Required</span>}
+                                                </div>
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{skill.description}</div>
+                                            </div>
+                                        </label>);
+                                })}
+                                {globalSkills.length === 0 && (
+                                    <div style={{ padding: '16px', background: 'var(--bg-elevated)', borderRadius: '8px', fontSize: '13px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
+                                        No skills available. Add skills in Company Settings.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Step: Permissions */}
+                    {currentStepName === 'permissions' && (
+                        <div>
+                            <h3 style={{ marginBottom: '20px', fontWeight: 600, fontSize: '15px' }}>{t('wizard.step4.title')}</h3>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
+                                {[
+                                    { value: 'company', label: t('wizard.step4.companyWide'), desc: t('wizard.step4.companyWideDesc') },
+                                    { value: 'user', label: t('wizard.step4.selfOnly'), desc: t('wizard.step4.selfOnlyDesc') },
+                                ].map((scope) => (
+                                    <label key={scope.value} style={{
+                                        display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',
+                                        background: form.permission_scope_type === scope.value ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+                                        border: `1px solid ${form.permission_scope_type === scope.value ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                                        borderRadius: '8px', cursor: 'pointer',
+                                    }}>
+                                        <input type="radio" name="scope" checked={form.permission_scope_type === scope.value}
+                                            onChange={() => setForm({ ...form, permission_scope_type: scope.value })} />
+                                        <div>
+                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{scope.label}</div>
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{scope.desc}</div>
+                                        </div>
+                                    </label>
+                                ))}
+                            </div>
+
+                            {form.permission_scope_type === 'company' && (
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '10px' }}>
+                                        {t('wizard.step4.accessLevel', 'Default Access Level')}
+                                    </label>
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                        {[
+                                            { value: 'use', icon: '👁️', label: t('wizard.step4.useLevel', 'Use'), desc: t('wizard.step4.useDesc', 'Can use Task, Chat, Tools, Skills, Workspace') },
+                                            { value: 'manage', icon: '⚙️', label: t('wizard.step4.manageLevel', 'Manage'), desc: t('wizard.step4.manageDesc', 'Full access including Settings, Mind, Relationships') },
+                                        ].map((lvl) => (
+                                            <label key={lvl.value} style={{
+                                                flex: 1, display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '12px',
+                                                background: form.permission_access_level === lvl.value ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+                                                border: `1px solid ${form.permission_access_level === lvl.value ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                                                borderRadius: '8px', cursor: 'pointer',
+                                            }}>
+                                                <input type="radio" name="access_level" checked={form.permission_access_level === lvl.value}
+                                                    onChange={() => setForm({ ...form, permission_access_level: lvl.value })} style={{ marginTop: '2px' }} />
+                                                <div>
+                                                    <div style={{ fontWeight: 500, fontSize: '13px' }}>{lvl.icon} {lvl.label}</div>
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{lvl.desc}</div>
+                                                </div>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                <div style={{ marginBottom: '80px' }}></div>
+
+                <div style={{
+                    position: 'fixed', bottom: 0, left: 'var(--sidebar-width)', right: 0,
+                    background: 'var(--bg-primary)', borderTop: '1px solid var(--border-subtle)',
+                    padding: '16px 32px', zIndex: 100,
+                    display: 'flex', justifyContent: 'flex-start',
+                    transition: 'left var(--transition-default)'
+                }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', maxWidth: '640px' }}>
+                        <button className="btn btn-secondary" onClick={() => step > 0 ? setStep(step - 1) : navigate('/')}
+                            disabled={createMutation.isPending}>
+                            {step === 0 ? t('common.cancel') : t('wizard.prev')}
+                        </button>
+                        {isLastStep ? (
+                            <button className="btn btn-primary" onClick={handleFinish}
+                                disabled={createMutation.isPending}>
+                                {createMutation.isPending ? t('common.loading') : t('wizard.finish')}
+                            </button>
+                        ) : (
+                            <button className="btn btn-primary" onClick={handleNext}>
+                                {t('wizard.next')} →
+                            </button>
+                        )}
                     </div>
                 </div>
             </div>

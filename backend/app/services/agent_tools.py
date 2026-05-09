@@ -5561,6 +5561,50 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 status_hint = "online" if online else "offline (message will be delivered on next heartbeat)"
                 return f"✅ Message sent to {target.name} (OpenClaw agent, currently {status_hint}). The message has been queued and will be delivered when the agent polls for updates."
 
+            # ── CLI target: queue GatewayMessage + optional webhook ──
+            if getattr(target, "agent_type", "native") == "cli":
+                db.add(ChatMessage(
+                    agent_id=session_agent_id,
+                    user_id=owner_id,
+                    role="user",
+                    content=message_text,
+                    conversation_id=session_id,
+                    participant_id=src_participant.id if src_participant else None,
+                ))
+                chat_session.last_message_at = datetime.now(timezone.utc)
+
+                from app.models.gateway_message import GatewayMessage as GMsg2
+                gw_msg = GMsg2(
+                    agent_id=target.id,
+                    sender_agent_id=from_agent_id,
+                    sender_user_id=owner_id,
+                    content=f"[From {source_name}] {message_text}",
+                    status="pending",
+                    conversation_id=session_id,
+                )
+                db.add(gw_msg)
+                await db.commit()
+
+                if hasattr(target, 'cli_config') and target.cli_config and target.cli_config.get("webhook_url"):
+                    try:
+                        import httpx
+                        async with httpx.AsyncClient() as client:
+                            await client.post(target.cli_config["webhook_url"], json={
+                                "event": "a2a_message",
+                                "agent_id": str(target.id),
+                                "sender": source_name,
+                            }, timeout=5)
+                    except Exception:
+                        pass
+
+                from app.services.activity_logger import log_activity
+                await log_activity(
+                    from_agent_id, "agent_msg_sent",
+                    f"Sent message to {target.name} (queued)",
+                    detail={"partner": target.name, "message": message_text[:200]},
+                )
+                return f"✅ Message sent to {target.name} (CLI agent). The message has been queued."
+
             # ── Native target: branch by msg_type ──
 
             # Save source message (common to all paths)
