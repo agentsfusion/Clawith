@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import socket
 from typing import Self
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 import uuid
 
 from pydantic import Field, field_validator, model_validator
@@ -76,6 +77,29 @@ def _read_version() -> str:
     return "0.0.0"
 
 
+def _normalize_database_url(url: str) -> str:
+    """Ensure the database URL uses the asyncpg driver for SQLAlchemy async engine.
+
+    Replaces 'postgresql://' and 'postgres://' schemes with 'postgresql+asyncpg://'.
+    Also translates 'sslmode=...' query parameters to 'ssl=...' which asyncpg
+    understands, using urllib.parse to avoid corrupting credentials in the URL.
+    """
+    if not url:
+        return url
+    # Replace scheme
+    for old in ("postgresql://", "postgres://"):
+        if url.startswith(old):
+            url = "postgresql+asyncpg://" + url[len(old):]
+            break
+    # Translate sslmode query params to ssl for asyncpg (safe: only operates on query string)
+    parts = urlparse(url)
+    params = parse_qs(parts.query)
+    if "sslmode" in params:
+        params["ssl"] = params.pop("sslmode")
+        url = urlunparse(parts._replace(query=urlencode(params, doseq=True)))
+    return url
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -89,6 +113,10 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://clawith:clawith@localhost:5432/clawith"
     DATABASE_AUTO_CREATE_TABLES: bool = False
+
+    @property
+    def ASYNC_DATABASE_URL(self) -> str:
+        return _normalize_database_url(self.DATABASE_URL)
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -173,7 +201,7 @@ class Settings(BaseSettings):
     HTTP_PROXY: str = ""
 
     # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:5000"]
 
     # Jina AI (Reader + Search APIs)
     JINA_API_KEY: str = ""
