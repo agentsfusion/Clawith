@@ -919,15 +919,33 @@ class WebSocketChatHandler:
 
             # Raise error on prefix for failover matching
             _llm_error_prefixes = ("[LLM Error]", "[LLM call error]", "[Error]")
-            if (
-                not aborted
-                and assistant_response
+            _is_error_response = bool(
+                assistant_response
                 and any(assistant_response.startswith(p) for p in _llm_error_prefixes)
-            ):
+            )
+            if not aborted and _is_error_response:
                 raise RuntimeError(assistant_response)
 
+            # Safety net: guarantee the onboarding phase advances once a turn has
+            # SUCCESSFULLY completed, even when no streaming/tool-call callback
+            # fired the mark earlier (e.g. finish-only greeting turns where
+            # `finish` is consumed internally by the caller and never surfaced via
+            # on_chunk / on_tool_call). Without this, the phase is never
+            # persisted, every turn is re-treated as first contact, skip_tools
+            # stays True forever, and the model only ever receives the `finish`
+            # tool. Gated on a non-aborted, non-error turn so a transient provider
+            # error never prematurely skips an onboarding step. The mark is
+            # idempotent (onboarding_mark_done) and a no-op when onboarding is not
+            # active (needs_onboarding_mark).
+            if not aborted and not _is_error_response:
+                try:
+                    await maybe_mark_onboarding_progress()
+                except Exception:
+                    pass
+
             # Post-success actions (last_active_at, quota usage increments, activity logs)
-            await self._update_activity_and_quota(assistant_response)
+            if not aborted:
+                await self._update_activity_and_quota(assistant_response)
 
             return assistant_response, thinking_content, queued_messages
 
