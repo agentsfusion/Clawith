@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import docker
-from docker.errors import DockerException, NotFound
+from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -243,6 +243,14 @@ class AgentManager:
         container_port = 18789 + hash(str(agent.id)) % 10000
 
         try:
+
+            def _set_idle():
+                agent.container_id = None
+                agent.container_port = None
+                agent.status = "idle"
+                agent.last_active_at = datetime.now(timezone.utc)
+                return None
+
             container = self.docker_client.containers.run(
                 settings.OPENCLAW_IMAGE,
                 detach=True,
@@ -270,6 +278,35 @@ class AgentManager:
             logger.info(f"Started container {container.id[:12]} for agent {agent.name} on port {container_port}")
             return container.id
 
+        except ImageNotFound:
+            logger.warning(
+                f"OpenClaw image '{settings.OPENCLAW_IMAGE}' is not available; "
+                f"leaving agent {agent.name} idle (no container runtime)."
+            )
+            return _set_idle()
+        except APIError as e:
+            # An image that cannot be pulled (e.g. 404 / "pull access denied") means the
+            # container runtime image is unavailable in this environment. Treat it like
+            # "no Docker runtime" and degrade gracefully to idle instead of error, so
+            # relationships to this agent stay usable. Match only image-specific markers
+            # so unrelated infra failures (e.g. missing network) still surface as error.
+            msg = f"{e} {getattr(e, 'explanation', '') or ''}".lower()
+            image_markers = (
+                "pull access denied",
+                "repository does not exist",
+                "no such image",
+                "manifest unknown",
+                "manifest for",  # "manifest for X not found"
+            )
+            if any(marker in msg for marker in image_markers):
+                logger.warning(
+                    f"OpenClaw image '{settings.OPENCLAW_IMAGE}' unavailable ({e}); "
+                    f"leaving agent {agent.name} idle (no container runtime)."
+                )
+                return _set_idle()
+            logger.error(f"Failed to start container for agent {agent.name}: {e}")
+            agent.status = "error"
+            return None
         except DockerException as e:
             logger.error(f"Failed to start container for agent {agent.name}: {e}")
             agent.status = "error"
