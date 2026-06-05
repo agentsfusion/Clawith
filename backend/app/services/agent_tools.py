@@ -382,6 +382,7 @@ AGENT_TOOLS = [
     if tool["function"]["name"] not in _HIDDEN_FROM_LLM_TOOL_NAMES
 ]
 
+
 _OKR_AGENT_ONLY_TOOL_NAMES = frozenset(
     str(definition["name"])
     for definition in BUILTIN_TOOL_DEFINITIONS
@@ -5518,7 +5519,6 @@ def _mcp_result_summary(result: dict) -> tuple[str, dict]:
         summary = "MCP tool completed without inline content."
     return _bounded_mcp_text(summary), metadata
 
-
 class _MCPAsyncContractError(ValueError):
     """A trusted async declaration or its provider result is malformed."""
 
@@ -5567,6 +5567,48 @@ def _json_pointer_set(document: dict, pointer: object, value: object) -> None:
             raise _MCPAsyncContractError("poll pointer traverses a scalar")
         current = child
     current[parts[-1]] = deepcopy(value)
+def _sanitize_mcp_arguments(arguments: dict, parameters_schema: dict | None) -> dict:
+    """Normalize empty file-upload objects to null before sending to an MCP server.
+
+    Some MCP tools (e.g. Gmail ``create_email_draft``) expose a nullable
+    ``file_uploadable`` object param (``attachment``) whose sub-fields
+    (``name``/``mimetype``/``s3key``) are marked required. When the model wants
+    no attachment it tends to emit the object filled with empty strings instead
+    of ``null``, and the server rejects it ("Invalid attachment: 's3key' is
+    empty. ... set attachment to null if no file should be attached.").
+
+    For each such param, if the value is not a usable upload (missing/empty
+    ``s3key``, or not an object at all), replace it with ``None`` so the server
+    treats it as "no file attached".
+    """
+    if not isinstance(arguments, dict) or not isinstance(parameters_schema, dict):
+        return arguments
+    props = parameters_schema.get("properties")
+    if not isinstance(props, dict):
+        return arguments
+
+    cleaned = dict(arguments)
+    for key, spec in props.items():
+        if key not in cleaned or not isinstance(spec, dict):
+            continue
+        sub_props = spec.get("properties")
+        is_upload = bool(spec.get("file_uploadable")) or (
+            spec.get("type") == "object"
+            and isinstance(sub_props, dict)
+            and "s3key" in sub_props
+        )
+        if not is_upload:
+            continue
+        val = cleaned[key]
+        if val is None:
+            continue
+        if not isinstance(val, dict):
+            cleaned[key] = None
+            continue
+        s3key = val.get("s3key")
+        if not (isinstance(s3key, str) and s3key.strip()):
+            cleaned[key] = None
+    return cleaned
 
 
 def _mcp_async_operation_outcome(
@@ -5919,6 +5961,7 @@ async def _resolve_mcp_execution_target(
             "server_url": server_url,
             "server_name": str(tool.mcp_server_name or ""),
             "config": merged_config,
+            "parameters_schema": tool.parameters_schema,
             # Completion semantics are admin-owned Tool metadata. Per-Agent
             # config may supply credentials but cannot redefine completion.
             "async_completion": trusted_async_completion,
@@ -5955,6 +5998,9 @@ async def _execute_resolved_mcp_target_outcome(
     async_completion = target.get("async_completion")
 
     hostname = (urlparse(server_url).hostname or "").lower()
+    # Drop empty file-upload objects so MCP servers don't reject the call
+    # (e.g. Gmail create_email_draft rejects an `attachment` whose s3key is "").
+    arguments = _sanitize_mcp_arguments(arguments, target.get("parameters_schema"))
     if hostname.endswith(".run.tools"):
         return await _execute_via_smithery_connect_outcome(
             server_url,
@@ -10376,6 +10422,12 @@ async def _import_mcp_server_outcome(
             "import_mcp_server reauthorize must be a boolean.",
             "invalid_tool_arguments",
         )
+    refresh = arguments.get("refresh", False)
+    if not isinstance(refresh, bool):
+        return _typed_failure(
+            "import_mcp_server refresh must be a boolean.",
+            "invalid_tool_arguments",
+        )
 
     mcp_url = config.pop("mcp_url", None)
     try:
@@ -10405,6 +10457,7 @@ async def _import_mcp_server_outcome(
             agent_id,
             config or None,
             reauthorize=reauthorize,
+            refresh=refresh,
         )
     except Exception as exc:
         logger.error(

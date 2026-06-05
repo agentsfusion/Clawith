@@ -565,6 +565,7 @@ async def import_mcp_from_smithery_outcome(
     agent_id: uuid.UUID,
     config: dict | None = None,
     reauthorize: bool = False,
+    refresh: bool = False,
 ) -> ToolExecutionOutcome:
     """Import an MCP server from Smithery into the platform.
 
@@ -636,7 +637,7 @@ async def import_mcp_from_smithery_outcome(
                 )
             )
             existing_server_tools = existing_server_r.scalars().all()
-            if existing_server_tools:
+            if existing_server_tools and not config and not reauthorize and not refresh:
                 # Check if this agent has assignments for these tools
                 tool_ids = [t.id for t in existing_server_tools]
                 agent_assignments_r = await db.execute(
@@ -769,29 +770,63 @@ async def import_mcp_from_smithery_outcome(
 
     # Step 3.5: Auto-create Smithery Connect namespace + connection
     smithery_config = {}  # will be merged into every AgentTool.config
-    conn_result = await _ensure_smithery_connection(api_key, base_mcp_url, display_name)
-    if "error" in conn_result:
-        if conn_result.get("unknown"):
-            return ToolExecutionOutcome(
-                status="unknown",
-                result_summary=(
-                    "Smithery connection creation outcome is unknown; "
-                    "reconcile before retrying."
-                ),
-                result_ref=None,
-                error_code="mcp_import_outcome_unknown",
-            )
-        return ToolExecutionOutcome(
-            status="failed",
-            result_summary="Smithery rejected connection creation.",
-            result_ref=None,
-            error_code="mcp_connection_rejected",
-        )
+
+    # On refresh, reuse the existing Smithery connection rather than creating a
+    # new one. Creating a connection can mint a fresh connection_id and force a
+    # new OAuth authorization — refresh must never do that. The existing
+    # connection is stored in the AgentTool config of this server's tools.
+    conn_result: dict = {}
+    stored_conn = None
+    if refresh:
+        try:
+            async with async_session() as db:
+                stored_r = await db.execute(
+                    select(AgentTool)
+                    .join(Tool, AgentTool.tool_id == Tool.id)
+                    .where(
+                        AgentTool.agent_id == agent_id,
+                        Tool.type == "mcp",
+                        Tool.mcp_server_name == display_name,
+                    )
+                )
+                for at in stored_r.scalars().all():
+                    c = at.config or {}
+                    if c.get("smithery_namespace") and c.get("smithery_connection_id"):
+                        stored_conn = {
+                            "smithery_namespace": c["smithery_namespace"],
+                            "smithery_connection_id": c["smithery_connection_id"],
+                        }
+                        break
+        except Exception:
+            stored_conn = None
+
+    if stored_conn:
+        smithery_config = stored_conn
+        conn_result = {**stored_conn, "state": "connected"}
     else:
-        smithery_config = {
-            "smithery_namespace": conn_result["namespace"],
-            "smithery_connection_id": conn_result["connection_id"],
-        }
+        conn_result = await _ensure_smithery_connection(api_key, base_mcp_url, display_name)
+        if "error" in conn_result:
+            if conn_result.get("unknown"):
+                return ToolExecutionOutcome(
+                    status="unknown",
+                    result_summary=(
+                        "Smithery connection creation outcome is unknown; "
+                        "reconcile before retrying."
+                    ),
+                    result_ref=None,
+                    error_code="mcp_import_outcome_unknown",
+                )
+            return ToolExecutionOutcome(
+                status="failed",
+                result_summary="Smithery rejected connection creation.",
+                result_ref=None,
+                error_code="mcp_connection_rejected",
+            )
+        else:
+            smithery_config = {
+                "smithery_namespace": conn_result["namespace"],
+                "smithery_connection_id": conn_result["connection_id"],
+            }
 
     # Step 3.6: Override registry-advertised schema with the runtime server's
     # actual tools/list. Smithery's registry detail can drift behind the live
@@ -848,17 +883,41 @@ async def import_mcp_from_smithery_outcome(
                         f"{len(tools_discovered)}"
                     )
                     tools_discovered = live_tools_normalized
+                    live_tools_ok = True
         except Exception as e:
             logger.warning(
                 f"[ResourceDiscovery] Live tools/list failed for {qualified_name}, "
                 f"falling back to registry schema: {e}"
             )
 
+    # Refresh must be non-destructive: if we could not fetch the authoritative
+    # live tools/list, do NOT reconcile against possibly-stale registry data
+    # (that could wrongly disable valid tools). Abort with no changes.
+    if refresh and not live_tools_ok:
+        return (
+            f"⚠️ Refresh aborted for **{display_name}**: could not fetch the live tool "
+            f"list from the server right now, so no changes were made (to avoid "
+            f"disabling valid tools).\n\n"
+            f"Please try again in a moment. If the connection's authorization has "
+            f"expired, use `import_mcp_server(server_id=\"{server_id}\", reauthorize=true)`."
+        )
+
+    # Persist the originating Smithery server_id so the background auto-refresh
+    # job can re-resolve this exact server later without guessing from the
+    # tool-name prefix (which loses the '/' in qualified names like
+    # "@anthropic/github" -> "anthropic_github").
+    if smithery_config:
+        smithery_config["smithery_server_id"] = server_id
+
     # Merge smithery_config + user config for AgentTool
     agent_tool_config = {**smithery_config, **config}
 
     async with async_session() as db:
         imported_tools = []
+        refresh_added: list[str] = []
+        refresh_updated: list[str] = []
+        refresh_removed: list[str] = []
+        refresh_unchanged: list[str] = []
 
         # Helper: ensure AgentTool link exists and save config
         async def _ensure_agent_tool(tool_id: uuid.UUID):
@@ -904,12 +963,44 @@ async def import_mcp_from_smithery_outcome(
                 tool_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}_{mcp_tool['name']}"
                 tool_display = f"{display_name}: {mcp_tool['name']}"
 
-                existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
-                existing_tool = existing_r.scalar_one_or_none()
+                existing_tool = None
+                # On refresh, match by the live tool name within this server first.
+                # The stored Tool.name prefix can drift from the live tool name
+                # (e.g. legacy `mcp_gmail_GMAIL_FETCH_EMAILS` vs live `fetch_emails`),
+                # so matching on the constructed name alone would create duplicates.
+                if refresh:
+                    by_mcp_r = await db.execute(
+                        select(Tool).where(
+                            Tool.type == "mcp",
+                            Tool.mcp_server_name == display_name,
+                            Tool.mcp_tool_name == mcp_tool["name"],
+                        )
+                    )
+                    existing_tool = by_mcp_r.scalars().first()
+                if existing_tool is None:
+                    existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                    existing_tool = existing_r.scalar_one_or_none()
                 if existing_tool:
-                    existing_tool.mcp_server_url = base_mcp_url
+                    changed = False
+                    if existing_tool.mcp_server_url != base_mcp_url:
+                        existing_tool.mcp_server_url = base_mcp_url
+                        changed = True
+                    if refresh:
+                        new_desc = (mcp_tool.get("description", description) or "")[:500]
+                        new_schema = mcp_tool.get("inputSchema", {"type": "object", "properties": {}})
+                        if (existing_tool.description or "") != new_desc:
+                            existing_tool.description = new_desc
+                            changed = True
+                        if existing_tool.parameters_schema != new_schema:
+                            existing_tool.parameters_schema = new_schema
+                            changed = True
+                        if not existing_tool.enabled:
+                            existing_tool.enabled = True
+                            changed = True
                     await _ensure_agent_tool(existing_tool.id)
-                    if reauthorize:
+                    if refresh:
+                        (refresh_updated if changed else refresh_unchanged).append(tool_display)
+                    elif reauthorize:
                         imported_tools.append(f"🔄 {tool_display} (reauthorized)")
                     elif config:
                         imported_tools.append(f"🔄 {tool_display} (config updated)")
@@ -936,6 +1027,22 @@ async def import_mcp_from_smithery_outcome(
                 await db.flush()
                 await _ensure_agent_tool(tool.id)
                 imported_tools.append(f"✅ {tool_display}")
+                if refresh:
+                    refresh_added.append(tool_display)
+
+            # Refresh: disable local tools the live server no longer exposes
+            if refresh:
+                live_names = {t["name"] for t in tools_discovered}
+                stale_r = await db.execute(
+                    select(Tool).where(
+                        Tool.type == "mcp",
+                        Tool.mcp_server_name == display_name,
+                    )
+                )
+                for st in stale_r.scalars().all():
+                    if st.mcp_tool_name and st.mcp_tool_name not in live_names and st.enabled:
+                        st.enabled = False
+                        refresh_removed.append(st.display_name)
         else:
             # Fallback: create a single generic tool entry
             tool_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}"
@@ -975,6 +1082,30 @@ async def import_mcp_from_smithery_outcome(
 
         await db.commit()
 
+    if refresh:
+        lines = [f"🔄 Refreshed MCP server: **{display_name}** (`{server_id}`)\n"]
+        if refresh_added:
+            lines.append(f"✅ Added {len(refresh_added)} new tool(s):")
+            lines += [f"  • {n}" for n in refresh_added]
+        if refresh_updated:
+            lines.append(f"♻️ Updated {len(refresh_updated)} tool(s):")
+            lines += [f"  • {n}" for n in refresh_updated]
+        if refresh_removed:
+            lines.append(f"🚫 Disabled {len(refresh_removed)} removed tool(s):")
+            lines += [f"  • {n}" for n in refresh_removed]
+        if not (refresh_added or refresh_updated or refresh_removed):
+            lines.append(
+                f"Everything is already up to date — no changes ({len(refresh_unchanged)} tools)."
+            )
+        else:
+            lines.append(f"\n(unchanged: {len(refresh_unchanged)})")
+        lines.append(f"\n📡 MCP Server URL: `{base_mcp_url}`")
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="\n".join(lines),
+            result_ref=None,
+        )
+
     return _smithery_import_completion_outcome(
         display_name=display_name,
         server_id=server_id,
@@ -988,6 +1119,7 @@ async def import_mcp_from_smithery(
     agent_id: uuid.UUID,
     config: dict | None = None,
     reauthorize: bool = False,
+    refresh: bool = False,
 ) -> str:
     """Legacy display adapter for typed Smithery import."""
     outcome = await import_mcp_from_smithery_outcome(
@@ -995,6 +1127,7 @@ async def import_mcp_from_smithery(
         agent_id,
         config,
         reauthorize,
+        refresh,
     )
     return outcome.result_summary or "MCP import returned no summary."
 
