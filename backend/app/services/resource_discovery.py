@@ -273,6 +273,7 @@ async def import_mcp_from_smithery(
     agent_id: uuid.UUID,
     config: dict | None = None,
     reauthorize: bool = False,
+    refresh: bool = False,
 ) -> str:
     """Import an MCP server from Smithery into the platform.
 
@@ -338,7 +339,7 @@ async def import_mcp_from_smithery(
                 )
             )
             existing_server_tools = existing_server_r.scalars().all()
-            if existing_server_tools and not config and not reauthorize:
+            if existing_server_tools and not config and not reauthorize and not refresh:
                 # Check if this agent has assignments for these tools
                 tool_ids = [t.id for t in existing_server_tools]
                 agent_assignments_r = await db.execute(
@@ -432,26 +433,59 @@ async def import_mcp_from_smithery(
     # Step 3.5: Auto-create Smithery Connect namespace + connection
     smithery_config = {}  # will be merged into every AgentTool.config
     auth_message = ""
-    conn_result = await _ensure_smithery_connection(api_key, base_mcp_url, display_name)
-    if "error" in conn_result:
-        auth_message = f"\n\n⚠️ Could not auto-create Smithery connection: {conn_result['error']}"
+
+    # On refresh, reuse the existing Smithery connection rather than creating a
+    # new one. Creating a connection can mint a fresh connection_id and force a
+    # new OAuth authorization — refresh must never do that. The existing
+    # connection is stored in the AgentTool config of this server's tools.
+    stored_conn = None
+    if refresh:
+        try:
+            async with async_session() as db:
+                stored_r = await db.execute(
+                    select(AgentTool)
+                    .join(Tool, AgentTool.tool_id == Tool.id)
+                    .where(
+                        AgentTool.agent_id == agent_id,
+                        Tool.type == "mcp",
+                        Tool.mcp_server_name == display_name,
+                    )
+                )
+                for at in stored_r.scalars().all():
+                    c = at.config or {}
+                    if c.get("smithery_namespace") and c.get("smithery_connection_id"):
+                        stored_conn = {
+                            "smithery_namespace": c["smithery_namespace"],
+                            "smithery_connection_id": c["smithery_connection_id"],
+                        }
+                        break
+        except Exception:
+            stored_conn = None
+
+    if stored_conn:
+        smithery_config = stored_conn
     else:
-        smithery_config = {
-            "smithery_namespace": conn_result["namespace"],
-            "smithery_connection_id": conn_result["connection_id"],
-        }
-        if conn_result.get("auth_url"):
-            auth_message = (
-                f"\n\n🔐 **OAuth 授权需要**: 请在浏览器中访问以下链接完成授权：\n"
-                f"{conn_result['auth_url']}\n"
-                f"授权完成后，工具即可使用。"
-            )
+        conn_result = await _ensure_smithery_connection(api_key, base_mcp_url, display_name)
+        if "error" in conn_result:
+            auth_message = f"\n\n⚠️ Could not auto-create Smithery connection: {conn_result['error']}"
+        else:
+            smithery_config = {
+                "smithery_namespace": conn_result["namespace"],
+                "smithery_connection_id": conn_result["connection_id"],
+            }
+            if conn_result.get("auth_url"):
+                auth_message = (
+                    f"\n\n🔐 **OAuth 授权需要**: 请在浏览器中访问以下链接完成授权：\n"
+                    f"{conn_result['auth_url']}\n"
+                    f"授权完成后，工具即可使用。"
+                )
 
     # Step 3.6: Override registry-advertised schema with the runtime server's
     # actual tools/list. Smithery's registry detail can drift behind the live
     # server (we hit this with shibui/finance: registry said `sql`, server
     # required `user_prompt` + `query`). The truth is whatever tools/list
     # returns at call time, so prefer it whenever available.
+    live_tools_ok = False
     if smithery_config:
         ns_ = smithery_config["smithery_namespace"]
         conn_ = smithery_config["smithery_connection_id"]
@@ -501,17 +535,41 @@ async def import_mcp_from_smithery(
                         f"{len(tools_discovered)}"
                     )
                     tools_discovered = live_tools_normalized
+                    live_tools_ok = True
         except Exception as e:
             logger.warning(
                 f"[ResourceDiscovery] Live tools/list failed for {qualified_name}, "
                 f"falling back to registry schema: {e}"
             )
 
+    # Refresh must be non-destructive: if we could not fetch the authoritative
+    # live tools/list, do NOT reconcile against possibly-stale registry data
+    # (that could wrongly disable valid tools). Abort with no changes.
+    if refresh and not live_tools_ok:
+        return (
+            f"⚠️ Refresh aborted for **{display_name}**: could not fetch the live tool "
+            f"list from the server right now, so no changes were made (to avoid "
+            f"disabling valid tools).\n\n"
+            f"Please try again in a moment. If the connection's authorization has "
+            f"expired, use `import_mcp_server(server_id=\"{server_id}\", reauthorize=true)`."
+        )
+
+    # Persist the originating Smithery server_id so the background auto-refresh
+    # job can re-resolve this exact server later without guessing from the
+    # tool-name prefix (which loses the '/' in qualified names like
+    # "@anthropic/github" -> "anthropic_github").
+    if smithery_config:
+        smithery_config["smithery_server_id"] = server_id
+
     # Merge smithery_config + user config for AgentTool
     agent_tool_config = {**smithery_config, **config}
 
     async with async_session() as db:
         imported_tools = []
+        refresh_added: list[str] = []
+        refresh_updated: list[str] = []
+        refresh_removed: list[str] = []
+        refresh_unchanged: list[str] = []
 
         # Helper: ensure AgentTool link exists and save config
         async def _ensure_agent_tool(tool_id: uuid.UUID):
@@ -557,12 +615,44 @@ async def import_mcp_from_smithery(
                 tool_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}_{mcp_tool['name']}"
                 tool_display = f"{display_name}: {mcp_tool['name']}"
 
-                existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
-                existing_tool = existing_r.scalar_one_or_none()
+                existing_tool = None
+                # On refresh, match by the live tool name within this server first.
+                # The stored Tool.name prefix can drift from the live tool name
+                # (e.g. legacy `mcp_gmail_GMAIL_FETCH_EMAILS` vs live `fetch_emails`),
+                # so matching on the constructed name alone would create duplicates.
+                if refresh:
+                    by_mcp_r = await db.execute(
+                        select(Tool).where(
+                            Tool.type == "mcp",
+                            Tool.mcp_server_name == display_name,
+                            Tool.mcp_tool_name == mcp_tool["name"],
+                        )
+                    )
+                    existing_tool = by_mcp_r.scalars().first()
+                if existing_tool is None:
+                    existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                    existing_tool = existing_r.scalar_one_or_none()
                 if existing_tool:
-                    existing_tool.mcp_server_url = base_mcp_url
+                    changed = False
+                    if existing_tool.mcp_server_url != base_mcp_url:
+                        existing_tool.mcp_server_url = base_mcp_url
+                        changed = True
+                    if refresh:
+                        new_desc = (mcp_tool.get("description", description) or "")[:500]
+                        new_schema = mcp_tool.get("inputSchema", {"type": "object", "properties": {}})
+                        if (existing_tool.description or "") != new_desc:
+                            existing_tool.description = new_desc
+                            changed = True
+                        if existing_tool.parameters_schema != new_schema:
+                            existing_tool.parameters_schema = new_schema
+                            changed = True
+                        if not existing_tool.enabled:
+                            existing_tool.enabled = True
+                            changed = True
                     await _ensure_agent_tool(existing_tool.id)
-                    if reauthorize:
+                    if refresh:
+                        (refresh_updated if changed else refresh_unchanged).append(tool_display)
+                    elif reauthorize:
                         imported_tools.append(f"🔄 {tool_display} (reauthorized)")
                     elif config:
                         imported_tools.append(f"🔄 {tool_display} (config updated)")
@@ -589,6 +679,22 @@ async def import_mcp_from_smithery(
                 await db.flush()
                 await _ensure_agent_tool(tool.id)
                 imported_tools.append(f"✅ {tool_display}")
+                if refresh:
+                    refresh_added.append(tool_display)
+
+            # Refresh: disable local tools the live server no longer exposes
+            if refresh:
+                live_names = {t["name"] for t in tools_discovered}
+                stale_r = await db.execute(
+                    select(Tool).where(
+                        Tool.type == "mcp",
+                        Tool.mcp_server_name == display_name,
+                    )
+                )
+                for st in stale_r.scalars().all():
+                    if st.mcp_tool_name and st.mcp_tool_name not in live_names and st.enabled:
+                        st.enabled = False
+                        refresh_removed.append(st.display_name)
         else:
             # Fallback: create a single generic tool entry
             tool_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}"
@@ -625,6 +731,28 @@ async def import_mcp_from_smithery(
             imported_tools.append(f"✅ {tool_display} (tool list not available from registry — may need configuration)")
 
         await db.commit()
+
+    if refresh:
+        lines = [f"🔄 Refreshed MCP server: **{display_name}** (`{server_id}`)\n"]
+        if refresh_added:
+            lines.append(f"✅ Added {len(refresh_added)} new tool(s):")
+            lines += [f"  • {n}" for n in refresh_added]
+        if refresh_updated:
+            lines.append(f"♻️ Updated {len(refresh_updated)} tool(s):")
+            lines += [f"  • {n}" for n in refresh_updated]
+        if refresh_removed:
+            lines.append(f"🚫 Disabled {len(refresh_removed)} removed tool(s):")
+            lines += [f"  • {n}" for n in refresh_removed]
+        if not (refresh_added or refresh_updated or refresh_removed):
+            lines.append(
+                f"Everything is already up to date — no changes ({len(refresh_unchanged)} tools)."
+            )
+        else:
+            lines.append(f"\n(unchanged: {len(refresh_unchanged)})")
+        lines.append(f"\n📡 MCP Server URL: `{base_mcp_url}`")
+        if auth_message:
+            lines.append(auth_message)
+        return "\n".join(lines)
 
     result = f"🔌 Imported MCP server: **{display_name}** (`{server_id}`)\n\n"
     result += "\n".join(imported_tools)

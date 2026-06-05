@@ -189,6 +189,14 @@ class Settings(BaseSettings):
     SANDBOX_DEFAULT_TIMEOUT: int = 30
     SANDBOX_MAX_TIMEOUT: int = 60
 
+    # ── MCP auto-refresh ──
+    # Periodically re-syncs each imported Smithery MCP server's tool list so
+    # servers that silently add/rename/remove tools stay current without anyone
+    # remembering to refresh. Uses the non-destructive refresh fail-safe.
+    MCP_AUTO_REFRESH_ENABLED: bool = True
+    MCP_AUTO_REFRESH_INTERVAL_HOURS: int = 6
+    MCP_AUTO_REFRESH_STARTUP_DELAY_SECONDS: int = 300
+
     model_config = {
         "env_file": [".env", "../.env"],
         "env_file_encoding": "utf-8",
