@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.services.storage_runtime.base import StorageBackend
 from app.services.storage_runtime.fallback import FallbackStorageBackend
 from app.services.storage_runtime.local import LocalStorageBackend
+from app.services.storage_runtime.replit_object_storage import ReplitObjectStorageBackend
 from app.services.storage_runtime.s3 import S3StorageBackend
 from app.services.storage_runtime.utils import (
     agent_storage_prefix,
@@ -37,6 +38,16 @@ def get_storage_backend() -> StorageBackend:
             presign_ttl_seconds=settings.S3_PRESIGN_TTL_SECONDS,
             max_pool_connections=settings.S3_MAX_POOL_CONNECTIONS,
             write_workers=settings.S3_WRITE_WORKERS,
+        )
+        if settings.STORAGE_LOCAL_FALLBACK_ENABLED:
+            fallback = LocalStorageBackend(settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR)
+            _storage_backend = FallbackStorageBackend(primary=primary, fallback=fallback)
+        else:
+            _storage_backend = primary
+    elif backend == "replit":
+        primary = ReplitObjectStorageBackend(
+            bucket_id=settings.REPLIT_OBJECT_STORAGE_BUCKET_ID,
+            prefix=settings.REPLIT_OBJECT_STORAGE_PREFIX,
         )
         if settings.STORAGE_LOCAL_FALLBACK_ENABLED:
             fallback = LocalStorageBackend(settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR)

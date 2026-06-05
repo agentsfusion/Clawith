@@ -26,6 +26,7 @@ from app.services.storage_runtime.facade import (
 )
 from app.services.storage_runtime.fallback import FallbackStorageBackend
 from app.services.storage_runtime.local import LocalStorageBackend
+from app.services.storage_runtime.replit_object_storage import ReplitObjectStorageBackend
 from app.services.storage_runtime.s3 import S3StorageBackend
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "ConditionalWriteResult",
     "FallbackStorageBackend",
     "LocalStorageBackend",
+    "ReplitObjectStorageBackend",
     "S3StorageBackend",
     "agent_storage_key",
     "agent_storage_prefix",
