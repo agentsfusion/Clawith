@@ -25,11 +25,28 @@ class AgentManager:
     """Manage OpenClaw Gateway Docker containers for digital employees."""
 
     def __init__(self):
+        self.docker_client = self._init_docker_client()
+
+    @staticmethod
+    def _init_docker_client():
+        """Return a verified Docker client, or None when Docker is unavailable.
+
+        `docker.from_env()` returns a client object even when there is no daemon,
+        so the object alone is not proof that Docker works. We therefore (a) honor
+        an explicit DOCKER_ENABLED=false kill switch (used on Replit, which has no
+        Docker), and (b) verify the daemon with a fast, bounded ping so a missing
+        or unreachable daemon never blocks agent creation for minutes.
+        """
+        if not settings.DOCKER_ENABLED:
+            logger.info("Docker disabled via DOCKER_ENABLED=false — agent containers will not be managed")
+            return None
         try:
-            self.docker_client = docker.from_env()
-        except DockerException:
-            logger.warning("Docker not available — agent containers will not be managed")
-            self.docker_client = None
+            client = docker.from_env(timeout=settings.DOCKER_PING_TIMEOUT)
+            client.ping()
+            return client
+        except Exception as e:
+            logger.warning(f"Docker not available ({e}) — agent containers will not be managed")
+            return None
 
     def _agent_dir(self, agent_id: uuid.UUID) -> Path:
         local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
@@ -40,6 +57,26 @@ class AgentManager:
 
     def _template_dir(self) -> Path:
         return Path(settings.AGENT_TEMPLATE_DIR)
+
+    @staticmethod
+    def _activate_native_runtime(agent: Agent) -> None:
+        """Bring an agent to a usable state without a Docker container.
+
+        Native agents execute entirely in-process in the backend — chat through
+        the websocket loop, autonomous work through the task executor, and the
+        periodic heartbeat — so they are fully functional without a container and
+        are marked ``running``. This is the runtime used on hosts that have no
+        usable Docker (e.g. Replit) or where the OpenClaw image cannot be pulled.
+
+        Remote OpenClaw agents have no in-process runtime — they connect back
+        through the gateway and report presence via ``openclaw_last_seen`` — so
+        they stay ``idle`` here until they check in.
+        """
+        agent.container_id = None
+        agent.container_port = None
+        agent_type = getattr(agent, "agent_type", "native") or "native"
+        agent.status = "idle" if agent_type == "openclaw" else "running"
+        agent.last_active_at = datetime.now(timezone.utc)
 
     async def _materialize_agent_dir(self, agent_id: uuid.UUID) -> Path:
         """Create a local working tree from shared storage for container mounting."""
@@ -215,9 +252,10 @@ class AgentManager:
         Returns container_id or None if Docker not available.
         """
         if not self.docker_client:
-            logger.info("Docker not available, skipping container start")
-            agent.status = "idle"
-            agent.last_active_at = datetime.now(timezone.utc)
+            logger.info(
+                f"No Docker runtime — running agent {agent.name} via the in-process native runtime"
+            )
+            self._activate_native_runtime(agent)
             return None
 
         agent_dir = await self._materialize_agent_dir(agent.id)
@@ -244,11 +282,11 @@ class AgentManager:
 
         try:
 
-            def _set_idle():
-                agent.container_id = None
-                agent.container_port = None
-                agent.status = "idle"
-                agent.last_active_at = datetime.now(timezone.utc)
+            def _fallback_to_native():
+                # The container image is unavailable in this environment. Native
+                # agents still run in-process, so fall back to that runtime
+                # (running) instead of erroring; OpenClaw agents stay idle.
+                self._activate_native_runtime(agent)
                 return None
 
             container = self.docker_client.containers.run(
@@ -281,15 +319,16 @@ class AgentManager:
         except ImageNotFound:
             logger.warning(
                 f"OpenClaw image '{settings.OPENCLAW_IMAGE}' is not available; "
-                f"leaving agent {agent.name} idle (no container runtime)."
+                f"running agent {agent.name} via the in-process native runtime."
             )
-            return _set_idle()
+            return _fallback_to_native()
         except APIError as e:
             # An image that cannot be pulled (e.g. 404 / "pull access denied") means the
             # container runtime image is unavailable in this environment. Treat it like
-            # "no Docker runtime" and degrade gracefully to idle instead of error, so
-            # relationships to this agent stay usable. Match only image-specific markers
-            # so unrelated infra failures (e.g. missing network) still surface as error.
+            # "no Docker runtime" and degrade gracefully to the in-process native runtime
+            # instead of error, so the agent stays usable and relationships to it remain
+            # active. Match only image-specific markers so unrelated infra failures
+            # (e.g. missing network) still surface as error.
             msg = f"{e} {getattr(e, 'explanation', '') or ''}".lower()
             image_markers = (
                 "pull access denied",
@@ -301,9 +340,9 @@ class AgentManager:
             if any(marker in msg for marker in image_markers):
                 logger.warning(
                     f"OpenClaw image '{settings.OPENCLAW_IMAGE}' unavailable ({e}); "
-                    f"leaving agent {agent.name} idle (no container runtime)."
+                    f"running agent {agent.name} via the in-process native runtime."
                 )
-                return _set_idle()
+                return _fallback_to_native()
             logger.error(f"Failed to start container for agent {agent.name}: {e}")
             agent.status = "error"
             return None
@@ -368,9 +407,15 @@ class AgentManager:
         return dest
 
     def get_container_status(self, agent: Agent) -> dict:
-        """Get real-time container status."""
+        """Get real-time runtime status.
+
+        With no container, the agent is served by the in-process native runtime
+        (or is idle/remote): report it as running whenever its status is
+        ``running`` so the lifecycle reflects a usable agent even without Docker.
+        """
         if not self.docker_client or not agent.container_id:
-            return {"running": False, "status": agent.status}
+            runtime = "in-process" if not self.docker_client else "none"
+            return {"running": agent.status == "running", "status": agent.status, "runtime": runtime}
 
         try:
             container = self.docker_client.containers.get(agent.container_id)
