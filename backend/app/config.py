@@ -145,6 +145,10 @@ class Settings(BaseSettings):
     S3_PRESIGN_TTL_SECONDS: int = 3600
     S3_MAX_POOL_CONNECTIONS: int = 50
     S3_WRITE_WORKERS: int = 32
+    # Replit-managed Object Storage (App Storage). Used when STORAGE_BACKEND=replit.
+    # Bucket id defaults to the Repl's default bucket resolved via the sidecar.
+    REPLIT_OBJECT_STORAGE_BUCKET_ID: str = ""
+    REPLIT_OBJECT_STORAGE_PREFIX: str = "agents"
 
     # Process role
     PROCESS_ROLE: str = "all"
