@@ -137,6 +137,7 @@ async def lifespan(app: FastAPI):
     import sys
     import os
     from app.services.trigger_daemon import start_trigger_daemon
+    from app.services.mcp_tool_refresh import start_mcp_refresh_daemon
     from app.services.tool_seeder import seed_builtin_tools
     from app.services.template_seeder import seed_agent_templates
     from app.services.feishu_ws import feishu_ws_manager
@@ -298,6 +299,7 @@ async def lifespan(app: FastAPI):
         task_specs = []
         if _role_enabled("all", "worker"):
             task_specs.append(("trigger_daemon", start_trigger_daemon()))
+            task_specs.append(("mcp_tool_refresh", start_mcp_refresh_daemon()))
         if _role_enabled("all", "connector"):
             task_specs.extend([
                 ("feishu_ws", feishu_ws_manager.start_all()),

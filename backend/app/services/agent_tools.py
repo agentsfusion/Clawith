@@ -1536,7 +1536,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "import_mcp_server",
-            "description": "Import an MCP server from Smithery registry into the platform. The server's tools become available for use. Use discover_resources first to find the server ID. If previously imported tools stopped working (e.g. OAuth expired), set reauthorize=true to re-run the authorization flow.",
+            "description": "Import an MCP server from Smithery registry into the platform. The server's tools become available for use. Use discover_resources first to find the server ID. If previously imported tools stopped working (e.g. OAuth expired), set reauthorize=true to re-run the authorization flow. If an already-imported server has added/renamed/removed tools on its side, set refresh=true to re-sync its tool list WITHOUT re-running OAuth.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1551,6 +1551,10 @@ AGENT_TOOLS = [
                     "reauthorize": {
                         "type": "boolean",
                         "description": "Set to true to force re-authorization of existing tools (e.g. when OAuth token has expired)",
+                    },
+                    "refresh": {
+                        "type": "boolean",
+                        "description": "Set to true to re-sync an already-imported server's tool list with the live server: adds newly-exposed tools, updates drifted descriptions/parameter schemas, and disables tools the server no longer exposes. Reuses the existing connection and does NOT trigger re-authorization.",
                     },
                 },
                 "required": ["server_id"],
@@ -4283,6 +4287,10 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
         mcp_url = tool.mcp_server_url
         mcp_name = tool.mcp_tool_name or tool_name
 
+        # Drop empty file-upload objects so MCP servers don't reject the call
+        # (e.g. Gmail create_email_draft rejects an `attachment` whose s3key is "").
+        arguments = _sanitize_mcp_arguments(arguments, tool.parameters_schema)
+
         # Detect Smithery-hosted MCP servers (*.run.tools URLs)
         # These need Smithery Connect to route tool calls
         if ".run.tools" in mcp_url and merged_config:
@@ -4305,6 +4313,129 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
     except Exception as e:
         logger.exception(f"[MCP] Tool execution error: {tool_name}")
         return f"❌ MCP tool execution error: {str(e)[:200]}"
+
+
+def _sanitize_mcp_arguments(arguments: dict, parameters_schema: dict | None) -> dict:
+    """Normalize empty file-upload objects to null before sending to an MCP server.
+
+    Some MCP tools (e.g. Gmail ``create_email_draft``) expose a nullable
+    ``file_uploadable`` object param (``attachment``) whose sub-fields
+    (``name``/``mimetype``/``s3key``) are marked required. When the model wants
+    no attachment it tends to emit the object filled with empty strings instead
+    of ``null``, and the server rejects it ("Invalid attachment: 's3key' is
+    empty. ... set attachment to null if no file should be attached.").
+
+    For each such param, if the value is not a usable upload (missing/empty
+    ``s3key``, or not an object at all), replace it with ``None`` so the server
+    treats it as "no file attached".
+    """
+    if not isinstance(arguments, dict) or not isinstance(parameters_schema, dict):
+        return arguments
+    props = parameters_schema.get("properties")
+    if not isinstance(props, dict):
+        return arguments
+
+    cleaned = dict(arguments)
+    for key, spec in props.items():
+        if key not in cleaned or not isinstance(spec, dict):
+            continue
+        sub_props = spec.get("properties")
+        is_upload = bool(spec.get("file_uploadable")) or (
+            spec.get("type") == "object"
+            and isinstance(sub_props, dict)
+            and "s3key" in sub_props
+        )
+        if not is_upload:
+            continue
+        val = cleaned[key]
+        if val is None:
+            continue
+        if not isinstance(val, dict):
+            cleaned[key] = None
+            continue
+        s3key = val.get("s3key")
+        if not (isinstance(s3key, str) and s3key.strip()):
+            cleaned[key] = None
+    return cleaned
+
+
+def _normalize_mcp_tool_name(name: str) -> str:
+    """Strip non-alphanumerics and uppercase, for fuzzy tool-name matching."""
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+async def _resolve_smithery_tool_name(client, connect_url: str, headers: dict, requested: str) -> str | None:
+    """Resolve a stored tool name to the live server's actual tool name.
+
+    Stored metadata can drift from the live server (e.g. GMAIL_FETCH_EMAILS vs
+    the live fetch_emails). Fetch the live tools/list and match the requested
+    name case-insensitively, tolerating a server-name prefix (GMAIL_*).
+    Returns the live name, or None if it cannot be unambiguously resolved.
+    """
+    import json as json_mod
+    try:
+        resp = await client.post(
+            connect_url,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers=headers,
+        )
+        data = None
+        for line in resp.text.split("\n"):
+            line = line.strip()
+            if line.startswith("data: "):
+                try:
+                    data = json_mod.loads(line[6:])
+                    break
+                except json_mod.JSONDecodeError:
+                    pass
+        if data is None:
+            try:
+                data = json_mod.loads(resp.text)
+            except json_mod.JSONDecodeError:
+                return None
+        tools = (data.get("result", {}) or {}).get("tools", []) if isinstance(data, dict) else []
+        names = [t.get("name") for t in tools if isinstance(t, dict) and t.get("name")]
+        if not names:
+            return None
+
+        req_norm = _normalize_mcp_tool_name(requested)
+        # 1) exact (case-insensitive / punctuation-insensitive) match (must be unique)
+        exact = [n for n in names if _normalize_mcp_tool_name(n) == req_norm]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            return None
+        # 2) requested carries a server prefix the live name lacks
+        #    (e.g. GMAILFETCHEMAILS endswith FETCHEMAILS). Require a unique match.
+        suffix_matches = [n for n in names if req_norm.endswith(_normalize_mcp_tool_name(n))]
+        if len(suffix_matches) == 1:
+            return suffix_matches[0]
+        return None
+    except Exception:
+        return None
+
+
+async def _persist_corrected_mcp_tool_name(mcp_url: str, old_name: str, new_name: str) -> None:
+    """Persist a corrected mcp_tool_name so future calls skip re-resolution."""
+    try:
+        from app.models.tool import Tool
+        async with async_session() as db:
+            r = await db.execute(
+                select(Tool).where(
+                    Tool.mcp_server_url == mcp_url,
+                    Tool.mcp_tool_name == old_name,
+                    Tool.type == "mcp",
+                )
+            )
+            updated = False
+            for tool in r.scalars().all():
+                tool.mcp_tool_name = new_name
+                updated = True
+            if updated:
+                await db.commit()
+                logger.info(f"[MCP] Corrected tool name '{old_name}' -> '{new_name}' for {mcp_url}")
+    except Exception:
+        logger.exception("[MCP] Failed to persist corrected tool name")
 
 
 async def _execute_via_smithery_connect(mcp_url: str, tool_name: str, arguments: dict, config: dict, agent_id=None) -> str:
@@ -4361,25 +4492,43 @@ async def _execute_via_smithery_connect(mcp_url: str, tool_name: str, arguments:
         "Accept": "application/json, text/event-stream",
     }
 
+    connect_url = f"https://api.smithery.ai/connect/{namespace}/{connection_id}/mcp"
+
+    def _parse_smithery_payload(raw: str):
+        """Parse a Smithery Connect response (SSE or plain JSON)."""
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line.startswith("data: "):
+                try:
+                    return json_mod.loads(line[6:])
+                except json_mod.JSONDecodeError:
+                    pass
+        try:
+            return json_mod.loads(raw)
+        except json_mod.JSONDecodeError:
+            return None
+
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            # Call the tool via the existing connection
-            tool_resp = await client.post(
-                f"https://api.smithery.ai/connect/{namespace}/{connection_id}/mcp",
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": tool_name,
-                        "arguments": arguments,
+
+            async def _call_tool(name: str):
+                """POST a tools/call and return (status_code, parsed_data, raw)."""
+                resp = await client.post(
+                    connect_url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments},
                     },
-                },
-                headers=headers,
-            )
+                    headers=headers,
+                )
+                return resp.status_code, _parse_smithery_payload(resp.text), resp.text
+
+            status_code, data, raw = await _call_tool(tool_name)
 
             # Detect auth/connection failures and attempt auto-recovery
-            if tool_resp.status_code in (401, 403, 404):
+            if status_code in (401, 403, 404):
                 recovery_result = await _smithery_auto_recover(
                     api_key, mcp_url, namespace, connection_id, agent_id
                 )
@@ -4387,39 +4536,63 @@ async def _execute_via_smithery_connect(mcp_url: str, tool_name: str, arguments:
                     return recovery_result
                 # If recovery returned None, fall through to normal parsing
 
-            # Smithery Connect returns SSE format: "event: message\ndata: {...}\n"
-            raw = tool_resp.text
-            data = None
-
-            # Parse SSE response
-            for line in raw.split("\n"):
-                line = line.strip()
-                if line.startswith("data: "):
-                    try:
-                        data = json_mod.loads(line[6:])
-                        break
-                    except json_mod.JSONDecodeError:
-                        pass
-
-            # Fallback: try parsing as plain JSON
             if data is None:
-                try:
-                    data = json_mod.loads(raw)
-                except json_mod.JSONDecodeError:
-                    return f"❌ Unexpected response from Smithery: {raw[:300]}"
+                return f"❌ Unexpected response from Smithery: {raw[:300]}"
 
             if "error" in data:
                 err = data["error"]
-                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                # Check if error indicates auth/connection issue
-                auth_keywords = ["auth", "unauthorized", "forbidden", "expired", "not found", "connection"]
-                if any(kw in msg.lower() for kw in auth_keywords):
-                    recovery_result = await _smithery_auto_recover(
-                        api_key, mcp_url, namespace, connection_id, agent_id
+                if isinstance(err, dict):
+                    code = err.get("code")
+                    msg = err.get("message", str(err))
+                else:
+                    code, msg = None, str(err)
+                msg_lower = msg.lower()
+
+                # Tool-name drift: the stored mcp_tool_name can fall out of sync
+                # with the live server's tool list (e.g. server renamed
+                # GMAIL_FETCH_EMAILS to fetch_emails). JSON-RPC -32602 ("Invalid
+                # params") is what MCP servers return for an unknown tool name,
+                # but it is also returned for bad arguments to a *valid* tool. So
+                # attempt name resolution from a live tools/list and retry once,
+                # but never mask the real server error: only override with a
+                # not-found hint when the server explicitly says the tool is
+                # missing AND we cannot resolve a different live name.
+                explicit_not_found = "tool" in msg_lower and "not found" in msg_lower
+                maybe_tool_not_found = code == -32602 or explicit_not_found
+                if maybe_tool_not_found:
+                    resolved = await _resolve_smithery_tool_name(
+                        client, connect_url, headers, tool_name
                     )
-                    if recovery_result:
-                        return recovery_result
-                return f"❌ MCP tool error: {msg[:300]}"
+                    if resolved and resolved != tool_name:
+                        await _persist_corrected_mcp_tool_name(
+                            mcp_url, tool_name, resolved
+                        )
+                        status_code, data, raw = await _call_tool(resolved)
+                        if data is None:
+                            return f"❌ Unexpected response from Smithery: {raw[:300]}"
+                        if "error" in data:
+                            rerr = data["error"]
+                            rmsg = rerr.get("message", str(rerr)) if isinstance(rerr, dict) else str(rerr)
+                            return f"❌ MCP tool error: {rmsg[:300]}"
+                    elif explicit_not_found:
+                        return (
+                            f"❌ MCP tool '{tool_name}' not found on the server. "
+                            "It may have been renamed or removed; try re-importing the MCP server."
+                        )
+                    else:
+                        # Valid tool, bad params (or other -32602): surface the
+                        # real server error instead of a misleading not-found.
+                        return f"❌ MCP tool error: {msg[:300]}"
+                else:
+                    # Genuine auth/connection issue -> attempt recovery
+                    auth_keywords = ["auth", "unauthorized", "forbidden", "expired", "connection"]
+                    if any(kw in msg_lower for kw in auth_keywords):
+                        recovery_result = await _smithery_auto_recover(
+                            api_key, mcp_url, namespace, connection_id, agent_id
+                        )
+                        if recovery_result:
+                            return recovery_result
+                    return f"❌ MCP tool error: {msg[:300]}"
 
             result = data.get("result", {})
             if isinstance(result, str):
@@ -8087,6 +8260,7 @@ async def _import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
     """Import an MCP server — either from Smithery or by direct URL."""
     config = arguments.get("config") or {}
     reauthorize = arguments.get("reauthorize", False)
+    refresh = arguments.get("refresh", False)
     mcp_url = config.pop("mcp_url", None) if isinstance(config, dict) else None
 
     if mcp_url:
@@ -8102,7 +8276,7 @@ async def _import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
         return "❌ Please provide a server_id (e.g. 'github'). Use discover_resources first to find available servers."
 
     from app.services.resource_discovery import import_mcp_from_smithery
-    return await import_mcp_from_smithery(server_id, agent_id, config or None, reauthorize=reauthorize)
+    return await import_mcp_from_smithery(server_id, agent_id, config or None, reauthorize=reauthorize, refresh=refresh)
 
 
 # ─── Trigger Management Handlers (Aware Engine) ────────────────────
