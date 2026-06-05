@@ -50,11 +50,33 @@ outputType = "webview"
 localPort = 5000
 externalPort = 80
 
+[[ports]]
+localPort = 5001
+externalPort = 3000
+
+[[ports]]
+localPort = 6379
+externalPort = 3001
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
+
 [userenv]
 
 [userenv.shared]
 S3_BUCKET = "clawith-main"
 S3_ENDPOINT_URL = "https://storage.googleapis.com"
-STORAGE_BACKEND = "local"
+STORAGE_BACKEND = "replit"
 STORAGE_LOCAL_ROOT = "/home/runner/workspace/.data/agents"
 AGENT_DATA_DIR = "/home/runner/workspace/.data/agents"
+REPLIT_OBJECT_STORAGE_BUCKET_ID = "replit-objstore-5498ecab-1741-4522-9a72-349f8319ca5a"
+REPLIT_OBJECT_STORAGE_PREFIX = "agents"
+DOCKER_ENABLED = "false"
+
+[objectStorage]
+defaultBucketID = "replit-objstore-5498ecab-1741-4522-9a72-349f8319ca5a"
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 180000
