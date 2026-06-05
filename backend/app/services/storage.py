@@ -6,6 +6,7 @@ This module remains as the stable import path for existing callers.
 
 from app.services.storage_runtime import (
     LocalStorageBackend,
+    ReplitObjectStorageBackend,
     S3StorageBackend,
     StorageBackend,
     StorageEntry,
@@ -26,6 +27,7 @@ from app.services.storage_runtime import (
 
 __all__ = [
     "LocalStorageBackend",
+    "ReplitObjectStorageBackend",
     "S3StorageBackend",
     "StorageBackend",
     "StorageEntry",
