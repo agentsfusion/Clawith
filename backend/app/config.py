@@ -151,6 +151,12 @@ class Settings(BaseSettings):
     PROCESS_ROLE: str = "all"
 
     # Docker (for Agent containers)
+    # Set DOCKER_ENABLED=false to skip all Docker usage (e.g. on Replit, where
+    # no Docker daemon exists). When disabled, agent containers are never started
+    # and new agents are simply left idle. When enabled (default), availability is
+    # still verified with a fast, bounded daemon ping at startup.
+    DOCKER_ENABLED: bool = True
+    DOCKER_PING_TIMEOUT: int = 2
     DOCKER_NETWORK: str = "clawith_network"
     OPENCLAW_IMAGE: str = "openclaw:local"
     OPENCLAW_GATEWAY_PORT: int = 18789
