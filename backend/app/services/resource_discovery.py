@@ -1,5 +1,6 @@
 """Resource discovery — search Smithery & ModelScope registries and import MCP servers."""
 
+import asyncio
 import uuid
 import httpx
 from loguru import logger
@@ -486,73 +487,130 @@ async def import_mcp_from_smithery(
     # required `user_prompt` + `query`). The truth is whatever tools/list
     # returns at call time, so prefer it whenever available.
     live_tools_ok = False
+    deferred_live_resolution = False
     if smithery_config:
         ns_ = smithery_config["smithery_namespace"]
         conn_ = smithery_config["smithery_connection_id"]
-        try:
-            import json as _json
-            async with httpx.AsyncClient(timeout=15) as client:
-                live_resp = await client.post(
-                    f"https://api.smithery.ai/connect/{ns_}/{conn_}/mcp",
-                    json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json, text/event-stream",
-                    },
-                )
-            if live_resp.status_code == 200:
-                live_data = None
-                # Smithery Connect returns SSE; parse the first data: line.
-                for line in live_resp.text.split("\n"):
-                    line = line.strip()
-                    if line.startswith("data: "):
-                        try:
-                            live_data = _json.loads(line[6:])
-                            break
-                        except _json.JSONDecodeError:
-                            pass
-                if live_data is None:
-                    try:
-                        live_data = _json.loads(live_resp.text)
-                    except _json.JSONDecodeError:
-                        live_data = None
-                live_tools = (live_data or {}).get("result", {}).get("tools", []) if live_data else []
-                # MCP servers also return prompts here; only treat actual tools.
-                live_tools_normalized = [
-                    {
-                        "name": t.get("name", ""),
-                        "description": t.get("description", ""),
-                        "inputSchema": t.get("inputSchema", {}),
-                    }
-                    for t in live_tools
-                    if t.get("name") and isinstance(t.get("inputSchema"), dict)
-                ]
-                if live_tools_normalized:
-                    logger.info(
-                        f"[ResourceDiscovery] Using live tools/list for {qualified_name}: "
-                        f"{len(live_tools_normalized)} tool(s) override registry's "
-                        f"{len(tools_discovered)}"
+        import json as _json
+        # The live tools/list is the authoritative source for tool NAMES, so a
+        # transient SSE/parse/timeout/5xx hiccup must not silently fall back to
+        # the drift-prone registry names (Composio-style UPPERCASE that the
+        # runtime server may not recognize). Retry a few times before giving up.
+        max_live_attempts = 3
+        for attempt in range(1, max_live_attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    live_resp = await client.post(
+                        f"https://api.smithery.ai/connect/{ns_}/{conn_}/mcp",
+                        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                            "Accept": "application/json, text/event-stream",
+                        },
                     )
-                    tools_discovered = live_tools_normalized
-                    live_tools_ok = True
-        except Exception as e:
-            logger.warning(
-                f"[ResourceDiscovery] Live tools/list failed for {qualified_name}, "
-                f"falling back to registry schema: {e}"
-            )
+                if live_resp.status_code == 200:
+                    live_data = None
+                    # Smithery Connect returns SSE; parse the first data: line.
+                    for line in live_resp.text.split("\n"):
+                        line = line.strip()
+                        if line.startswith("data: "):
+                            try:
+                                live_data = _json.loads(line[6:])
+                                break
+                            except _json.JSONDecodeError:
+                                pass
+                    if live_data is None:
+                        try:
+                            live_data = _json.loads(live_resp.text)
+                        except _json.JSONDecodeError:
+                            live_data = None
+                    live_tools = (live_data or {}).get("result", {}).get("tools", []) if live_data else []
+                    # MCP servers also return prompts here; only treat actual tools.
+                    live_tools_normalized = [
+                        {
+                            "name": t.get("name", ""),
+                            "description": t.get("description", ""),
+                            "inputSchema": t.get("inputSchema", {}),
+                        }
+                        for t in live_tools
+                        if t.get("name") and isinstance(t.get("inputSchema"), dict)
+                    ]
+                    if live_tools_normalized:
+                        logger.info(
+                            f"[ResourceDiscovery] Using live tools/list for {qualified_name}: "
+                            f"{len(live_tools_normalized)} tool(s) override registry's "
+                            f"{len(tools_discovered)} (attempt {attempt})"
+                        )
+                        tools_discovered = live_tools_normalized
+                        live_tools_ok = True
+                        break
+                    # HTTP 200 with no tools almost always means the connection
+                    # is not authorized yet (OAuth pending). Retrying inside this
+                    # import won't change that, so stop early and fail closed.
+                    logger.warning(
+                        f"[ResourceDiscovery] Live tools/list for {qualified_name} "
+                        f"returned no tools (attempt {attempt}) — likely pending OAuth"
+                    )
+                    break
+                else:
+                    logger.warning(
+                        f"[ResourceDiscovery] Live tools/list HTTP {live_resp.status_code} "
+                        f"for {qualified_name} (attempt {attempt}/{max_live_attempts})"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"[ResourceDiscovery] Live tools/list failed for {qualified_name} "
+                    f"(attempt {attempt}/{max_live_attempts}): {e}"
+                )
+            if attempt < max_live_attempts:
+                await asyncio.sleep(1.5 * attempt)
 
-    # Refresh must be non-destructive: if we could not fetch the authoritative
-    # live tools/list, do NOT reconcile against possibly-stale registry data
-    # (that could wrongly disable valid tools). Abort with no changes.
-    if refresh and not live_tools_ok:
-        return (
-            f"⚠️ Refresh aborted for **{display_name}**: could not fetch the live tool "
-            f"list from the server right now, so no changes were made (to avoid "
-            f"disabling valid tools).\n\n"
-            f"Please try again in a moment. If the connection's authorization has "
-            f"expired, use `import_mcp_server(server_id=\"{server_id}\", reauthorize=true)`."
-        )
+    # The live tools/list is the SINGLE authoritative source for tool names on
+    # Smithery-hosted servers. When it is unavailable we must NOT persist the
+    # registry's drift-prone names, or calls fail later with
+    # `-32602 Tool ... not found`.
+    if not live_tools_ok:
+        # Refresh must be non-destructive: if we could not fetch the authoritative
+        # live tools/list, do NOT reconcile against possibly-stale registry data
+        # (that could wrongly disable valid tools). Abort with no changes.
+        if refresh:
+            return (
+                f"⚠️ Refresh aborted for **{display_name}**: could not fetch the live tool "
+                f"list from the server right now, so no changes were made (to avoid "
+                f"disabling valid tools).\n\n"
+                f"Please try again in a moment. If the connection's authorization has "
+                f"expired, use `import_mcp_server(server_id=\"{server_id}\", reauthorize=true)`."
+            )
+        # Fresh import: never persist the registry's drift-prone names.
+        if not smithery_config:
+            # No Smithery connection could be established, so the background
+            # refresh daemon (which keys off smithery_namespace +
+            # connection_id) can never discover or re-resolve this server.
+            # Fail explicitly rather than leaving an orphan placeholder that
+            # silently never gains its tools.
+            return (
+                f"⚠️ Import incomplete for **{display_name}** (`{server_id}`): "
+                f"could not establish a Smithery connection, so tool names could "
+                f"not be verified against the live server. No tools were created "
+                f"(to avoid registering names the server won't recognize).\n\n"
+                f"Please try again in a moment, or use "
+                f"`import_mcp_server(server_id=\"{server_id}\", reauthorize=true)`."
+                + (auth_message or "")
+            )
+        # Connection exists but the live tools/list isn't available yet
+        # (typically OAuth still pending). Drop the registry tools and create
+        # only a discoverable placeholder below — it carries the Smithery
+        # connection, so the background auto-refresh daemon materializes the
+        # real, live-named tools once the connection is authorized / reachable.
+        if tools_discovered:
+            logger.warning(
+                f"[ResourceDiscovery] Fresh import of {qualified_name}: live "
+                f"tools/list unavailable; NOT persisting {len(tools_discovered)} "
+                f"registry-named tool(s). Deferring to placeholder + auto-refresh."
+            )
+        tools_discovered = []
+        deferred_live_resolution = True
 
     # Persist the originating Smithery server_id so the background auto-refresh
     # job can re-resolve this exact server later without guessing from the
@@ -571,8 +629,19 @@ async def import_mcp_from_smithery(
         refresh_removed: list[str] = []
         refresh_unchanged: list[str] = []
 
-        # Helper: ensure AgentTool link exists and save config
-        async def _ensure_agent_tool(tool_id: uuid.UUID):
+        # Helper: ensure AgentTool link exists and save config.
+        # `enabled=None` preserves an existing link's enabled flag (and defaults
+        # new links to enabled); pass enabled=False to keep a link present but
+        # hidden from the LLM (used for the deferred pending-auth placeholder so
+        # it remains discoverable by the auto-refresh daemon without being a
+        # callable, broken tool). `extra_config` merges extra keys on top.
+        async def _ensure_agent_tool(
+            tool_id: uuid.UUID,
+            *,
+            enabled: bool | None = None,
+            extra_config: dict | None = None,
+        ):
+            link_config = {**agent_tool_config, **(extra_config or {})}
             agent_check = await db.execute(
                 select(AgentTool).where(
                     AgentTool.agent_id == agent_id,
@@ -581,12 +650,15 @@ async def import_mcp_from_smithery(
             )
             at = agent_check.scalar_one_or_none()
             if at:
-                at.config = {**(at.config or {}), **agent_tool_config}
+                at.config = {**(at.config or {}), **link_config}
+                if enabled is not None:
+                    at.enabled = enabled
             else:
                 db.add(AgentTool(
-                    agent_id=agent_id, tool_id=tool_id, enabled=True,
+                    agent_id=agent_id, tool_id=tool_id,
+                    enabled=True if enabled is None else enabled,
                     source="user_installed", installed_by_agent_id=agent_id,
-                    config=agent_tool_config,
+                    config=link_config,
                 ))
 
         # On re-import/reauthorize: update ALL existing tools for this server
@@ -599,15 +671,30 @@ async def import_mcp_from_smithery(
                 await _ensure_agent_tool(et.id)
 
         if tools_discovered:
-            # Clean up old generic entry if individual tools are now discovered
+            # Clean up the generic/placeholder entry now that individual
+            # live-named tools exist, so a callable-but-nameless `mcp_<server>`
+            # tool can never linger and trigger `-32602 Tool mcp_<server> not
+            # found`. The placeholder Tool row is GLOBAL and may be shared by
+            # other agents that are still pending auth, so only unlink THIS agent
+            # and delete the Tool row when no agent references it anymore.
             generic_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}"
-            old_generic_r = await db.execute(select(Tool).where(Tool.name == generic_name))
+            old_generic_r = await db.execute(
+                select(Tool).where(Tool.name == generic_name, Tool.type == "mcp")
+            )
             old_generic = old_generic_r.scalar_one_or_none()
             if old_generic:
                 await db.execute(
-                    AgentTool.__table__.delete().where(AgentTool.tool_id == old_generic.id)
+                    AgentTool.__table__.delete().where(
+                        AgentTool.tool_id == old_generic.id,
+                        AgentTool.agent_id == agent_id,
+                    )
                 )
-                await db.delete(old_generic)
+                await db.flush()
+                remaining_r = await db.execute(
+                    select(AgentTool.id).where(AgentTool.tool_id == old_generic.id).limit(1)
+                )
+                if remaining_r.scalar_one_or_none() is None:
+                    await db.delete(old_generic)
                 await db.flush()
 
             # Create one Tool record per MCP tool
@@ -704,12 +791,25 @@ async def import_mcp_from_smithery(
             existing_tool = existing_r.scalar_one_or_none()
             if existing_tool:
                 existing_tool.mcp_server_url = base_mcp_url
-                await _ensure_agent_tool(existing_tool.id)
+                if deferred_live_resolution:
+                    await _ensure_agent_tool(
+                        existing_tool.id, enabled=False,
+                        extra_config={"mcp_pending_live_resolution": True},
+                    )
+                else:
+                    await _ensure_agent_tool(existing_tool.id)
                 if config:
                     await db.commit()
-                    return f"🔄 {tool_display} config updated. The tool is now ready to use."
+                    return f"🔄 {tool_display} config updated. The tool is now ready to use." + (auth_message or "")
                 else:
-                    return f"⏭️ {tool_display} is already imported."
+                    await db.commit()
+                    if deferred_live_resolution:
+                        return (
+                            f"⏳ {tool_display} — tool names are synced from the live "
+                            f"server; the individual tools will appear automatically "
+                            f"once the connection is authorized." + (auth_message or "")
+                        )
+                    return f"⏭️ {tool_display} is already imported." + (auth_message or "")
 
             tool = Tool(
                 name=tool_name,
@@ -727,8 +827,25 @@ async def import_mcp_from_smithery(
             )
             db.add(tool)
             await db.flush()
-            await _ensure_agent_tool(tool.id)
-            imported_tools.append(f"✅ {tool_display} (tool list not available from registry — may need configuration)")
+            if deferred_live_resolution:
+                # Keep the placeholder OUT of the LLM's callable tool list (it has
+                # no real mcp_tool_name, so calling it yields `-32602 Tool
+                # mcp_<server> not found`). It stays linked but disabled purely as
+                # a discovery anchor: the auto-refresh daemon and the lazy
+                # on-demand resolver materialize the real, live-named tools once
+                # the connection is authorized.
+                await _ensure_agent_tool(
+                    tool.id, enabled=False,
+                    extra_config={"mcp_pending_live_resolution": True},
+                )
+                imported_tools.append(
+                    f"⏳ {tool_display} — tool names are synced from the live server; "
+                    f"the individual tools will appear automatically once the "
+                    f"connection is authorized."
+                )
+            else:
+                await _ensure_agent_tool(tool.id)
+                imported_tools.append(f"✅ {tool_display} (tool list not available from registry — may need configuration)")
 
         await db.commit()
 
