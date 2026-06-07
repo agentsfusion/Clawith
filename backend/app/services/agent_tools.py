@@ -2146,7 +2146,28 @@ def _strip_a2a_msg_type(tools: list[dict]) -> list[dict]:
     return result
 
 
-async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
+# Debounce on-demand resolution of deferred (pending-auth) Smithery MCP
+# placeholders so we don't fire a refresh on every single agent turn while the
+# user has not yet authorized the connection. Keyed by f"{agent_id}:{server_id}".
+_PENDING_MCP_RESOLVE_ATTEMPTS: dict[str, float] = {}
+_PENDING_MCP_RESOLVE_INTERVAL = 20.0
+
+
+def _should_attempt_pending_mcp_resolve(agent_id: uuid.UUID, server_id: str) -> bool:
+    import time
+    key = f"{agent_id}:{server_id}"
+    last = _PENDING_MCP_RESOLVE_ATTEMPTS.get(key, 0.0)
+    return (time.monotonic() - last) >= _PENDING_MCP_RESOLVE_INTERVAL
+
+
+def _mark_pending_mcp_resolve_attempt(agent_id: uuid.UUID, server_id: str) -> None:
+    import time
+    _PENDING_MCP_RESOLVE_ATTEMPTS[f"{agent_id}:{server_id}"] = time.monotonic()
+
+
+async def get_agent_tools_for_llm(
+    agent_id: uuid.UUID, _resolve_pending: bool = True
+) -> list[dict]:
     """Load enabled tools for an agent from DB (OpenAI function-calling format).
 
     Falls back to hardcoded AGENT_TOOLS if DB not ready.
@@ -2223,6 +2244,9 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
             explicitly_disabled_names = set()
             # Track tools included via is_default fallback (no AgentTool record)
             default_included_names = []
+            # Deferred (pending-auth) Smithery placeholders whose real, live-named
+            # tools still need to be materialized once the connection is authorized.
+            pending_resolution_servers: set[str] = set()
 
             for t in all_tools:
                 tid = str(t.id)
@@ -2237,6 +2261,17 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                 if not enabled:
                     if at and not at.enabled:
                         explicitly_disabled_names.add(t.name)
+                        # Pending-auth MCP placeholder: kept disabled so it is not
+                        # offered to the LLM, but flagged so we can resolve the
+                        # real live-named tools on demand below.
+                        cfg = at.config or {}
+                        if (
+                            t.type == "mcp"
+                            and not t.mcp_tool_name
+                            and cfg.get("mcp_pending_live_resolution")
+                            and cfg.get("smithery_server_id")
+                        ):
+                            pending_resolution_servers.add(cfg["smithery_server_id"])
                     continue
 
                 # Skip feishu tools if the agent has no Feishu channel configured
@@ -2272,6 +2307,38 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 
                 result.append(tool_def)
                 db_tool_names.add(t.name)
+
+            # On-demand resolution of deferred (pending-auth) Smithery MCP tools.
+            # At fresh import the live tools/list is often unavailable (OAuth still
+            # pending), so only a disabled placeholder exists. The first time the
+            # agent is used after the user authorizes, resolve the real live-named
+            # tools here instead of waiting for the periodic background refresh.
+            if _resolve_pending and pending_resolution_servers:
+                attempted = False
+                # Resolve at most ONE pending server per call to bound hot-path
+                # latency; any others are handled on subsequent turns (each has
+                # its own debounce key). Most agents only have one pending server.
+                for sid in sorted(pending_resolution_servers):
+                    if not _should_attempt_pending_mcp_resolve(agent_id, sid):
+                        continue
+                    attempted = True
+                    _mark_pending_mcp_resolve_attempt(agent_id, sid)
+                    try:
+                        from app.services.resource_discovery import import_mcp_from_smithery
+                        await asyncio.wait_for(
+                            import_mcp_from_smithery(sid, agent_id, refresh=True),
+                            timeout=8,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"[Tools] on-demand MCP resolve failed agent={agent_id} "
+                            f"server={sid}: {e}"
+                        )
+                    break
+                if attempted:
+                    # Rebuild once with the now-materialized live tools. The guard
+                    # flag prevents any further resolution recursion.
+                    return await get_agent_tools_for_llm(agent_id, _resolve_pending=False)
 
             if default_included_names:
                 logger.info(
