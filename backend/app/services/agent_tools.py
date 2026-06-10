@@ -683,7 +683,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "send_message_to_agent",
-            "description": "Send a message to a digital employee colleague. The recipient is another AI agent, not a human. Refer to the 'Relationships' section in your system prompt for available digital employees.\n\nDECISION GUIDE for msg_type:\nAsk yourself: does the target agent need to DO WORK (analyze, research, summarize, write, compare, plan, etc.) and RETURN RESULTS to you or the user?\n\n- If YES, the target needs to do work → use task_delegate. Examples: 'summarize X', 'analyze Y', 'check Z', 'prepare a report', 'review and give feedback', 'find out X', 'confirm with X and report back'. The target works asynchronously and you will be woken when they finish.\n\n- If the target just needs to KNOW something → use notify. Examples: 'meeting cancelled', 'I updated the doc', 'heads up about X', 'FYI'. No reply expected.\n\n- If you need a quick factual answer right now → use consult. Examples: 'what is X?', 'do you know Y?'. Synchronous, blocks until reply.\n\nWhen in doubt between notify and task_delegate, prefer task_delegate — it is safer because it guarantees the user gets a result.",
+            "description": "Send a message to a digital employee colleague. The recipient is another AI agent, not a human. Refer to the 'Relationships' section in your system prompt for available digital employees.\n\nDECISION GUIDE for msg_type:\nAsk yourself: do you need the target's response to continue your work?\n\n- If YES, you need results to continue → use consult. Examples: 'summarize X', 'analyze Y', 'check Z', 'prepare a report', 'review and give feedback', 'find out X', 'confirm with X and report back'. Synchronous — blocks until the target returns complete results. This is the most reliable option for getting results.\n\n- If the task is long-running and you DON'T need to wait for results → use task_delegate. Examples: 'process this in the background', 'start a long analysis'. Asynchronous — returns immediately, you will be notified when done.\n\n- If the target just needs to KNOW something → use notify. Examples: 'meeting cancelled', 'I updated the doc', 'heads up about X', 'FYI'. No reply expected.\n\nWhen in doubt, prefer consult — it is the most reliable way to get results back.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -698,7 +698,7 @@ AGENT_TOOLS = [
                     "msg_type": {
                         "type": "string",
                         "enum": ["notify", "consult", "task_delegate"],
-                        "description": "Decision guide: (1) Will the target need to DO WORK and return results? → task_delegate. (2) Is this just a one-way FYI? → notify. (3) Quick factual question needing immediate answer? → consult. When unsure, prefer task_delegate.",
+                        "description": "Decision guide: (1) Do you need results to continue? → consult (sync, reliable). (2) Long-running task, no need to wait? → task_delegate (async). (3) Just FYI, no reply needed? → notify. When unsure, prefer consult.",
                     },
                 },
                 "required": ["agent_name", "message", "msg_type"],
@@ -7261,7 +7261,7 @@ async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: 
         logger.warning(f"[A2A] Failed to update Focus for agent {agent_id}: {e}")
 
 
-async def _wake_agent_async(agent_id: uuid.UUID, reason_context: str, *, from_agent_id: uuid.UUID | None = None, skip_dedup: bool = False, a2a_session_id: str | None = None) -> None:
+async def _wake_agent_async(agent_id: uuid.UUID, reason_context: str, *, from_agent_id: uuid.UUID | None = None, skip_dedup: bool = False, a2a_session_id: str | None = None, wake_reason: str | None = None) -> None:
     """Wake an agent asynchronously via the trigger invocation path.
 
     Delegates to the public wake_agent_with_context API in trigger_daemon.
@@ -7270,6 +7270,8 @@ async def _wake_agent_async(agent_id: uuid.UUID, reason_context: str, *, from_ag
     kwargs = {"from_agent_id": from_agent_id, "skip_dedup": skip_dedup}
     if a2a_session_id is not None:
         kwargs["a2a_session_id"] = a2a_session_id
+    if wake_reason is not None:
+        kwargs["wake_reason"] = wake_reason
     await wake_agent_with_context(agent_id, reason_context, **kwargs)
 
 
@@ -7607,6 +7609,7 @@ async def _send_message_to_agent(
                     from_agent_id=from_agent_id,
                     skip_dedup=True,
                     a2a_session_id=session_id,
+                    wake_reason="delegate",
                 )
             except Exception as e:
                 logger.warning(f"[A2A] Failed to wake {target_name} for delegate: {e}")

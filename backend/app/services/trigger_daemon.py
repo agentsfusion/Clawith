@@ -170,7 +170,7 @@ async def _tick():
         asyncio.create_task(_invoke_agent_for_triggers(agent_id, agent_triggers))
 
 
-async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, from_agent_id: uuid.UUID | None = None, skip_dedup: bool = False, a2a_session_id: str | None = None) -> None:
+async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, from_agent_id: uuid.UUID | None = None, skip_dedup: bool = False, a2a_session_id: str | None = None, wake_reason: str | None = None) -> None:
     """Public API: wake an agent asynchronously with a message context.
 
     Creates a synthetic trigger invocation so the agent processes the
@@ -185,6 +185,9 @@ async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, 
         from_agent_id: The agent that initiated this wake (for chain depth tracking).
         skip_dedup: If True, bypass the dedup window check.
         a2a_session_id: Optional A2A chat session ID to mirror the reply into.
+        wake_reason: Optional purpose of the wake — "delegate" for task delegation
+                     (child agent should complete the task and respond), anything else
+                     or None for notification (read-only, no reply expected).
     """
     import time as _time
 
@@ -227,19 +230,34 @@ async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, 
         except Exception as e:
             logger.warning(f"Failed to lookup sender agent name: {e}")
 
+    # Choose reason prompt based on wake purpose
+    if wake_reason == "delegate":
+        # task_delegate: child agent should execute the task and return results
+        _reason = (
+            "You received a delegated task from another agent. "
+            "Read the message content above carefully and COMPLETE the requested task. "
+            "Execute all necessary tool calls to fulfill the request. "
+            "When finished, call `finish(content=\"...\")` with your complete answer or results. "
+            "If you produced any files, use `send_file_to_agent` to deliver them to the requester. "
+            "This is NOT a notification — a response with your results is expected."
+        )
+    else:
+        # notify (default): read-only, no reply expected
+        _reason = (
+            "You received a notification from another agent. "
+            "Read the message content above, update your focus and memory if needed, "
+            "and take any action you deem necessary. "
+            "Do NOT reply back to the sender unless you have a genuine question — "
+            "this was a notification, not a request for response."
+        )
+
     dummy_trigger = AgentTrigger(
         id=uuid.uuid4(),
         agent_id=agent_id,
         name="a2a_wake",
         type="on_message",
         config={"from_agent_name": from_agent_name, "_matched_message": message_context[:2000], "_matched_from": "agent", "_a2a_session_id": a2a_session_id},
-        reason=(
-            "You received a notification from another agent. "
-            "Read the message content above, update your focus and memory if needed, "
-            "and take any action you deem necessary. "
-            "Do NOT reply back to the sender unless you have a genuine question — "
-            "this was a notification, not a request for response."
-        ),
+        reason=_reason,
         is_enabled=True,
         last_fired_at=now,
         fire_count=0,
