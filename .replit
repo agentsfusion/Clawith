@@ -70,7 +70,7 @@ S3_ENDPOINT_URL = "https://storage.googleapis.com"
 STORAGE_BACKEND = "replit"
 STORAGE_LOCAL_ROOT = "/home/runner/workspace/.data/agents"
 AGENT_DATA_DIR = "/home/runner/workspace/.data/agents"
-REPLIT_OBJECT_STORAGE_BUCKET_ID = "replit-objstore-5498ecab-1741-4522-9a72-349f8319ca5a"
+REPLIT_OBJECT_STORAGE_BUCKET_ID = "replit-objstore-a204e669-53ec-450f-b516-bb443fc4ba91"
 REPLIT_OBJECT_STORAGE_PREFIX = "agents"
 DOCKER_ENABLED = "false"
 
