@@ -482,3 +482,48 @@ _version_cache = _load_version_info()
 async def get_version():
     """Return current Clawith version and commit hash."""
     return _version_cache
+
+
+# ── Serve the built frontend (single-port production deployment) ──
+# In development the Vite dev server handles the frontend and proxies /api & /ws
+# to this backend. In production we build the SPA to frontend/dist and serve it
+# from here so the whole app runs behind a single port/origin.
+from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+_FRONTEND_INDEX = _FRONTEND_DIST / "index.html"
+
+if _FRONTEND_INDEX.is_file():
+    _ASSETS_DIR = _FRONTEND_DIST / "assets"
+    if _ASSETS_DIR.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_ASSETS_DIR)), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        """Serve static files when they exist, otherwise the SPA entrypoint.
+
+        API/websocket/public routes are registered above and take precedence,
+        so this only handles real static assets and client-side routes.
+        """
+        if full_path == "ws" or full_path.startswith(
+            ("api/", "ws/", "webhooks/", "p/")
+        ):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = (_FRONTEND_DIST / full_path).resolve()
+        if (
+            full_path
+            and _FRONTEND_DIST in candidate.parents
+            and candidate.is_file()
+        ):
+            return FileResponse(str(candidate))
+        return FileResponse(str(_FRONTEND_INDEX))
+
+    logger.info(f"[startup] serving built frontend from {_FRONTEND_DIST}")
+else:
+    logger.info(
+        "[startup] frontend/dist not found — relying on external frontend server "
+        "(dev mode via Vite)"
+    )

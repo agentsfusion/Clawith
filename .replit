@@ -80,3 +80,8 @@ defaultBucketID = "replit-objstore-5498ecab-1741-4522-9a72-349f8319ca5a"
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 180000
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bash", "start_production.sh"]
+build = ["bash", "-c", "cd frontend && npm run build"]
