@@ -5,6 +5,7 @@ stack = "BEST_EFFORT_FALLBACK"
 
 [nix]
 channel = "stable-25_05"
+packages = ["cairo", "ffmpeg-full", "freetype", "ghostscript", "gobject-introspection", "gtk3", "libyaml", "pkg-config", "qhull", "tcl", "tk"]
 
 [workflows]
 runButton = "Project"
