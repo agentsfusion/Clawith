@@ -224,6 +224,10 @@
       "chat": "Chat",
       "activityLog": "Activity Log",
       "approvals": "Approvals",
+      "feedback": "Feedback",
+      "health": "Health",
+      "script": "Script",
+      "jobs": "Jobs",
       "settings": "Settings"
     },
     "fields": {
