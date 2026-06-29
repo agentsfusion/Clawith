@@ -282,6 +282,18 @@ class WebSocketChatHandler:
                 self.agent_type = self.agent.agent_type or ""
                 self.role_description = self.agent.role_description or ""
                 self.welcome_message = self.agent.welcome_message or ""
+                # --- Evolver subsystem ---
+                # For evolver agents, prefer the welcome text declared in the
+                # Agent Script (start_agent topic), falling back to the DB
+                # welcome_message when the script provides none.
+                if (self.agent.agent_type or "") == "evolver":
+                    try:
+                        from app.services.script_runtime import get_evolver_welcome
+                        _ev_welcome = await get_evolver_welcome(self.agent.id)
+                        if _ev_welcome:
+                            self.welcome_message = _ev_welcome
+                    except Exception as e:
+                        logger.warning(f"[WS] get_evolver_welcome failed: {e}")
                 self.ctx_size = self.agent.context_window_size or 100
                 self.user_display_name = (self.user.display_name or "").strip() or "there"
                 logger.info(

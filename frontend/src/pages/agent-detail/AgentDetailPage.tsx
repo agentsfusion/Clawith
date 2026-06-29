@@ -59,6 +59,11 @@ import SettingsTab from './tabs/SettingsTab';
 import SkillsTab from './tabs/SkillsTab';
 import ToolsTab from './tabs/ToolsTab';
 import AgentDirectory from './AgentDirectory';
+// --- Evolver subsystem (evolver agents only) ---
+import FeedbackTab from '../../components/evolver/FeedbackTab';
+import HealthTab from '../../components/evolver/HealthTab';
+import ScriptTab from '../../components/evolver/ScriptTab';
+import JobDashboard from '../../components/evolver/JobDashboard';
 import { useAgentDetailRoute } from './hooks/useAgentDetailRoute';
 import {
     failClosedSessionActiveRun,
@@ -5483,6 +5488,10 @@ export default function AgentDetailPage() {
                 {activeTab !== 'chat' && <div className="tabs">
                     {AGENT_DETAIL_TABS.filter(tab => {
                         if (['aware', 'workspace', 'chat'].includes(tab)) return false;
+                        // --- Evolver subsystem: the 4 evolver tabs only appear for evolver agents ---
+                        if (['feedback', 'health', 'script', 'jobs'].includes(tab)) {
+                            return (agent as any)?.agent_type === 'evolver';
+                        }
                         // 'use' access keeps the existing tab bar unchanged; settings remains available via its own entry.
                         if ((agent as any)?.access_level === 'use') {
                             if (tab === 'settings' || tab === 'approvals') return false;
@@ -7390,6 +7399,12 @@ export default function AgentDetailPage() {
                 }
 
                 {/* ── Feishu Channel Tab ── */}
+
+                {/* --- Evolver subsystem (evolver agents only) --- */}
+                {activeTab === 'feedback' && id && (agent as any)?.agent_type === 'evolver' && <FeedbackTab agentId={id} />}
+                {activeTab === 'health' && id && (agent as any)?.agent_type === 'evolver' && <HealthTab agentId={id} />}
+                {activeTab === 'script' && id && (agent as any)?.agent_type === 'evolver' && <ScriptTab agentId={id} />}
+                {activeTab === 'jobs' && id && (agent as any)?.agent_type === 'evolver' && <JobDashboard agentId={id} />}
 
                 {/* ── Approvals Tab ── */}
                 {

@@ -1709,6 +1709,41 @@
       "viewDetails": "View Details"
     }
   },
+  "evolver": {
+    "feedback": "Feedback",
+    "openFeedbacks": "open feedback(s) will be addressed in next evolution",
+    "addFeedback": "+ Add Feedback",
+    "feedbackPlaceholder": "Describe your feedback, improvement suggestion, or issue...",
+    "submit": "Submit",
+    "noFeedbacks": "No feedback yet. Add feedback to guide the agent's evolution.",
+    "heartbeat": "Heartbeat",
+    "healthDesc": "AI-powered quality analysis of your agent script",
+    "runCheck": "Run Health Check",
+    "analyzing": "Analyzing...",
+    "latestScore": "Latest Score",
+    "noHealthChecks": "No Health Checks Yet",
+    "scriptVersions": "Script & Evolution",
+    "scriptDesc": "Agent Script versions and evolution history",
+    "uploadScript": "Upload Script",
+    "pasteScript": "Paste your Agent Script below:",
+    "saveAsInitial": "Save as Initial",
+    "triggerEvolution": "Trigger Evolution",
+    "evolving": "Evolving...",
+    "directionPlaceholder": "Evolution direction (optional)...",
+    "noScripts": "No scripts yet. Upload an initial script or trigger evolution.",
+    "scriptValidation": {
+      "title": "Script References Unavailable Resources",
+      "missingSkills": "Missing Skills",
+      "missingTools": "Missing Tools",
+      "usedBy": "Used by action",
+      "importFromPresets": "Import from Presets",
+      "imported": "Imported",
+      "notInPresets": "Not found in presets",
+      "contactAdmin": "Contact admin to configure",
+      "retrySave": "Retry Save"
+    }
+  },
+
   "openclaw": {
     "created": "OpenClaw Agent Created",
     "createdDesc2": "Your OpenClaw agent has been registered. Copy the instruction below and send it to your OpenClaw agent to complete the setup.",
