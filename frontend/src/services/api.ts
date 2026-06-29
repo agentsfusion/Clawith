@@ -631,3 +631,114 @@ export const scriptBuilderApi = {
         request<{ agent_id: string; agent_name: string; installed_tools: string[]; installed_skills: string[] }>(
             '/script-builder/apply-as-agent', { method: 'POST', body: JSON.stringify({ script, name: name || undefined }) }),
 };
+
+// --- Evolver subsystem ---
+export interface EvolverFeedback {
+    id: string;
+    agent_id: string;
+    category: string;
+    content: string;
+    status: string;
+    created_at: string;
+}
+
+export interface EvolverHealthCheck {
+    id: string;
+    agent_id: string;
+    overall_score: number;
+    dimensions?: { name: string; score: number; feedback: string }[];
+    strengths?: string[];
+    suggestions?: string[];
+    script_version?: string;
+    created_at: string;
+}
+
+export interface EvolverScriptVersion {
+    id: string;
+    agent_id: string;
+    version: number;
+    folder: string;
+    content: string;
+    source?: string;
+    created_at: string;
+}
+
+export interface EvolutionJob {
+    id: string;
+    agent_id: string;
+    agent_name?: string;
+    direction: string;
+    cron_schedule: string;
+    active: boolean;
+    last_run_at?: string;
+    next_run_at?: string;
+    last_run_status?: string;
+    last_run_error?: string;
+    created_at: string;
+    updated_at: string;
+}
+
+export const evolverApi = {
+    listFeedbacks: (agentId: string) =>
+        request<EvolverFeedback[]>(`/evolver/agents/${agentId}/feedbacks`),
+
+    createFeedback: (agentId: string, category: string, content: string) =>
+        request<EvolverFeedback>(`/evolver/agents/${agentId}/feedbacks`, {
+            method: 'POST',
+            body: JSON.stringify({ category, content }),
+        }),
+
+    updateFeedback: (agentId: string, feedbackId: string, data: { status?: string; content?: string }) =>
+        request<EvolverFeedback>(`/evolver/agents/${agentId}/feedbacks/${feedbackId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(data),
+        }),
+
+    deleteFeedback: (agentId: string, feedbackId: string) =>
+        request<void>(`/evolver/agents/${agentId}/feedbacks/${feedbackId}`, { method: 'DELETE' }),
+
+    listHealthChecks: (agentId: string) =>
+        request<EvolverHealthCheck[]>(`/evolver/agents/${agentId}/health-checks`),
+
+    triggerHealthCheck: (agentId: string) =>
+        request<EvolverHealthCheck>(`/evolver/agents/${agentId}/health-checks`, { method: 'POST' }),
+
+    deleteHealthCheck: (agentId: string, checkId: string) =>
+        request<void>(`/evolver/agents/${agentId}/health-checks/${checkId}`, { method: 'DELETE' }),
+
+    listScriptVersions: (agentId: string, folder?: string) =>
+        request<EvolverScriptVersion[]>(`/evolver/agents/${agentId}/script-versions${folder ? `?folder=${folder}` : ''}`),
+
+    createScriptVersion: (agentId: string, folder: string, content: string, source?: string) =>
+        request<EvolverScriptVersion>(`/evolver/agents/${agentId}/script-versions`, {
+            method: 'POST',
+            body: JSON.stringify({ folder, content, source }),
+        }),
+
+    triggerEvolution: (agentId: string, direction?: string) =>
+        request<{ status: string; version?: number; feedbacks_addressed?: number }>(
+            `/evolver/agents/${agentId}/evolve`,
+            { method: 'POST', body: JSON.stringify({ direction }) },
+        ),
+
+    listJobs: (agentId: string) =>
+        request<EvolutionJob[]>(`/evolver/agents/${agentId}/jobs`),
+
+    createJob: (agentId: string, direction: string, cronSchedule: string) =>
+        request<EvolutionJob>(`/evolver/agents/${agentId}/jobs`, {
+            method: 'POST',
+            body: JSON.stringify({ direction, cron_schedule: cronSchedule }),
+        }),
+
+    updateJob: (agentId: string, jobId: string, updates: { direction?: string; cron_schedule?: string; active?: boolean }) =>
+        request<EvolutionJob>(`/evolver/agents/${agentId}/jobs/${jobId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(updates),
+        }),
+
+    deleteJob: (agentId: string, jobId: string) =>
+        request<void>(`/evolver/agents/${agentId}/jobs/${jobId}`, { method: 'DELETE' }),
+
+    triggerJob: (agentId: string, jobId: string) =>
+        request<{ message: string; job_id: string }>(`/evolver/agents/${agentId}/jobs/${jobId}/run`, { method: 'POST' }),
+};

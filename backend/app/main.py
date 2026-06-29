@@ -180,6 +180,8 @@ async def lifespan(app: FastAPI):
 
             import app.models.identity       # noqa
             import app.models.script_builder  # noqa
+            # --- Evolver subsystem ---
+            import app.models.evolver         # noqa
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
             logger.info("[startup] Database tables ready")
@@ -389,6 +391,8 @@ from app.api.atlassian import router as atlassian_router
 from app.api.webhooks import router as webhooks_router
 from app.api.notification import router as notification_router
 from app.api.script_builder import router as script_builder_router
+# --- Evolver subsystem ---
+from app.api.evolver import router as evolver_router
 from app.api.gateway import router as gateway_router
 from app.api.admin import router as admin_router
 from app.api.pages import router as pages_router, public_router as pages_public_router
@@ -443,6 +447,8 @@ app.include_router(agentbay_control_router, prefix=settings.API_PREFIX)
 app.include_router(okr_router)  # OKR — self-prefixed at /api/okr
 app.include_router(onboarding_router, prefix=settings.API_PREFIX)
 app.include_router(script_builder_router, prefix=settings.API_PREFIX)
+# --- Evolver subsystem ---
+app.include_router(evolver_router, prefix=settings.API_PREFIX)
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])

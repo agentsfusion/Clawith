@@ -1845,6 +1845,41 @@
     "createBtn": "创建",
     "contactAdmin": "请联系平台管理员获取邀请码。"
   },
+  "evolver": {
+    "feedback": "反馈",
+    "openFeedbacks": "条待处理的反馈将在下次进化中被采纳",
+    "addFeedback": "+ 添加反馈",
+    "feedbackPlaceholder": "描述您的反馈、改进建议或问题...",
+    "submit": "提交",
+    "noFeedbacks": "暂无反馈。添加反馈以引导智能体的进化方向。",
+    "heartbeat": "健康度",
+    "healthDesc": "AI 驱动的智能体脚本质量分析",
+    "runCheck": "运行健康检查",
+    "analyzing": "分析中...",
+    "latestScore": "最新得分",
+    "noHealthChecks": "暂无健康检查",
+    "scriptVersions": "脚本与进化",
+    "scriptDesc": "Agent Script 版本与进化历史",
+    "uploadScript": "上传脚本",
+    "pasteScript": "在下方粘贴您的 Agent Script：",
+    "saveAsInitial": "保存为初始脚本",
+    "triggerEvolution": "触发进化",
+    "evolving": "进化中...",
+    "directionPlaceholder": "进化方向（可选）...",
+    "noScripts": "暂无脚本。请上传初始脚本或触发进化。",
+    "scriptValidation": {
+      "title": "脚本引用了不可用的资源",
+      "missingSkills": "缺失的技能",
+      "missingTools": "缺失的工具",
+      "usedBy": "被动作使用",
+      "importFromPresets": "从预设导入",
+      "imported": "已导入",
+      "notInPresets": "在预设中未找到",
+      "contactAdmin": "请联系管理员配置",
+      "retrySave": "重试保存"
+    }
+  },
+
   "openclaw": {
     "created": "OpenClaw Agent 已创建",
     "createdDesc2": "您的 OpenClaw Agent 已注册。复制以下指令并发送给您的 OpenClaw Agent 完成配置。",

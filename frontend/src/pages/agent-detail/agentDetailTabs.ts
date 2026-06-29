@@ -9,13 +9,18 @@ export const AGENT_DETAIL_TABS = [
     'chat',
     'activityLog',
     'approvals',
+    // --- Evolver subsystem (evolver agents only; filtered in AgentDetailPage) ---
+    'feedback',
+    'health',
+    'script',
+    'jobs',
     'settings',
 ] as const;
 
 export type AgentDetailTab = typeof AGENT_DETAIL_TABS[number];
 
 export const AGENT_DETAIL_SETTINGS_TABS = AGENT_DETAIL_TABS.filter(
-    (tab) => !['aware', 'workspace', 'chat'].includes(tab),
+    (tab) => !['aware', 'workspace', 'chat', 'feedback', 'health', 'script', 'jobs'].includes(tab),
 ) as AgentDetailTab[];
 
 export function isAgentDetailTab(value: string | null | undefined): value is AgentDetailTab {
