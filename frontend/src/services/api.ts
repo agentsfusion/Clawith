@@ -673,3 +673,43 @@ export const orgApi = {
     departments: () =>
         request<{ items: OrgDepartmentItem[]; total_member: number }>('/enterprise/org/departments'),
 };
+
+// ─── Script Builder ──────────────────────────────────
+export interface ScriptConversation { id: number; title: string; createdAt: string }
+export interface ScriptMessage { id: number; role: string; content: string; createdAt: string }
+export interface ScriptAnalysisResult {
+    overallScore: number;
+    dimensions: { name: string; score: number; feedback: string }[];
+    strengths: string[];
+    suggestions: string[];
+}
+export interface ScriptBuilderContextItem {
+    name: string; display_name?: string; folder_name?: string;
+    category: string; description: string; icon: string;
+}
+export interface ScriptBuilderContext { tools: ScriptBuilderContextItem[]; skills: ScriptBuilderContextItem[] }
+
+export const scriptBuilderApi = {
+    getContext: () => request<ScriptBuilderContext>('/script-builder/context'),
+    listConversations: () => request<ScriptConversation[]>('/script-builder/conversations'),
+    createConversation: (title: string) =>
+        request<ScriptConversation>('/script-builder/conversations', { method: 'POST', body: JSON.stringify({ title }) }),
+    deleteConversation: (id: number) =>
+        request<void>(`/script-builder/conversations/${id}`, { method: 'DELETE' }),
+    listMessages: (convId: number) =>
+        request<ScriptMessage[]>(`/script-builder/conversations/${convId}/messages`),
+    // Streaming: must use raw fetch + manual Bearer token (not request(), because it needs ReadableStream)
+    streamMessage: (convId: number, content: string, signal?: AbortSignal) => {
+        const token = localStorage.getItem('token');
+        return fetch(`${API_BASE}/script-builder/conversations/${convId}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            body: JSON.stringify({ content }), signal,
+        });
+    },
+    analyze: (script: string) =>
+        request<ScriptAnalysisResult>('/script-builder/analyze', { method: 'POST', body: JSON.stringify({ script }) }),
+    applyAsAgent: (script: string, name?: string) =>
+        request<{ agent_id: string; agent_name: string; installed_tools: string[]; installed_skills: string[] }>(
+            '/script-builder/apply-as-agent', { method: 'POST', body: JSON.stringify({ script, name: name || undefined }) }),
+};
