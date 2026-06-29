@@ -230,6 +230,10 @@
       "chat": "聊天",
       "activityLog": "工作日志",
       "approvals": "审批",
+      "feedback": "反馈",
+      "health": "健康度",
+      "script": "脚本",
+      "jobs": "任务",
       "settings": "设置"
     },
     "fields": {
