@@ -50,6 +50,14 @@ export interface FileBrowserProps {
     title?: string;
     readOnly?: boolean;
     onRefresh?: () => void;
+    /**
+     * Force the single-file preview to render as a code block instead of
+     * markdown. Use for config/DSL content (e.g. evolver soul.md scripts)
+     * where markdown parsing would mangle the structure. Optionally pass a
+     * language hint for the code fence (e.g. "yaml").
+     */
+    renderAs?: 'markdown' | 'code';
+    codeLanguage?: string;
 }
 
 // ─── Text file detection ───────────────────────────────
@@ -82,6 +90,8 @@ export default function FileBrowser({
     title,
     readOnly = false,
     onRefresh,
+    renderAs = 'markdown',
+    codeLanguage,
 }: FileBrowserProps) {
     const { t } = useTranslation();
     const {
@@ -408,7 +418,11 @@ export default function FileBrowser({
                 ) : !contentLoaded ? (
                     <div style={{ padding: '20px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('common.loading')}</div>
                 ) : content ? (
-                    singleFile?.endsWith('.md') ? (
+                    renderAs === 'code' ? (
+                        <pre style={{ background: 'var(--bg-secondary)', borderRadius: '8px', padding: '12px 16px', overflowX: 'auto', margin: 0, whiteSpace: 'pre', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '1.5' }}>
+                            <code className={codeLanguage ? `language-${codeLanguage}` : undefined}>{content}</code>
+                        </pre>
+                    ) : singleFile?.endsWith('.md') ? (
                         <MarkdownRenderer content={content} style={{ padding: '4px 0' }} />
                     ) : (
                         <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '1.6', margin: 0 }}>

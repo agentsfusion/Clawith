@@ -8,9 +8,11 @@ import { fileApi } from '../../../services/api';
 export default function MindTab({
     agentId,
     canEdit,
+    agentType,
 }: {
     agentId: string;
     canEdit: boolean;
+    agentType?: string;
 }) {
     const { t } = useTranslation();
     const adapter: FileBrowserApi = {
@@ -30,7 +32,13 @@ export default function MindTab({
                 <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                     {t('agent.mind.soulDesc', 'Core identity, personality, and behavior boundaries.')}
                 </p>
-                <FileBrowser api={adapter} singleFile="soul.md" title="" features={{ edit: canEdit }} />
+                <FileBrowser
+                    api={adapter}
+                    singleFile="soul.md"
+                    title=""
+                    features={{ edit: canEdit }}
+                    renderAs={agentType === 'evolver' ? 'code' : 'markdown'}
+                />
             </div>
 
             <div>
