@@ -5724,7 +5724,7 @@ export default function AgentDetailPage() {
                 {/* ── Mind Tab (Soul + Memory + Heartbeat) ── */}
                 {
                     activeTab === 'mind' && id && (
-                        <MindTab agentId={id} canEdit={(agent as any)?.access_level !== 'use'} />
+                        <MindTab agentId={id} canEdit={(agent as any)?.access_level !== 'use'} agentType={(agent as any)?.agent_type} />
                     )
                 }
 
