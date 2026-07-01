@@ -22,6 +22,7 @@ export default function ScriptTab({ agentId }: { agentId: string }) {
     const [validationError, setValidationError] = useState<{
         missingSkills: { action: string; folder_name: string }[];
         missingTools: { action: string; tool_name: string }[];
+        retryAction: 'upload' | 'evolve';
     } | null>(null);
 
     const { data: versions = [], isLoading } = useQuery({
@@ -31,10 +32,39 @@ export default function ScriptTab({ agentId }: { agentId: string }) {
 
     const evolveMutation = useMutation({
         mutationFn: () => evolverApi.triggerEvolution(agentId, direction || undefined),
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['evolver-scripts', agentId] });
-            qc.invalidateQueries({ queryKey: ['evolver-feedbacks', agentId] });
-            setDirection('');
+        onSuccess: (result) => {
+            // The endpoint returns HTTP 200 for every outcome; branch on status
+            // so rejected/error cycles surface feedback instead of silently
+            // producing no new version.
+            if (result.status === 'success') {
+                qc.invalidateQueries({ queryKey: ['evolver-scripts', agentId] });
+                qc.invalidateQueries({ queryKey: ['evolver-feedbacks', agentId] });
+                setDirection('');
+                const addressed = result.feedbacks_addressed
+                    ? ` · ${t('evolver.feedbacksAddressed', '{{count}} feedback(s) addressed', { count: result.feedbacks_addressed })}`
+                    : '';
+                setToast({
+                    message: t('evolver.evolveSuccess', 'Evolution complete — v{{version}}', { version: result.version }) + addressed,
+                    type: 'success',
+                });
+                setTimeout(() => setToast(null), 4000);
+            } else if (result.status === 'rejected') {
+                setValidationError({
+                    missingSkills: result.missing_skills || [],
+                    missingTools: result.missing_tools || [],
+                    retryAction: 'evolve',
+                });
+            } else {
+                setToast({
+                    message: result.detail || t('evolver.evolveFailed', 'Evolution failed'),
+                    type: 'error',
+                });
+                setTimeout(() => setToast(null), 6000);
+            }
+        },
+        onError: (err: any) => {
+            setToast({ message: err.message || t('evolver.evolveFailed', 'Evolution failed'), type: 'error' });
+            setTimeout(() => setToast(null), 6000);
         },
     });
 
@@ -52,6 +82,7 @@ export default function ScriptTab({ agentId }: { agentId: string }) {
                 setValidationError({
                     missingSkills: err.detail.missing_skills,
                     missingTools: err.detail.missing_tools || [],
+                    retryAction: 'upload',
                 });
                 return;
             }
@@ -141,15 +172,6 @@ export default function ScriptTab({ agentId }: { agentId: string }) {
                 </div>
             </div>
 
-            {evolveMutation.isSuccess && evolveMutation.data && (
-                <div style={{
-                    padding: '10px 14px', borderRadius: '8px', marginBottom: '16px',
-                    background: '#4ade8015', border: '1px solid #4ade8030', fontSize: '13px', color: '#4ade80',
-                }}>
-                    Evolution complete — v{evolveMutation.data.version}
-                    {evolveMutation.data.feedbacks_addressed ? ` · ${evolveMutation.data.feedbacks_addressed} feedback(s) addressed` : ''}
-                </div>
-            )}
 
             <div style={{ display: 'flex', gap: '6px', marginBottom: '16px' }}>
                 <button
@@ -255,8 +277,10 @@ export default function ScriptTab({ agentId }: { agentId: string }) {
                     missingTools={validationError.missingTools}
                     onClose={() => setValidationError(null)}
                     onRetry={() => {
+                        const action = validationError.retryAction;
                         setValidationError(null);
-                        uploadMutation.mutate();
+                        if (action === 'evolve') evolveMutation.mutate();
+                        else uploadMutation.mutate();
                     }}
                 />
             )}

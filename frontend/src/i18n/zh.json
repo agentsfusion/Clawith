@@ -1898,6 +1898,9 @@
     "saveAsInitial": "保存为初始脚本",
     "triggerEvolution": "触发进化",
     "evolving": "进化中...",
+    "evolveSuccess": "进化完成 — v{{version}}",
+    "evolveFailed": "进化失败",
+    "feedbacksAddressed": "已采纳 {{count}} 条反馈",
     "directionPlaceholder": "进化方向（可选）...",
     "noScripts": "暂无脚本。请上传初始脚本或触发进化。",
     "scriptValidation": {

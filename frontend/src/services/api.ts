@@ -798,7 +798,15 @@ export const evolverApi = {
         }),
 
     triggerEvolution: (agentId: string, direction?: string) =>
-        request<{ status: string; version?: number; feedbacks_addressed?: number }>(
+        request<{
+            status: 'success' | 'rejected' | 'error';
+            version?: number;
+            feedbacks_addressed?: number;
+            detail?: string;
+            problems?: string[];
+            missing_tools?: { action: string; tool_name: string }[];
+            missing_skills?: { action: string; folder_name: string }[];
+        }>(
             `/evolver/agents/${agentId}/evolve`,
             { method: 'POST', body: JSON.stringify({ direction }) },
         ),
