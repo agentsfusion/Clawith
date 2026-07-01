@@ -1704,6 +1704,9 @@
     "saveAsInitial": "Save as Initial",
     "triggerEvolution": "Trigger Evolution",
     "evolving": "Evolving...",
+    "evolveSuccess": "Evolution complete — v{{version}}",
+    "evolveFailed": "Evolution failed",
+    "feedbacksAddressed": "{{count}} feedback(s) addressed",
     "directionPlaceholder": "Evolution direction (optional)...",
     "noScripts": "No scripts yet. Upload an initial script or trigger evolution.",
     "scriptValidation": {
