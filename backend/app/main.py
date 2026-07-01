@@ -146,7 +146,7 @@ async def lifespan(app: FastAPI):
     from app.services.wechat_channel import wechat_poll_manager
     from app.services.discord_gateway import discord_gateway_manager
 
-    if _role_enabled("all", "bootstrap"):
+    async def _run_bootstrap():
         # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
         try:
             from app.database import Base, engine
@@ -272,6 +272,21 @@ async def lifespan(app: FastAPI):
             await patch_existing_okr_agent()
         except Exception as e:
             logger.warning(f"[startup] OKR Agent patch failed: {e}")
+        logger.info("[startup] bootstrap complete")
+
+    if _role_enabled("all", "bootstrap"):
+        _bootstrap_task = asyncio.create_task(_run_bootstrap(), name="bootstrap")
+
+        def _bootstrap_done(t):
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                return
+            if exc:
+                logger.error(f"[startup] bootstrap task crashed: {exc}")
+
+        _bootstrap_task.add_done_callback(_bootstrap_done)
+        logger.info("[startup] bootstrap scheduled in background (non-blocking; port opens immediately)")
     else:
         logger.info(f"[startup] bootstrap skipped for PROCESS_ROLE={settings.PROCESS_ROLE}")
 
