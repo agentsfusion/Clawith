@@ -1,5 +1,7 @@
 """Feishu WebSocket Long Connection Manager."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import threading
@@ -7,14 +9,13 @@ from typing import Any, Dict
 import uuid
 
 from loguru import logger
-try:
-    import lark_oapi as lark
-    import lark_oapi.ws as ws
-    _HAS_LARK = True
-except ImportError:
-    lark = None  # type: ignore
-    ws = None    # type: ignore
-    _HAS_LARK = False
+from app.services._lazy import LazyModule
+
+# lark_oapi eagerly imports a large API tree (~20s); load it lazily so it stays
+# off the process-startup critical path and only loads when Feishu is used.
+lark = LazyModule("lark_oapi")
+ws = LazyModule("lark_oapi.ws")
+_HAS_LARK = True
 
 if _HAS_LARK:
     try:
