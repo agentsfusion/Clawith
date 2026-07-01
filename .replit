@@ -55,6 +55,10 @@ localPort = 5001
 externalPort = 3000
 
 [[ports]]
+localPort = 5099
+externalPort = 3002
+
+[[ports]]
 localPort = 6379
 externalPort = 3001
 
@@ -80,3 +84,8 @@ defaultBucketID = "replit-objstore-5498ecab-1741-4522-9a72-349f8319ca5a"
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 180000
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bash", "start_production.sh"]
+build = ["bash", "-c", "cd frontend && npm run build && cd ../backend && (.venv/bin/python -m compileall -q -j 0 app .venv/lib/python3.12/site-packages || true)"]
