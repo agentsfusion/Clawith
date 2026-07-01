@@ -146,6 +146,42 @@ def _extract_resource_refs(script: str) -> tuple[set[str], set[str]]:
     )
 
 
+def _extract_ascript_block(text: str) -> tuple[str | None, str | None]:
+    """Extract the evolved agent script from an LLM response.
+
+    Tolerant of fence formatting so a correctly-generated script is not
+    discarded over cosmetics:
+      1. Prefer an ``ascript``-tagged fence, any casing / surrounding spaces.
+      2. Otherwise fall back to the first fenced code block with any (or no)
+         language tag.
+
+    Returns ``(script_content, full_matched_block)``; ``(None, None)`` when no
+    fenced block exists at all.
+    """
+    if not text:
+        return None, None
+    match = re.search(
+        r"```[ \t]*ascript[ \t]*\r?\n([\s\S]*?)```", text, re.IGNORECASE
+    )
+    if not match:
+        # No ascript-tagged fence. Fall back to a generic fenced block only
+        # when there is exactly one — otherwise we cannot tell the script
+        # apart from explanatory code blocks, so we'd rather fail loudly.
+        generic = list(
+            re.finditer(
+                r"```[ \t]*[A-Za-z0-9_+.\-]*[ \t]*\r?\n([\s\S]*?)```", text
+            )
+        )
+        if len(generic) == 1:
+            match = generic[0]
+    if not match:
+        return None, None
+    content = match.group(1).strip()
+    if not content:
+        return None, None
+    return content, match.group(0)
+
+
 def _validate_resource_refs(
     script: str,
     available_tools: list[dict],
@@ -405,9 +441,8 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
 
         response_text = full_response.content if hasattr(full_response, "content") else str(full_response)
 
-        # Step 7 — extract ascript block
-        script_match = re.search(r"```ascript\s*\r?\n([\s\S]*?)```", response_text)
-        evolved_script = script_match.group(1).strip() if script_match else None
+        # Step 7 — extract ascript block (tolerant of fence formatting)
+        evolved_script, matched_block = _extract_ascript_block(response_text)
 
         if not evolved_script:
             return {"status": "error", "detail": "AI response did not contain a valid ascript block"}
@@ -439,14 +474,29 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
                         "items present in the 'Available Tools & Skills' lists.\n\n"
                         "Specific problems:\n" + problem_text
                     ),
-                    source=f"evolution-rejected-{direction[:50]}",
+                    source=f"evolution-rejected-{direction}"[:50],
                 )
             )
             await db.commit()
+            # Structured breakdown so the UI can render the existing
+            # "missing resources" dialog and offer one-click imports.
+            tool_refs, skill_refs = _extract_resource_refs(evolved_script)
+            available_tool_names = {t["name"] for t in available_tools}
+            available_skill_folders = {s["folder"] for s in available_skills}
+            missing_tools = [
+                {"tool_name": name, "action": ""}
+                for name in sorted(tool_refs - available_tool_names)
+            ]
+            missing_skills = [
+                {"folder_name": folder, "action": ""}
+                for folder in sorted(skill_refs - available_skill_folders)
+            ]
             return {
                 "status": "rejected",
                 "detail": "evolved script references unavailable tools/skills",
                 "problems": problems,
+                "missing_tools": missing_tools,
+                "missing_skills": missing_skills,
             }
 
         # Step 9 — persist success
@@ -464,12 +514,17 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
                 version=next_evolved_version,
                 folder="evolved",
                 content=evolved_script,
-                source=f"evolution-{direction[:50]}",
+                source=f"evolution-{direction}"[:50],
             )
         )
 
-        # Sediment leftover explanation text as knowledge.
-        knowledge_text = re.sub(r"```ascript[\s\S]*?```", "", response_text).strip()
+        # Sediment leftover explanation text as knowledge (strip the exact
+        # script block we extracted, whatever fence style it used).
+        knowledge_text = (
+            response_text.replace(matched_block, "", 1).strip()
+            if matched_block
+            else response_text.strip()
+        )
         if len(knowledge_text) > 20:
             max_knowledge_ver = await db.execute(
                 select(func.coalesce(func.max(AgentScriptVersion.version), 0)).where(
@@ -484,7 +539,7 @@ async def run_evolution(agent_id: str, tenant_id, direction: str) -> dict:
                     version=next_knowledge_version,
                     folder="evolution_knowledge",
                     content=knowledge_text,
-                    source=f"evolution-{direction[:50]}",
+                    source=f"evolution-{direction}"[:50],
                 )
             )
 
