@@ -1,17 +1,19 @@
 """Feishu (Lark) OAuth and API integration service."""
 
+from __future__ import annotations
+
 import json
 from collections import OrderedDict
 
 import httpx
 from loguru import logger
 
-try:
-    import lark_oapi as lark
-    _HAS_LARK = True
-except ImportError:
-    lark = None  # type: ignore
-    _HAS_LARK = False
+from app.services._lazy import LazyModule
+
+# lark_oapi eagerly imports a large API tree (~20s); load it lazily so it stays
+# off the process-startup critical path and only loads when Feishu is used.
+lark = LazyModule("lark_oapi")
+_HAS_LARK = True
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
